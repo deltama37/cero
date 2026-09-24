@@ -16,15 +16,29 @@ func ParseFile(src []byte) (*ast.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	var funcs []*ast.FuncDecl
+	var (
+		typeDecls []*ast.TypeDecl
+		funcs     []*ast.FuncDecl
+	)
 	for p.cur().Kind != token.EOF {
-		fn, err := p.parseFuncDecl()
-		if err != nil {
-			return nil, err
+		switch p.cur().Kind {
+		case token.Type:
+			decl, err := p.parseTypeDecl()
+			if err != nil {
+				return nil, err
+			}
+			typeDecls = append(typeDecls, decl)
+		case token.Fn:
+			fn, err := p.parseFuncDecl()
+			if err != nil {
+				return nil, err
+			}
+			funcs = append(funcs, fn)
+		default:
+			return nil, diag.Errorf(p.cur().Pos, "expected %s or %s, found %s", token.Fn, token.Type, describe(p.cur()))
 		}
-		funcs = append(funcs, fn)
 	}
-	return &ast.File{Funcs: funcs}, nil
+	return &ast.File{Types: typeDecls, Funcs: funcs}, nil
 }
 
 // ParseExpr parses a single expression that must span the whole input.
@@ -473,6 +487,8 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		return p.parseBlock()
 	case token.Fn:
 		return p.parseFuncLit()
+	case token.Match:
+		return p.parseMatch()
 	default:
 		return nil, diag.Errorf(p.cur().Pos, "expected expression, found %s", describe(p.cur()))
 	}
@@ -507,4 +523,206 @@ func (p *parser) parseIf() (*ast.IfExpr, error) {
 		return nil, err
 	}
 	return &ast.IfExpr{Pos: ifTok.Pos, Cond: cond, Then: then, Else: elseExpr}, nil
+}
+
+func isUpperName(name string) bool {
+	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+func (p *parser) parseTypeDecl() (*ast.TypeDecl, error) {
+	typeTok := p.cur()
+	if err := p.expect(token.Type); err != nil {
+		return nil, err
+	}
+	if p.cur().Kind != token.Ident {
+		return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
+	}
+	nameTok := p.cur()
+	p.advance()
+	if !isUpperName(nameTok.Text) {
+		return nil, diag.Errorf(nameTok.Pos, "type name '%s' must start with an uppercase letter", nameTok.Text)
+	}
+	if err := p.expect(token.Assign); err != nil {
+		return nil, err
+	}
+	if p.cur().Kind == token.Bar {
+		p.advance()
+	}
+	ctor, err := p.parseCtorDecl()
+	if err != nil {
+		return nil, err
+	}
+	ctors := []*ast.CtorDecl{ctor}
+	for p.cur().Kind == token.Bar {
+		p.advance()
+		ctor, err = p.parseCtorDecl()
+		if err != nil {
+			return nil, err
+		}
+		ctors = append(ctors, ctor)
+	}
+	return &ast.TypeDecl{
+		Pos:     typeTok.Pos,
+		Name:    nameTok.Text,
+		NamePos: nameTok.Pos,
+		Ctors:   ctors,
+	}, nil
+}
+
+func (p *parser) parseCtorDecl() (*ast.CtorDecl, error) {
+	if p.cur().Kind != token.Ident {
+		return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
+	}
+	nameTok := p.cur()
+	p.advance()
+	if !isUpperName(nameTok.Text) {
+		return nil, diag.Errorf(nameTok.Pos, "constructor name '%s' must start with an uppercase letter", nameTok.Text)
+	}
+	var fields []ast.TypeExpr
+	if p.cur().Kind == token.LParen {
+		p.advance()
+		field, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, field)
+		for p.cur().Kind == token.Comma {
+			p.advance()
+			field, err = p.parseType()
+			if err != nil {
+				return nil, err
+			}
+			fields = append(fields, field)
+		}
+		if err := p.expect(token.RParen); err != nil {
+			return nil, err
+		}
+	}
+	return &ast.CtorDecl{Pos: nameTok.Pos, Name: nameTok.Text, Fields: fields}, nil
+}
+
+func (p *parser) parseMatch() (*ast.MatchExpr, error) {
+	matchTok := p.cur()
+	if err := p.expect(token.Match); err != nil {
+		return nil, err
+	}
+	scrutinee, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect(token.LBrace); err != nil {
+		return nil, err
+	}
+	var arms []*ast.MatchArm
+	for {
+		arm, err := p.parseArm()
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, arm)
+		if p.cur().Kind == token.Comma {
+			p.advance()
+			if p.cur().Kind == token.RBrace {
+				break
+			}
+			continue
+		}
+		if p.cur().Kind == token.RBrace {
+			break
+		}
+		return nil, diag.Errorf(p.cur().Pos, "expected %s or %s, found %s", token.Comma, token.RBrace, describe(p.cur()))
+	}
+	if err := p.expect(token.RBrace); err != nil {
+		return nil, err
+	}
+	return &ast.MatchExpr{Pos: matchTok.Pos, Scrutinee: scrutinee, Arms: arms}, nil
+}
+
+func (p *parser) parseArm() (*ast.MatchArm, error) {
+	pattern, err := p.parsePattern()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect(token.FatArrow); err != nil {
+		return nil, err
+	}
+	body, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.MatchArm{Pattern: pattern, Body: body}, nil
+}
+
+func (p *parser) parsePattern() (ast.Pattern, error) {
+	switch p.cur().Kind {
+	case token.Underscore:
+		pos := p.cur().Pos
+		p.advance()
+		return &ast.WildcardPat{Pos: pos}, nil
+	case token.Int:
+		tok := p.cur()
+		p.advance()
+		value, err := strconv.ParseInt(tok.Text, 10, 64)
+		if err != nil {
+			return nil, diag.Errorf(tok.Pos, "integer literal out of range: %s", tok.Text)
+		}
+		return &ast.IntPat{Pos: tok.Pos, Value: value}, nil
+	case token.True:
+		pos := p.cur().Pos
+		p.advance()
+		return &ast.BoolPat{Pos: pos, Value: true}, nil
+	case token.False:
+		pos := p.cur().Pos
+		p.advance()
+		return &ast.BoolPat{Pos: pos, Value: false}, nil
+	case token.Ident:
+		nameTok := p.cur()
+		p.advance()
+		if !isUpperName(nameTok.Text) {
+			return &ast.VarPat{Pos: nameTok.Pos, Name: nameTok.Text}, nil
+		}
+		var args []ast.Pattern
+		if p.cur().Kind == token.LParen {
+			p.advance()
+			arg, err := p.parseSubPattern()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, arg)
+			for p.cur().Kind == token.Comma {
+				p.advance()
+				arg, err = p.parseSubPattern()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, arg)
+			}
+			if err := p.expect(token.RParen); err != nil {
+				return nil, err
+			}
+		}
+		return &ast.CtorPat{Pos: nameTok.Pos, Name: nameTok.Text, Args: args}, nil
+	default:
+		return nil, diag.Errorf(p.cur().Pos, "expected pattern, found %s", describe(p.cur()))
+	}
+}
+
+func (p *parser) parseSubPattern() (ast.Pattern, error) {
+	switch p.cur().Kind {
+	case token.Underscore:
+		pos := p.cur().Pos
+		p.advance()
+		return &ast.WildcardPat{Pos: pos}, nil
+	case token.Ident:
+		if isUpperName(p.cur().Text) {
+			return nil, diag.Errorf(p.cur().Pos, "nested patterns are not supported in v0.2")
+		}
+		nameTok := p.cur()
+		p.advance()
+		return &ast.VarPat{Pos: nameTok.Pos, Name: nameTok.Text}, nil
+	case token.Int, token.True, token.False:
+		return nil, diag.Errorf(p.cur().Pos, "nested patterns are not supported in v0.2")
+	default:
+		return nil, diag.Errorf(p.cur().Pos, "expected pattern, found %s", describe(p.cur()))
+	}
 }

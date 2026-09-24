@@ -14,7 +14,12 @@ func TestKindString(t *testing.T) {
 		{name: "Ident", kind: Ident, want: "identifier"},
 		{name: "Int", kind: Int, want: "integer literal"},
 		{name: "Fn", kind: Fn, want: "'fn'"},
+		{name: "Type", kind: Type, want: "'type'"},
+		{name: "Match", kind: Match, want: "'match'"},
+		{name: "Underscore", kind: Underscore, want: "'_'"},
 		{name: "Arrow", kind: Arrow, want: "'->'"},
+		{name: "FatArrow", kind: FatArrow, want: "'=>'"},
+		{name: "Bar", kind: Bar, want: "'|'"},
 		{name: "AndAnd", kind: AndAnd, want: "'&&'"},
 	}
 

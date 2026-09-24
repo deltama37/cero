@@ -77,6 +77,66 @@ func TestParseExpr(t *testing.T) {
 		},
 		{name: "leading zeros", src: "007", want: "7"},
 		{name: "max int64", src: "9223372036854775807", want: "9223372036854775807"},
+		{
+			name: "match int and wildcard",
+			src:  "match x { 0 => 1, _ => 2 }",
+			want: "(match x (=> 0 1) (=> _ 2))",
+		},
+		{
+			name: "match trailing comma",
+			src:  "match x { 0 => 1, _ => 2, }",
+			want: "(match x (=> 0 1) (=> _ 2))",
+		},
+		{
+			name: "match one arm",
+			src:  "match x { y => y }",
+			want: "(match x (=> y y))",
+		},
+		{
+			name: "match constructor patterns",
+			src:  "match xs { Nil => 0, Cons(x, _) => x }",
+			want: "(match xs (=> Nil 0) (=> (Cons x _) x))",
+		},
+		{
+			name: "match bool patterns",
+			src:  "match b { true => 1, false => 0 }",
+			want: "(match b (=> true 1) (=> false 0))",
+		},
+		{
+			name: "match arm body is match",
+			src:  "match x { 0 => match y { _ => 1 } }",
+			want: "(match x (=> 0 (match y (=> _ 1))))",
+		},
+		{
+			name: "match arm body is if",
+			src:  "match x { _ => if c { 1 } else { 2 } }",
+			want: "(match x (=> _ (if c (block 1) (block 2))))",
+		},
+		{
+			name: "match arm body is block",
+			src:  "match x { _ => { 1 } }",
+			want: "(match x (=> _ (block 1)))",
+		},
+		{
+			name: "match arm body is binary",
+			src:  "match x { y => y + 1 }",
+			want: "(match x (=> y (+ y 1)))",
+		},
+		{
+			name: "match scrutinee is call",
+			src:  "match f(x) { _ => 0 }",
+			want: "(match (call f x) (=> _ 0))",
+		},
+		{
+			name: "match in binary",
+			src:  "1 + match x { _ => 2 }",
+			want: "(+ 1 (match x (=> _ 2)))",
+		},
+		{
+			name: "constructor value",
+			src:  "Cons(1, Nil)",
+			want: "(call Cons 1 Nil)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -101,6 +161,7 @@ func TestParseFile(t *testing.T) {
 		name  string
 		src   string
 		want  string
+		types int
 		funcs int
 	}{
 		{
@@ -224,6 +285,73 @@ fn add(a: Int, b: Int) -> Int { // trailing
 			want:  "",
 			funcs: 0,
 		},
+		{
+			name:  "int list with leading bar",
+			src:   "type IntList = | Nil | Cons(Int, IntList)",
+			want:  "(type IntList (Nil) (Cons Int IntList))",
+			types: 1,
+		},
+		{
+			name:  "shape without leading bar",
+			src:   "type Shape = Circle(Int) | Rect(Int, Int)",
+			want:  "(type Shape (Circle Int) (Rect Int Int))",
+			types: 1,
+		},
+		{
+			name:  "one constructor",
+			src:   "type Unit = Unit",
+			want:  "(type Unit (Unit))",
+			types: 1,
+		},
+		{
+			name:  "function type field",
+			src:   "type Box = Box(Int -> Int)",
+			want:  "(type Box (Box (-> (Int) Int)))",
+			types: 1,
+		},
+		{
+			name: "fn type fn",
+			src: `fn a() -> Int { 1 }
+type T = A
+fn b() -> Int { 2 }
+`,
+			want: `(type T (A))
+(fn a () Int (block 1))
+(fn b () Int (block 2))`,
+			types: 1,
+			funcs: 2,
+		},
+		{
+			name: "area and sum",
+			src: `type Shape =
+    | Circle(Int)
+    | Rect(Int, Int)
+
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+    }
+}
+
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + sum(rest),
+    }
+}
+`,
+			want: `(type Shape (Circle Int) (Rect Int Int))
+(type IntList (Nil) (Cons Int IntList))
+(fn area ((s Shape)) Int (block (match s (=> (Circle r) (* (* 3 r) r)) (=> (Rect w h) (* w h)))))
+(fn sum ((xs IntList)) Int (block (match xs (=> Nil 0) (=> (Cons x rest) (+ x (call sum rest))))))`,
+			types: 2,
+			funcs: 2,
+		},
 	}
 
 	for _, tt := range tests {
@@ -236,6 +364,9 @@ fn add(a: Int, b: Int) -> Int { // trailing
 			}
 			if got == nil {
 				t.Fatal("ParseFile() file = nil")
+			}
+			if len(got.Types) != tt.types {
+				t.Errorf("len(Types) = %d, want %d", len(got.Types), tt.types)
 			}
 			if len(got.Funcs) != tt.funcs {
 				t.Errorf("len(Funcs) = %d, want %d", len(got.Funcs), tt.funcs)
@@ -279,7 +410,7 @@ func TestParseError(t *testing.T) {
 		{
 			name: "top level let",
 			src:  "let x = 1",
-			want: "1:1: expected 'fn', found 'let'",
+			want: "1:1: expected 'fn' or 'type', found 'let'",
 		},
 		{
 			name: "missing result type",
@@ -309,7 +440,7 @@ func TestParseError(t *testing.T) {
 		{
 			name: "trailing brace",
 			src:  "fn f() -> Int { 1 } }",
-			want: "1:21: expected 'fn', found '}'",
+			want: "1:21: expected 'fn' or 'type', found '}'",
 		},
 		{
 			name: "lexer error",
@@ -321,6 +452,97 @@ func TestParseError(t *testing.T) {
 			src:  "1 2",
 			expr: true,
 			want: "1:3: expected end of file, found integer literal 2",
+		},
+		{
+			name: "type name lowercase",
+			src:  "type shape = Circle",
+			want: "1:6: type name 'shape' must start with an uppercase letter",
+		},
+		{
+			name: "constructor name lowercase",
+			src:  "type Shape = circle",
+			want: "1:14: constructor name 'circle' must start with an uppercase letter",
+		},
+		{
+			name: "type without constructor",
+			src:  "type T =",
+			want: "1:9: expected identifier, found end of file",
+		},
+		{
+			name: "empty constructor parentheses",
+			src:  "type T = A()",
+			want: "1:12: expected type, found ')'",
+		},
+		{
+			name: "trailing constructor bar",
+			src:  "type T = A | ",
+			want: "1:14: expected identifier, found end of file",
+		},
+		{
+			name: "match without arms",
+			src:  "match x { }",
+			expr: true,
+			want: "1:11: expected pattern, found '}'",
+		},
+		{
+			name: "match missing comma",
+			src:  "match x { 0 => 1 1 => 2 }",
+			expr: true,
+			want: "1:18: expected ',' or '}', found integer literal 1",
+		},
+		{
+			name: "match missing fat arrow",
+			src:  "match x { 0 1 }",
+			expr: true,
+			want: "1:13: expected '=>', found integer literal 1",
+		},
+		{
+			name: "negative int pattern",
+			src:  "match x { -1 => 0 }",
+			expr: true,
+			want: "1:11: expected pattern, found '-'",
+		},
+		{
+			name: "nested constructor pattern",
+			src:  "match x { Cons(Nil, _) => 0 }",
+			expr: true,
+			want: "1:16: nested patterns are not supported in v0.2",
+		},
+		{
+			name: "nested int pattern",
+			src:  "match x { Cons(1, _) => 0 }",
+			expr: true,
+			want: "1:16: nested patterns are not supported in v0.2",
+		},
+		{
+			name: "empty constructor pattern",
+			src:  "match x { Nil() => 0 }",
+			expr: true,
+			want: "1:15: expected pattern, found ')'",
+		},
+		{
+			name: "var pattern called",
+			src:  "match x { f(y) => 0 }",
+			expr: true,
+			want: "1:12: expected '=>', found '('",
+		},
+		{
+			name: "match double comma",
+			src:  "match x { _ => 0 ,, }",
+			expr: true,
+			want: "1:19: expected pattern, found ','",
+		},
+		{
+			name: "underscore expression",
+			src:  "_ + 1",
+			expr: true,
+			want: "1:1: expected expression, found '_'",
+		},
+		{
+			name: "let underscore",
+			src:  "{ let _ = 1 1 }",
+			expr: true,
+			want: "1:7: expected identifier, found '_'",
 		},
 	}
 

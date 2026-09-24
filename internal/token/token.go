@@ -16,22 +16,27 @@ const (
 	Int        // 123
 
 	// Keywords
-	Fn    // fn
-	Let   // let
-	If    // if
-	Else  // else
-	True  // true
-	False // false
+	Fn         // fn
+	Let        // let
+	If         // if
+	Else       // else
+	True       // true
+	False      // false
+	Type       // type
+	Match      // match
+	Underscore // _
 
 	// Punctuation
-	LParen // (
-	RParen // )
-	LBrace // {
-	RBrace // }
-	Comma  // ,
-	Colon  // :
-	Arrow  // ->
-	Assign // =
+	LParen   // (
+	RParen   // )
+	LBrace   // {
+	RBrace   // }
+	Comma    // ,
+	Colon    // :
+	Arrow    // ->
+	Assign   // =
+	FatArrow // =>
+	Bar      // |
 
 	// Operators
 	Plus   // +
@@ -75,6 +80,12 @@ func (k Kind) String() string {
 		return "'true'"
 	case False:
 		return "'false'"
+	case Type:
+		return "'type'"
+	case Match:
+		return "'match'"
+	case Underscore:
+		return "'_'"
 	case LParen:
 		return "'('"
 	case RParen:
@@ -91,6 +102,10 @@ func (k Kind) String() string {
 		return "'->'"
 	case Assign:
 		return "'='"
+	case FatArrow:
+		return "'=>'"
+	case Bar:
+		return "'|'"
 	case Plus:
 		return "'+'"
 	case Minus:
@@ -130,6 +145,9 @@ var Keywords = map[string]Kind{
 	"else":  Else,
 	"true":  True,
 	"false": False,
+	"type":  Type,
+	"match": Match,
+	"_":     Underscore,
 }
 
 // Token is a lexical token. Text is the source spelling, empty for EOF.
