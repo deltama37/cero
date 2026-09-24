@@ -1,0 +1,4 @@
+{
+  "name": "cero (ceroc / Go)",
+  "install": "go mod download && go build ./..."
+}
