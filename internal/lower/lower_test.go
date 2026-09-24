@@ -42,7 +42,7 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 fib (sig (Int) Int) (locals Int) (if (le (local 0) 1) (local 0) (add (call 0 (sub (local 0) 1)) (call 0 (sub (local 0) 2)))))",
-				"(func 1 main (sig () Int) (locals) (call 0 10))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 10))",
 				"(table)",
 				"(main 1)",
 			),
@@ -61,7 +61,7 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 calc (sig (Int) Int) (locals Int Int Int) (block (let 1 (mul (local 0) 2)) (let 2 (add (local 1) 10)) (local 2)))",
-				"(func 1 main (sig () Int) (locals) (call 0 1))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 1))",
 				"(table)",
 				"(main 1)",
 			),
@@ -93,7 +93,7 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 f (sig (Int) Int) (locals Int Int) (block (let 1 (add (local 0) 1)) (local 1)))",
-				"(func 1 main (sig () Int) (locals) (call 0 1))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 1))",
 				"(table)",
 				"(main 1)",
 			),
@@ -190,7 +190,7 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 sign (sig (Int) Int) (locals Int) (if (lt (local 0) 0) (neg 1) (if (eq (local 0) 0) 0 1)))",
-				"(func 1 main (sig () Int) (locals) (call 0 2))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 2))",
 				"(table)",
 				"(main 1)",
 			),
@@ -211,8 +211,8 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 double (sig (Int) Int) (locals Int) (mul (local 0) 2))",
-				"(func 1 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 2 main (sig () Int) (locals) (call 1 (func.ref 0) 3))",
+				"(func 1 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 2 main (sig () Int) (locals) (return.call 1 (func.ref 0) 3))",
 				"(table 0)",
 				"(main 2)",
 			),
@@ -233,8 +233,8 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 double (sig (Int) Int) (locals Int) (mul (local 0) 2))",
-				"(func 1 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 2 main (sig () Int) (locals) (call 1 (func.ref 0) (call 1 (func.ref 0) 3)))",
+				"(func 1 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 2 main (sig () Int) (locals) (return.call 1 (func.ref 0) (call 1 (func.ref 0) 3)))",
 				"(table 0)",
 				"(main 2)",
 			),
@@ -250,8 +250,8 @@ fn main() -> Int {
 }
 `,
 			want: lines(
-				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 1 main (sig () Int) (locals) (call 0 (func.ref 2) 3))",
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 3))",
 				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (mul (local 0) 2))",
 				"(table 2)",
 				"(main 1)",
@@ -270,9 +270,9 @@ fn main() -> Int {
 }
 `,
 			want: lines(
-				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 1 main (sig () Int) (locals) (call 0 (func.ref 2) 1))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (call 0 (func.ref 3) (local 0)))",
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 1))",
+				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (return.call 0 (func.ref 3) (local 0)))",
 				"(func 3 lambda$1 (sig (Int) Int) (locals Int) (add (local 0) 1))",
 				"(table 3 2)",
 				"(main 1)",
@@ -289,7 +289,7 @@ fn main() -> Int {
 }
 `,
 			want: lines(
-				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
 				"(func 1 main (sig () Int) (locals) 0)",
 				"(table)",
 				"(main 1)",
@@ -317,7 +317,7 @@ fn main() -> Int {
 				"(func 0 inc (sig (Int) Int) (locals Int) (add (local 0) 1))",
 				"(func 1 dec (sig (Int) Int) (locals Int) (sub (local 0) 1))",
 				"(func 2 pick (sig (Bool) FuncRef) (locals Bool) (if (local 0) (func.ref 0) (func.ref 1)))",
-				"(func 3 main (sig () Int) (locals) (call.indirect (sig (Int) Int) (call 2 true) 3))",
+				"(func 3 main (sig () Int) (locals) (return.call.indirect (sig (Int) Int) (call 2 true) 3))",
 				"(table 0 1)",
 				"(main 3)",
 			),
@@ -345,8 +345,8 @@ fn main() -> Int {
 }
 `,
 			want: lines(
-				"(func 0 isEven (sig (Int) Bool) (locals Int) (if (eq (local 0) 0) true (call 1 (sub (local 0) 1))))",
-				"(func 1 isOdd (sig (Int) Bool) (locals Int) (if (eq (local 0) 0) false (call 0 (sub (local 0) 1))))",
+				"(func 0 isEven (sig (Int) Bool) (locals Int) (if (eq (local 0) 0) true (return.call 1 (sub (local 0) 1))))",
+				"(func 1 isOdd (sig (Int) Bool) (locals Int) (if (eq (local 0) 0) false (return.call 0 (sub (local 0) 1))))",
 				"(func 2 main (sig () Int) (locals) (if (call 0 4) 1 0))",
 				"(table)",
 				"(main 2)",
@@ -365,8 +365,8 @@ fn main() -> Int {
 `,
 			want: lines(
 				"(func 0 inc (sig (Int) Int) (locals Int) (add (local 0) 1))",
-				"(func 1 main (sig () Int) (locals FuncRef) (block (let 0 (func.ref 2)) (call.indirect (sig (Int) Int) (local 0) 1)))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (call 0 (local 0)))",
+				"(func 1 main (sig () Int) (locals FuncRef) (block (let 0 (func.ref 2)) (return.call.indirect (sig (Int) Int) (local 0) 1)))",
+				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (return.call 0 (local 0)))",
 				"(table 2)",
 				"(main 1)",
 			),
@@ -496,7 +496,7 @@ fn main() -> Int {
 }
 `,
 			want: lines(
-				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (default (call 0 (local 1))))))",
+				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (default (return.call 0 (local 1))))))",
 				"(func 1 main (sig () Int) (locals) 0)",
 				"(table)",
 				"(main 1)",
@@ -580,11 +580,228 @@ fn main() -> Int {
 }
 `,
 			want: lines(
-				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 1 main (sig () Int) (locals) (call 0 (func.ref 2) 0))",
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 0))",
 				"(func 2 lambda$0 (sig (Int) Int) (locals Int Int) (block (let 1 (local 0)) (if (eq (local 1) 0) 1 (local 0))))",
 				"(table 2)",
 				"(main 1)",
+			),
+		},
+		{
+			name: "self tail call in else branch",
+			src: `fn go(n: Int, acc: Int) -> Int {
+    if n == 0 {
+        acc
+    } else {
+        go(n - 1, acc + n)
+    }
+}
+
+fn main() -> Int {
+    go(10, 0)
+}
+`,
+			want: lines(
+				"(func 0 go (sig (Int Int) Int) (locals Int Int) (if (eq (local 0) 0) (local 1) (return.call 0 (sub (local 0) 1) (add (local 1) (local 0)))))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 10 0))",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "arguments of a tail call are not tail calls",
+			src: `fn f(n: Int) -> Int {
+    n
+}
+
+fn main() -> Int {
+    f(f(1))
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Int) Int) (locals Int) (local 0))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (call 0 1)))",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "let value is not a tail position",
+			src: `fn f(n: Int) -> Int {
+    n
+}
+
+fn main() -> Int {
+    let x = f(1)
+    f(x)
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Int) Int) (locals Int) (local 0))",
+				"(func 1 main (sig () Int) (locals Int) (block (let 0 (call 0 1)) (return.call 0 (local 0))))",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "if condition is not a tail position",
+			src: `fn p(n: Int) -> Bool {
+    n > 0
+}
+
+fn main() -> Int {
+    if p(1) {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: lines(
+				"(func 0 p (sig (Int) Bool) (locals Int) (gt (local 0) 0))",
+				"(func 1 main (sig () Int) (locals) (if (call 0 1) 1 0))",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "right operand of && and || is a tail position",
+			src: `fn p(n: Int) -> Bool {
+    n > 0
+}
+
+fn both(n: Int) -> Bool {
+    p(n) && p(n - 1)
+}
+
+fn either(n: Int) -> Bool {
+    p(n) || p(n - 1)
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 p (sig (Int) Bool) (locals Int) (gt (local 0) 0))",
+				"(func 1 both (sig (Int) Bool) (locals Int) (if (call 0 (local 0)) (return.call 0 (sub (local 0) 1)) false))",
+				"(func 2 either (sig (Int) Bool) (locals Int) (if (call 0 (local 0)) true (return.call 0 (sub (local 0) 1))))",
+				"(func 3 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 3)",
+			),
+		},
+		{
+			name: "constructor arm of a match is a tail position",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn sum(xs: IntList, acc: Int) -> Int {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => sum(rest, acc + x),
+    }
+}
+
+fn main() -> Int {
+    sum(Nil, 0)
+}
+`,
+			want: lines(
+				"(func 0 sum (sig (Ptr Int) Int) (locals Ptr Int Ptr Int Ptr) (block (let 2 (local 0)) (switch.tag 2 (case 0 (local 1)) (case 1 (block (let 3 (field 2 0)) (let 4 (field 2 1)) (return.call 0 (local 4) (add (local 1) (local 3))))))))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (construct 0) 0))",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "default arm of a data match is a tail position",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn g(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        _ => g(Nil),
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 g (sig (Ptr) Int) (locals Ptr Ptr) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (default (return.call 0 (construct 0))))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "wildcard arm of an integer match is a tail position",
+			src: `fn down(n: Int) -> Int {
+    match n {
+        0 => 0,
+        _ => down(n - 1),
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 down (sig (Int) Int) (locals Int Int) (block (let 1 (local 0)) (if (eq (local 1) 0) 0 (return.call 0 (sub (local 0) 1)))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "anonymous function body and indirect tail call",
+			src: `fn f(n: Int) -> Int {
+    n
+}
+
+fn main() -> Int {
+    let g = fn(x: Int) -> Int { f(x) }
+    g(1)
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Int) Int) (locals Int) (local 0))",
+				"(func 1 main (sig () Int) (locals FuncRef) (block (let 0 (func.ref 2)) (return.call.indirect (sig (Int) Int) (local 0) 1)))",
+				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (return.call 0 (local 0)))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "constructor in tail position is not a call",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn f(n: Int) -> Int {
+    n
+}
+
+fn one(n: Int) -> IntList {
+    Cons(f(n), Nil)
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Int) Int) (locals Int) (local 0))",
+				"(func 1 one (sig (Int) Ptr) (locals Int) (construct 1 (call 0 (local 0)) (construct 0)))",
+				"(func 2 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 2)",
 			),
 		},
 	}

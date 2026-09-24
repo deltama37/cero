@@ -69,6 +69,30 @@ func (l *lowerer) lowerFunc(fn *ir.Func, params []*ast.Param, body *ast.BlockExp
 	if got, want := fn.Body.Type(), fn.Sig.Result; got != want {
 		panic(fmt.Sprintf("lower: %s body has type %s, signature result is %s", fn.Name, got, want))
 	}
+	markTailCalls(fn.Body)
+}
+
+// markTailCalls sets Tail on every Call and CallIndirect in tail position
+// of e (ADR-0005). e must be in tail position itself.
+func markTailCalls(e ir.Expr) {
+	switch e := e.(type) {
+	case *ir.Call:
+		e.Tail = true
+	case *ir.CallIndirect:
+		e.Tail = true
+	case *ir.If:
+		markTailCalls(e.Then)
+		markTailCalls(e.Else)
+	case *ir.Block:
+		markTailCalls(e.Result)
+	case *ir.SwitchTag:
+		for _, c := range e.Cases {
+			markTailCalls(c.Body)
+		}
+		if e.Default != nil {
+			markTailCalls(e.Default)
+		}
+	}
 }
 
 func (l *lowerer) lowerExpr(

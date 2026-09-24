@@ -125,6 +125,26 @@ func TestFormatExpr(t *testing.T) {
 			want: "(call.indirect (sig () Int) (func.ref 0))",
 		},
 		{
+			name: "tail call",
+			expr: &Call{Func: 1, Args: []Expr{&IntConst{Value: 2}}, T: Int, Tail: true},
+			want: "(return.call 1 2)",
+		},
+		{
+			name: "tail call without arguments",
+			expr: &Call{Func: 2, T: Int, Tail: true},
+			want: "(return.call 2)",
+		},
+		{
+			name: "tail call indirect",
+			expr: &CallIndirect{
+				Callee: &LocalGet{Local: 0, T: FuncRef},
+				Sig:    Sig{Params: []ValType{Int}, Result: Int},
+				Args:   []Expr{&IntConst{Value: 3}},
+				Tail:   true,
+			},
+			want: "(return.call.indirect (sig (Int) Int) (local 0) 3)",
+		},
+		{
 			name: "construct no fields",
 			expr: &Construct{Tag: 0},
 			want: "(construct 0)",
@@ -358,6 +378,12 @@ func TestType(t *testing.T) {
 		{
 			name: "call indirect",
 			expr: &CallIndirect{Sig: Sig{Result: FuncRef}},
+			want: FuncRef,
+		},
+		{name: "tail call", expr: &Call{T: Bool, Tail: true}, want: Bool},
+		{
+			name: "tail call indirect",
+			expr: &CallIndirect{Sig: Sig{Result: FuncRef}, Tail: true},
 			want: FuncRef,
 		},
 		{name: "construct", expr: &Construct{Tag: 1}, want: Ptr},

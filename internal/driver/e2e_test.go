@@ -487,6 +487,131 @@ fn main() -> Int {
 `,
 			want: "2",
 		},
+		{
+			name: "tail_sum example",
+			file: "examples/tail_sum.cero",
+			want: "50000005000000",
+		},
+		{
+			name: "deep mutual tail recursion",
+			src: `fn isEven(n: Int) -> Bool {
+    if n == 0 {
+        true
+    } else {
+        isOdd(n - 1)
+    }
+}
+
+fn isOdd(n: Int) -> Bool {
+    if n == 0 {
+        false
+    } else {
+        isEven(n - 1)
+    }
+}
+
+fn main() -> Int {
+    if isEven(10000000) {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "deep indirect tail call",
+			src: `fn count(n: Int, acc: Int) -> Int {
+    let next = fn(m: Int, a: Int) -> Int { count(m, a) }
+    if n == 0 {
+        acc
+    } else {
+        next(n - 1, acc + n)
+    }
+}
+
+fn main() -> Int {
+    count(10000000, 0)
+}
+`,
+			want: "50000005000000",
+		},
+		{
+			name: "deep tail call in match arm",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn build(n: Int, acc: IntList) -> IntList {
+    if n == 0 {
+        acc
+    } else {
+        build(n - 1, Cons(n, acc))
+    }
+}
+
+fn sum(xs: IntList, acc: Int) -> Int {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => sum(rest, acc + x),
+    }
+}
+
+fn main() -> Int {
+    sum(build(1000000, Nil), 0)
+}
+`,
+			want: "500000500000",
+		},
+		{
+			name: "deep tail call in integer match",
+			src: `fn down(n: Int, acc: Int) -> Int {
+    match n {
+        0 => acc,
+        _ => down(n - 1, acc + 2),
+    }
+}
+
+fn main() -> Int {
+    down(10000000, 0)
+}
+`,
+			want: "20000000",
+		},
+		{
+			name: "deep tail call through && and ||",
+			src: `fn allPositive(n: Int) -> Bool {
+    n == 0 || (n > 0 && allPositive(n - 1))
+}
+
+fn main() -> Int {
+    if allPositive(10000000) {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "deep tail call after let",
+			src: `fn go(n: Int, acc: Int) -> Int {
+    if n == 0 {
+        acc
+    } else {
+        let m = n - 1
+        go(m, acc + n)
+    }
+}
+
+fn main() -> Int {
+    go(10000000, 0)
+}
+`,
+			want: "50000005000000",
+		},
 	}
 
 	for _, tt := range tests {

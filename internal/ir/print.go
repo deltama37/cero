@@ -46,19 +46,27 @@ func FormatExpr(e Expr) string {
 		parts = append(parts, FormatExpr(e.Result))
 		return "(block " + strings.Join(parts, " ") + ")"
 	case *Call:
+		name := "call"
+		if e.Tail {
+			name = "return.call"
+		}
 		parts := make([]string, 0, 1+len(e.Args))
 		parts = append(parts, strconv.Itoa(int(e.Func)))
 		for _, arg := range e.Args {
 			parts = append(parts, FormatExpr(arg))
 		}
-		return "(call " + strings.Join(parts, " ") + ")"
+		return "(" + name + " " + strings.Join(parts, " ") + ")"
 	case *CallIndirect:
+		name := "call.indirect"
+		if e.Tail {
+			name = "return.call.indirect"
+		}
 		parts := make([]string, 0, 2+len(e.Args))
 		parts = append(parts, FormatSig(e.Sig), FormatExpr(e.Callee))
 		for _, arg := range e.Args {
 			parts = append(parts, FormatExpr(arg))
 		}
-		return "(call.indirect " + strings.Join(parts, " ") + ")"
+		return "(" + name + " " + strings.Join(parts, " ") + ")"
 	case *Construct:
 		parts := make([]string, 0, 1+len(e.Fields))
 		parts = append(parts, strconv.Itoa(e.Tag))
