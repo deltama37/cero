@@ -66,4 +66,4 @@ make build   # ./bin/ceroc を生成
 ./bin/ceroc run examples/fib.cero   # 55 が出力される
 ```
 
-`internal/driver` と `internal/cli` の E2E テストは `wasmtime` を使う。`PATH` にない場合は skip されるので、E2E まで確認するときは wasmtime を入れておく。
+`internal/driver` と `internal/cli` の E2E テストは `wasmtime` を使う。`PATH` にない場合は skip されるので、E2E まで確認するときは wasmtime を入れておく。Cloud Agent 環境では `.cursor/environment.json` の `install` から `scripts/install-wasmtime.sh` が実行され、バージョン固定の wasmtime が `/usr/local/bin` に入る。
