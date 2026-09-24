@@ -168,10 +168,21 @@ WebAssembly Runtime
 
 ```bash
 ceroc build main.cero
-wasmtime main.wasm
+wasmtime run --invoke main main.wasm
 ```
 
-将来的には、
+`wasmtime main.wasm` とだけ書くと、ランタイムはWASIの慣習に従って `_start` を探して実行するため、何も表示されない。
+v0.1のモジュールは `main` だけをエクスポートし、WASIを含むimportを持たない（ADR-0002）。
+これは次の方針による。
+
+* v0.1の言語仕様は標準出力を含まない（「副作用とv0.1」）。
+* WASIへのアクセスは `IO` やEffectを経由させるが、v0.1にはまだその仕組みがない（「WASI」）。
+* `main` は純粋関数で、戻り値はランタイムまたは `ceroc run` が取得できればよい（「エントリポイント」）。
+
+そのため、WebAssemblyモジュール自身は値を出力しない。
+`--invoke main` を指定すると、ランタイムが `main` を直接呼び出し、戻り値を表示する。
+
+また、
 
 ```bash
 ceroc run main.cero
