@@ -275,6 +275,354 @@ func TestEncodePanics(t *testing.T) {
 	}
 }
 
+func TestEncodeMemory(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nullary = `type U = U
+
+fn main() -> Int {
+    match U { U => 1 }
+}
+`
+		withTable = `type U = U
+
+fn id(n: Int) -> Int {
+    n
+}
+
+fn main() -> Int {
+    let f = id
+    match U { U => f(1) }
+}
+`
+		noData = `fn f(n: Int) -> Int {
+    n
+}
+
+fn main() -> Int {
+    f(1)
+}
+`
+	)
+
+	tests := []struct {
+		name       string
+		src        string
+		wantMemory bool
+		wantIDs    []byte
+		wantFuncs  int // 0 means equal to the number of IR functions
+	}{
+		{
+			name:       "v0.1 module has no memory",
+			src:        "fn main() -> Int { 42 }\n",
+			wantMemory: false,
+			wantIDs:    []byte{secType, secFunction, secTable, secExport, secCode},
+			wantFuncs:  1,
+		},
+		{
+			name:       "function count matches IR without memory",
+			src:        noData,
+			wantMemory: false,
+			wantIDs:    []byte{secType, secFunction, secTable, secExport, secCode},
+			wantFuncs:  2,
+		},
+		{
+			name:       "data module section order",
+			src:        nullary,
+			wantMemory: true,
+			wantIDs:    []byte{secType, secFunction, secTable, secMemory, secGlobal, secExport, secCode},
+		},
+		{
+			name:       "data module with a table",
+			src:        withTable,
+			wantMemory: true,
+			wantIDs:    []byte{secType, secFunction, secTable, secMemory, secGlobal, secExport, secElement, secCode},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := lowerModule(t, tt.src)
+			if got := usesMemory(m); got != tt.wantMemory {
+				t.Fatalf("usesMemory() = %v, want %v", got, tt.wantMemory)
+			}
+			wasm := Encode(m)
+			if got := sectionIDs(t, wasm); !bytes.Equal(got, tt.wantIDs) {
+				t.Errorf("section ids = %v, want %v", got, tt.wantIDs)
+			}
+			secs := moduleSections(t, wasm)
+			_, hasMem := secs[secMemory]
+			_, hasGlobal := secs[secGlobal]
+			if hasMem != tt.wantMemory || hasGlobal != tt.wantMemory {
+				t.Errorf("memory present = %v, global present = %v, want %v", hasMem, hasGlobal, tt.wantMemory)
+			}
+			if tt.wantMemory {
+				if !bytes.Contains(wasm, []byte{0x05, 0x06, 0x01, 0x01, 0x01, 0x80, 0x80, 0x02}) {
+					t.Errorf("missing memory section bytes\n%s", hex.Dump(wasm))
+				}
+				if !bytes.Contains(wasm, []byte{0x06, 0x06, 0x01, 0x7f, 0x01, 0x41, 0x08, 0x0b}) {
+					t.Errorf("missing global section bytes\n%s", hex.Dump(wasm))
+				}
+				if !bytes.Equal(secs[secMemory], []byte{0x01, 0x01, 0x01, 0x80, 0x80, 0x02}) {
+					t.Errorf("memory payload = %x", secs[secMemory])
+				}
+				if !bytes.Equal(secs[secGlobal], []byte{0x01, 0x7f, 0x01, 0x41, 0x08, 0x0b}) {
+					t.Errorf("global payload = %x", secs[secGlobal])
+				}
+			}
+			wantFuncs := tt.wantFuncs
+			if wantFuncs == 0 {
+				wantFuncs = len(m.Funcs)
+			}
+			if !tt.wantMemory && len(functionBodies(t, wasm)) != wantFuncs {
+				t.Errorf("function bodies = %d, want %d", len(functionBodies(t, wasm)), wantFuncs)
+			}
+			if !tt.wantMemory && vecCount(t, secs[secFunction]) != len(m.Funcs) {
+				t.Errorf("function section count = %d, want %d", vecCount(t, secs[secFunction]), len(m.Funcs))
+			}
+		})
+	}
+}
+
+func TestEncodeAlloc(t *testing.T) {
+	t.Parallel()
+
+	want := []byte{
+		0x23, 0x00,
+		0x21, 0x01,
+		0x23, 0x00,
+		0x20, 0x00,
+		0x6a,
+		0x24, 0x00,
+		0x23, 0x00,
+		0x3f, 0x00,
+		0x41, 0x10,
+		0x74,
+		0x4b,
+		0x04, 0x40,
+		0x23, 0x00,
+		0x3f, 0x00,
+		0x41, 0x10,
+		0x74,
+		0x6b,
+		0x41, 0xff, 0xff, 0x03,
+		0x6a,
+		0x41, 0x10,
+		0x76,
+		0x40, 0x00,
+		0x41, 0x7f,
+		0x46,
+		0x04, 0x40,
+		0x00,
+		0x0b,
+		0x0b,
+		0x20, 0x01,
+		0x0b,
+	}
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "alloc body",
+			src: `type U = U
+
+fn main() -> Int {
+    match U { U => 1 }
+}
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := lowerModule(t, tt.src)
+			bodies := functionBodies(t, Encode(m))
+			alloc := bodies[len(m.Funcs)]
+			prefix := []byte{0x01, 0x01, 0x7f}
+			if !bytes.HasPrefix(alloc, prefix) {
+				t.Fatalf("alloc locals = %x, want prefix %x", alloc, prefix)
+			}
+			if got := alloc[len(prefix):]; !bytes.Equal(got, want) {
+				t.Errorf("alloc instructions =\n%x\nwant:\n%x", got, want)
+			}
+		})
+	}
+}
+
+func TestEncodeNew(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		src       string
+		wantNews  int
+		bodyIndex int // index among new helpers; -1 to skip the byte check
+		allocIdx  byte
+		wantInst  []byte
+	}{
+		{
+			name: "no fields",
+			src: `type U = U
+
+fn main() -> Int {
+    match U { U => 1 }
+}
+`,
+			wantNews:  1,
+			bodyIndex: 0,
+			allocIdx:  1,
+			wantInst: []byte{
+				0x41, 0x08,
+				0x10, 0x01,
+				0x21, 0x01,
+				0x20, 0x01, 0x20, 0x00, 0x36, 0x02, 0x00,
+				0x20, 0x01,
+				0x0b,
+			},
+		},
+		{
+			name: "Int and Ptr fields",
+			src: `type List =
+    | Nil
+    | Cons(Int, List)
+
+fn main() -> Int {
+    match Cons(1, Nil) {
+        Nil => 0,
+        Cons(_, _) => 1,
+    }
+}
+`,
+			wantNews:  2,
+			bodyIndex: 0,
+			allocIdx:  1,
+			wantInst: []byte{
+				0x41, 0x18,
+				0x10, 0x01,
+				0x21, 0x03,
+				0x20, 0x03, 0x20, 0x00, 0x36, 0x02, 0x00,
+				0x20, 0x03, 0x20, 0x01, 0x37, 0x03, 0x08,
+				0x20, 0x03, 0x20, 0x02, 0x36, 0x02, 0x10,
+				0x20, 0x03,
+				0x0b,
+			},
+		},
+		{
+			name: "A(Int) and B(Int) share one new",
+			src: `type T =
+    | A(Int)
+    | B(Int)
+
+fn main() -> Int {
+    match A(1) {
+        A(_) => match B(2) {
+            B(_) => 1,
+            A(_) => 0,
+        },
+        B(_) => 2,
+    }
+}
+`,
+			wantNews:  1,
+			bodyIndex: -1,
+		},
+		{
+			name: "A(Int) and C(Bool) get two new functions",
+			src: `type T =
+    | A(Int)
+    | C(Bool)
+
+fn main() -> Int {
+    match A(1) {
+        A(_) => match C(true) {
+            C(_) => 1,
+            A(_) => 0,
+        },
+        C(_) => 2,
+    }
+}
+`,
+			wantNews:  1 + 1,
+			bodyIndex: -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := lowerModule(t, tt.src)
+			bodies := functionBodies(t, Encode(m))
+			if got, want := len(bodies), len(m.Funcs)+1+tt.wantNews; got != want {
+				t.Fatalf("function bodies = %d, want %d (IR + alloc + new)", got, want)
+			}
+			if tt.bodyIndex < 0 {
+				return
+			}
+			body := bodies[len(m.Funcs)+1+tt.bodyIndex]
+			prefix := []byte{0x01, 0x01, 0x7f}
+			if !bytes.HasPrefix(body, prefix) {
+				t.Fatalf("new locals = %x, want prefix %x", body, prefix)
+			}
+			got := body[len(prefix):]
+			if !bytes.Equal(got, tt.wantInst) {
+				t.Errorf("new instructions =\n%x\nwant:\n%x", got, tt.wantInst)
+			}
+			if got[3] != tt.allocIdx {
+				t.Errorf("alloc index = %d, want %d", got[3], tt.allocIdx)
+			}
+		})
+	}
+}
+
+func TestEncodeExportMain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		src     string
+		wantIdx byte
+	}{
+		{
+			name: "main stays at its IR index",
+			src: `type U = U
+
+fn id(x: U) -> U {
+    x
+}
+
+fn main() -> Int {
+    match id(U) { U => 4 }
+}
+`,
+			wantIdx: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := lowerModule(t, tt.src)
+			if m.Main != ir.FuncID(tt.wantIdx) {
+				t.Fatalf("IR main = %d, want %d", m.Main, tt.wantIdx)
+			}
+			payload := moduleSections(t, Encode(m))[secExport]
+			want := []byte{0x01, 0x04, 'm', 'a', 'i', 'n', 0x00, tt.wantIdx}
+			if !bytes.Equal(payload, want) {
+				t.Errorf("export = %x, want %x", payload, want)
+			}
+		})
+	}
+}
+
 func lowerModule(t *testing.T, src string) *ir.Module {
 	t.Helper()
 
@@ -331,6 +679,27 @@ func functionBodies(t *testing.T, wasm []byte) [][]byte {
 		rest = rest[n:]
 	}
 	return bodies
+}
+
+func sectionIDs(t *testing.T, wasm []byte) []byte {
+	t.Helper()
+
+	if !bytes.HasPrefix(wasm, wasmHeader) {
+		t.Fatalf("missing wasm header:\n%s", hex.Dump(wasm))
+	}
+	rest := wasm[len(wasmHeader):]
+	var ids []byte
+	for len(rest) > 0 {
+		id := rest[0]
+		ids = append(ids, id)
+		rest = rest[1:]
+		n, width, ok := readUleb(rest)
+		if !ok || uint64(len(rest)) < uint64(width)+n {
+			t.Fatalf("truncated section %d", id)
+		}
+		rest = rest[width+int(n):]
+	}
+	return ids
 }
 
 func vecCount(t *testing.T, payload []byte) int {

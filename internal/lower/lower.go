@@ -107,6 +107,8 @@ func (l *lowerer) convert(
 		return l.lowerBlock(fn, locals, e)
 	case *ast.FuncLit:
 		return l.lowerFuncLit(e)
+	case *ast.MatchExpr:
+		return l.lowerMatch(fn, locals, e)
 	default:
 		panic(fmt.Sprintf("lower: unhandled expression %T", e))
 	}
@@ -131,6 +133,11 @@ func (l *lowerer) lowerIdent(e *ast.Ident, locals map[*typecheck.Symbol]ir.Local
 		}
 		l.addTable(id)
 		return &ir.FuncValue{Func: id}
+	case typecheck.SymCtor:
+		if len(sym.Ctor.Fields) != 0 {
+			panic(fmt.Sprintf("lower: constructor '%s' with fields used as a value at %s", e.Name, e.Pos))
+		}
+		return &ir.Construct{Tag: sym.Ctor.Index}
 	default:
 		panic(fmt.Sprintf("lower: unhandled symbol kind %d for '%s'", sym.Kind, e.Name))
 	}
@@ -187,6 +194,12 @@ func (l *lowerer) lowerCall(
 		sym := l.info.Uses[id]
 		if sym == nil {
 			panic(fmt.Sprintf("lower: missing symbol for '%s' at %s", id.Name, id.Pos))
+		}
+		if sym.Kind == typecheck.SymCtor {
+			return &ir.Construct{
+				Tag:    sym.Ctor.Index,
+				Fields: l.lowerArgs(fn, locals, e.Args),
+			}
 		}
 		if sym.Kind == typecheck.SymFunc {
 			fid, ok := l.declID[sym.Decl]
@@ -250,6 +263,164 @@ func (l *lowerer) lowerBlock(
 	}
 }
 
+func (l *lowerer) lowerMatch(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	e *ast.MatchExpr,
+) ir.Expr {
+	scrut := l.lowerExpr(fn, locals, e.Scrutinee)
+	s := ir.LocalID(len(fn.Locals))
+	fn.Locals = append(fn.Locals, l.valType(l.mustType(e.Scrutinee)))
+
+	var result ir.Expr
+	switch l.mustType(e.Scrutinee).(type) {
+	case *types.Data:
+		result = l.lowerDataMatch(fn, locals, e, s)
+	case types.IntType, types.BoolType:
+		result = l.lowerValueMatch(fn, locals, e, s)
+	default:
+		panic(fmt.Sprintf("lower: cannot match on %T at %s", l.mustType(e.Scrutinee), e.Pos))
+	}
+	return &ir.Block{
+		Lets:   []*ir.Let{{Local: s, Value: scrut}},
+		Result: result,
+	}
+}
+
+func (l *lowerer) lowerDataMatch(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	e *ast.MatchExpr,
+	s ir.LocalID,
+) ir.Expr {
+	cases := make([]*ir.TagCase, 0, len(e.Arms))
+	var def ir.Expr
+	for _, arm := range e.Arms {
+		cp, ok := arm.Pattern.(*ast.CtorPat)
+		if !ok {
+			// Wildcard or variable. Exhaustiveness puts this arm last.
+			def = l.armBody(fn, locals, arm, s)
+			continue
+		}
+		ctor := l.info.CtorPats[cp]
+		if ctor == nil {
+			panic(fmt.Sprintf("lower: missing constructor for pattern '%s' at %s", cp.Name, cp.Pos))
+		}
+		cases = append(cases, &ir.TagCase{
+			Tag:  ctor.Index,
+			Body: l.armBody(fn, locals, arm, s),
+		})
+	}
+	return &ir.SwitchTag{
+		Local:   s,
+		Cases:   cases,
+		Default: def,
+		T:       l.valType(l.mustType(e)),
+	}
+}
+
+func (l *lowerer) lowerValueMatch(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	e *ast.MatchExpr,
+	s ir.LocalID,
+) ir.Expr {
+	scrutType := fn.Locals[s]
+	matchType := l.valType(l.mustType(e))
+	var chain func(int) ir.Expr
+	chain = func(i int) ir.Expr {
+		arm := e.Arms[i]
+		switch arm.Pattern.(type) {
+		case *ast.WildcardPat, *ast.VarPat:
+			return l.armBody(fn, locals, arm, s)
+		}
+		if i == len(e.Arms)-1 {
+			// Exhaustive: this literal is the only value left.
+			return l.armBody(fn, locals, arm, s)
+		}
+		then := l.armBody(fn, locals, arm, s)
+		return &ir.If{
+			Cond: &ir.Binary{
+				Op: ir.Eq,
+				X:  &ir.LocalGet{Local: s, T: scrutType},
+				Y:  patLiteral(arm.Pattern),
+			},
+			Then: then,
+			Else: chain(i + 1),
+			T:    matchType,
+		}
+	}
+	return chain(0)
+}
+
+// armBody allocates the locals the pattern binds, then lowers the arm body.
+// A variable pattern that covers the whole scrutinee reuses s.
+func (l *lowerer) armBody(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	arm *ast.MatchArm,
+	s ir.LocalID,
+) ir.Expr {
+	var lets []*ir.Let
+	switch pat := arm.Pattern.(type) {
+	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat:
+	case *ast.VarPat:
+		sym := l.patVar(pat)
+		locals[sym] = s
+	case *ast.CtorPat:
+		ctor := l.info.CtorPats[pat]
+		if ctor == nil {
+			panic(fmt.Sprintf("lower: missing constructor for pattern '%s' at %s", pat.Name, pat.Pos))
+		}
+		if len(pat.Args) != len(ctor.Fields) {
+			panic(fmt.Sprintf("lower: pattern '%s' has %d fields, constructor has %d", pat.Name, len(pat.Args), len(ctor.Fields)))
+		}
+		for i, arg := range pat.Args {
+			switch arg := arg.(type) {
+			case *ast.WildcardPat:
+			case *ast.VarPat:
+				sym := l.patVar(arg)
+				id := ir.LocalID(len(fn.Locals))
+				locals[sym] = id
+				fieldType := l.valType(ctor.Fields[i])
+				fn.Locals = append(fn.Locals, fieldType)
+				lets = append(lets, &ir.Let{
+					Local: id,
+					Value: &ir.Field{Local: s, Index: i, T: fieldType},
+				})
+			default:
+				panic(fmt.Sprintf("lower: unhandled constructor pattern argument %T", arg))
+			}
+		}
+	default:
+		panic(fmt.Sprintf("lower: unhandled pattern %T", arm.Pattern))
+	}
+	body := l.lowerExpr(fn, locals, arm.Body)
+	if len(lets) == 0 {
+		return body
+	}
+	return &ir.Block{Lets: lets, Result: body}
+}
+
+func (l *lowerer) patVar(p *ast.VarPat) *typecheck.Symbol {
+	sym := l.info.PatVars[p]
+	if sym == nil {
+		panic(fmt.Sprintf("lower: missing symbol for pattern '%s' at %s", p.Name, p.Pos))
+	}
+	return sym
+}
+
+func patLiteral(p ast.Pattern) ir.Expr {
+	switch p := p.(type) {
+	case *ast.IntPat:
+		return &ir.IntConst{Value: p.Value}
+	case *ast.BoolPat:
+		return &ir.BoolConst{Value: p.Value}
+	default:
+		panic(fmt.Sprintf("lower: unhandled literal pattern %T", p))
+	}
+}
+
 func (l *lowerer) lowerFuncLit(e *ast.FuncLit) ir.Expr {
 	sig := l.info.FuncLits[e]
 	if sig == nil {
@@ -307,6 +478,8 @@ func (l *lowerer) valType(t types.Type) ir.ValType {
 		return ir.Bool
 	case *types.Func:
 		return ir.FuncRef
+	case *types.Data:
+		return ir.Ptr
 	default:
 		panic(fmt.Sprintf("lower: unhandled type %T", t))
 	}

@@ -10,9 +10,10 @@ const (
 	Int     ValType = iota // 64-bit signed integer
 	Bool                   // boolean
 	FuncRef                // reference to a function (see Module.Table)
+	Ptr                    // address of a heap block holding a data type value
 )
 
-// String returns "Int", "Bool" or "FuncRef".
+// String returns "Int", "Bool", "FuncRef" or "Ptr".
 func (t ValType) String() string {
 	switch t {
 	case Int:
@@ -21,6 +22,8 @@ func (t ValType) String() string {
 		return "Bool"
 	case FuncRef:
 		return "FuncRef"
+	case Ptr:
+		return "Ptr"
 	default:
 		panic(fmt.Sprintf("ir.ValType.String: unknown type %d", int(t)))
 	}
@@ -147,6 +150,37 @@ type CallIndirect struct {
 	Args   []Expr
 }
 
+// Construct allocates a block for the constructor with tag Tag, stores
+// Fields into it, and yields its address.
+type Construct struct {
+	Tag    int
+	Fields []Expr
+}
+
+// Field loads field Index of the block whose address is in Local.
+type Field struct {
+	Local LocalID // a Ptr local
+	Index int
+	T     ValType
+}
+
+// SwitchTag reads the tag of the block whose address is in Local and yields
+// the Body of the first case with that tag, or Default when no case matches.
+// Default is nil when Cases cover every constructor. Cases is never empty
+// when Default is nil.
+type SwitchTag struct {
+	Local   LocalID // a Ptr local
+	Cases   []*TagCase
+	Default Expr
+	T       ValType
+}
+
+// TagCase is one case of SwitchTag. It is not an Expr.
+type TagCase struct {
+	Tag  int
+	Body Expr
+}
+
 // Type returns Int.
 func (*IntConst) Type() ValType { return Int }
 
@@ -193,6 +227,15 @@ func (e *Call) Type() ValType { return e.T }
 // Type returns Sig.Result.
 func (e *CallIndirect) Type() ValType { return e.Sig.Result }
 
+// Type returns Ptr.
+func (*Construct) Type() ValType { return Ptr }
+
+// Type returns the field's type.
+func (e *Field) Type() ValType { return e.T }
+
+// Type returns the branch type.
+func (e *SwitchTag) Type() ValType { return e.T }
+
 func (*IntConst) isExpr()     {}
 func (*BoolConst) isExpr()    {}
 func (*LocalGet) isExpr()     {}
@@ -203,6 +246,9 @@ func (*If) isExpr()           {}
 func (*Block) isExpr()        {}
 func (*Call) isExpr()         {}
 func (*CallIndirect) isExpr() {}
+func (*Construct) isExpr()    {}
+func (*Field) isExpr()        {}
+func (*SwitchTag) isExpr()    {}
 
 var (
 	_ Expr = (*IntConst)(nil)
@@ -215,4 +261,7 @@ var (
 	_ Expr = (*Block)(nil)
 	_ Expr = (*Call)(nil)
 	_ Expr = (*CallIndirect)(nil)
+	_ Expr = (*Construct)(nil)
+	_ Expr = (*Field)(nil)
+	_ Expr = (*SwitchTag)(nil)
 )

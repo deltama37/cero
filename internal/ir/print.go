@@ -59,6 +59,25 @@ func FormatExpr(e Expr) string {
 			parts = append(parts, FormatExpr(arg))
 		}
 		return "(call.indirect " + strings.Join(parts, " ") + ")"
+	case *Construct:
+		parts := make([]string, 0, 1+len(e.Fields))
+		parts = append(parts, strconv.Itoa(e.Tag))
+		for _, field := range e.Fields {
+			parts = append(parts, FormatExpr(field))
+		}
+		return "(construct " + strings.Join(parts, " ") + ")"
+	case *Field:
+		return fmt.Sprintf("(field %d %d)", e.Local, e.Index)
+	case *SwitchTag:
+		parts := make([]string, 0, 1+len(e.Cases)+1)
+		parts = append(parts, strconv.Itoa(int(e.Local)))
+		for _, c := range e.Cases {
+			parts = append(parts, "(case "+strconv.Itoa(c.Tag)+" "+FormatExpr(c.Body)+")")
+		}
+		if e.Default != nil {
+			parts = append(parts, "(default "+FormatExpr(e.Default)+")")
+		}
+		return "(switch.tag " + strings.Join(parts, " ") + ")"
 	default:
 		panic(fmt.Sprintf("ir.FormatExpr: unhandled type %T", e))
 	}

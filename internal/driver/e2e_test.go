@@ -243,6 +243,250 @@ fn main() -> Int {
 `,
 			want: "50005000",
 		},
+		{
+			name: "list",
+			file: "examples/list.cero",
+			want: "15",
+		},
+		{
+			name: "shape area Circle(2) + Rect(3, 4)",
+			src: `type Shape =
+    | Circle(Int)
+    | Rect(Int, Int)
+
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+    }
+}
+
+fn main() -> Int {
+    area(Circle(2)) + area(Rect(3, 4))
+}
+`,
+			want: "24",
+		},
+		{
+			name: "sum of range(1, 10000)",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn range(from: Int, to: Int) -> IntList {
+    if from > to {
+        Nil
+    } else {
+        Cons(from, range(from + 1, to))
+    }
+}
+
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + sum(rest),
+    }
+}
+
+fn main() -> Int {
+    sum(range(1, 10000))
+}
+`,
+			want: "50005000",
+		},
+		{
+			name: "length of range(1, 10000)",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn range(from: Int, to: Int) -> IntList {
+    if from > to {
+        Nil
+    } else {
+        Cons(from, range(from + 1, to))
+    }
+}
+
+fn length(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => 1 + length(rest),
+    }
+}
+
+fn main() -> Int {
+    length(range(1, 10000))
+}
+`,
+			want: "10000",
+		},
+		{
+			name: "Box(Int -> Int) calls inc(41)",
+			src: `type Box = Box(Int -> Int)
+
+fn inc(n: Int) -> Int {
+    n + 1
+}
+
+fn apply(b: Box) -> Int {
+    match b {
+        Box(f) => f(41),
+    }
+}
+
+fn main() -> Int {
+    apply(Box(inc))
+}
+`,
+			want: "42",
+		},
+		{
+			name: "three constructors with Bool fields",
+			src: `type Color =
+    | Red
+    | Green(Bool)
+    | Blue(Bool, Int)
+
+fn score(c: Color) -> Int {
+    match c {
+        Red => 1,
+        Green(b) => if b { 2 } else { 3 },
+        Blue(b, n) => if b { n } else { 0 },
+    }
+}
+
+fn main() -> Int {
+    score(Red) + score(Green(true)) + score(Blue(false, 9)) + score(Green(false))
+}
+`,
+			want: "6",
+		},
+		{
+			name: "wildcard and variable arms",
+			src: `type U =
+    | A
+    | B
+
+fn f(u: U) -> Int {
+    match u {
+        A => 5,
+        _ => 7,
+    }
+}
+
+fn g(u: U) -> Int {
+    match u {
+        A => 1,
+        other => f(other),
+    }
+}
+
+fn main() -> Int {
+    f(A) + f(B) + g(B)
+}
+`,
+			want: "19",
+		},
+		{
+			name: "fib(10) written with integer patterns",
+			src: `fn fib(n: Int) -> Int {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fib(n - 1) + fib(n - 2),
+    }
+}
+
+fn main() -> Int {
+    fib(10)
+}
+`,
+			want: "55",
+		},
+		{
+			name: "boolean patterns true and false",
+			src: `fn toInt(b: Bool) -> Int {
+    match b {
+        true => 1,
+        false => 0,
+    }
+}
+
+fn main() -> Int {
+    toInt(true) * 10 + toInt(false) + toInt(2 == 2)
+}
+`,
+			want: "11",
+		},
+		{
+			name: "nested match on Cons rest",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn second(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => match rest {
+            Nil => 0,
+            Cons(y, _) => y,
+        },
+    }
+}
+
+fn main() -> Int {
+    second(Cons(1, Cons(2, Cons(3, Nil))))
+}
+`,
+			want: "2",
+		},
+		{
+			name: "match inside anonymous function",
+			src: `fn apply(f: Int -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn main() -> Int {
+    apply(fn(n: Int) -> Int {
+        match n {
+            0 => 10,
+            1 => 20,
+            _ => n * 3,
+        }
+    }, 4)
+}
+`,
+			want: "12",
+		},
+		{
+			name: "mutually recursive Even and Odd",
+			src: `type Even =
+    | Zero
+    | ESucc(Odd)
+
+type Odd =
+    | OSucc(Even)
+
+fn evenVal(e: Even) -> Int {
+    match e {
+        Zero => 0,
+        ESucc(o) => oddVal(o),
+    }
+}
+
+fn oddVal(o: Odd) -> Int {
+    match o {
+        OSucc(e) => 1 + evenVal(e),
+    }
+}
+
+fn main() -> Int {
+    evenVal(ESucc(OSucc(ESucc(OSucc(Zero)))))
+}
+`,
+			want: "2",
+		},
 	}
 
 	for _, tt := range tests {

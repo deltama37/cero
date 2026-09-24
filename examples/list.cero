@@ -1,0 +1,24 @@
+// expected output: 15
+
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn range(from: Int, to: Int) -> IntList {
+    if from > to {
+        Nil
+    } else {
+        Cons(from, range(from + 1, to))
+    }
+}
+
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + sum(rest),
+    }
+}
+
+fn main() -> Int {
+    sum(range(1, 5))
+}
