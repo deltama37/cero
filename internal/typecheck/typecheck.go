@@ -2,6 +2,8 @@
 package typecheck
 
 import (
+	"strings"
+
 	"github.com/deltama37/cero/internal/ast"
 	"github.com/deltama37/cero/internal/diag"
 	"github.com/deltama37/cero/internal/token"
@@ -14,7 +16,8 @@ type SymbolKind int
 const (
 	SymFunc  SymbolKind = iota // top-level function
 	SymParam                   // parameter of a FuncDecl or FuncLit
-	SymLocal                   // let binding
+	SymLocal                   // let binding or variable pattern
+	SymCtor                    // constructor
 )
 
 // Symbol is one declared name. Each declaration (every let, even when
@@ -25,16 +28,20 @@ type Symbol struct {
 	Type types.Type
 	Pos  diag.Pos      // position of the declaring name
 	Decl *ast.FuncDecl // set only for SymFunc
+	Ctor *types.Ctor   // set only for SymCtor
 }
 
 // Info records the result of a successful type check.
 type Info struct {
-	Types    map[ast.Expr]types.Type      // type of every expression node
-	Uses     map[*ast.Ident]*Symbol       // symbol referenced by every Ident expression
-	Defs     map[*ast.LetStmt]*Symbol     // symbol declared by every let
-	Params   map[*ast.Param]*Symbol       // symbol declared by every parameter
-	Funcs    map[*ast.FuncDecl]*Symbol    // symbol of every top-level function
-	FuncLits map[*ast.FuncLit]*types.Func // signature of every anonymous function
+	Types    map[ast.Expr]types.Type       // type of every expression node
+	Uses     map[*ast.Ident]*Symbol        // symbol referenced by every Ident expression
+	Defs     map[*ast.LetStmt]*Symbol      // symbol declared by every let
+	Params   map[*ast.Param]*Symbol        // symbol declared by every parameter
+	Funcs    map[*ast.FuncDecl]*Symbol     // symbol of every top-level function
+	FuncLits map[*ast.FuncLit]*types.Func  // signature of every anonymous function
+	Datas    map[*ast.TypeDecl]*types.Data // every type declaration
+	CtorPats map[*ast.CtorPat]*types.Ctor  // constructor of every constructor pattern
+	PatVars  map[*ast.VarPat]*Symbol       // symbol declared by every variable pattern
 }
 
 // Check resolves names and type-checks file.
@@ -48,12 +55,66 @@ func Check(file *ast.File) (*Info, error) {
 			Params:   make(map[*ast.Param]*Symbol),
 			Funcs:    make(map[*ast.FuncDecl]*Symbol),
 			FuncLits: make(map[*ast.FuncLit]*types.Func),
+			Datas:    make(map[*ast.TypeDecl]*types.Data),
+			CtorPats: make(map[*ast.CtorPat]*types.Ctor),
+			PatVars:  make(map[*ast.VarPat]*Symbol),
 		},
 		globals: make(map[string]*Symbol),
+		datas:   make(map[string]*types.Data),
+		ctors:   make(map[string]*types.Ctor),
+	}
+
+	// Type names are registered before constructors so a field type can refer
+	// to any declared type, including this one and ones declared later.
+	for _, d := range file.Types {
+		if d.Name == "Int" || d.Name == "Bool" {
+			return nil, diag.Errorf(d.NamePos, "cannot redefine built-in type '%s'", d.Name)
+		}
+		if _, ok := c.datas[d.Name]; ok {
+			return nil, diag.Errorf(d.NamePos, "duplicate type '%s'", d.Name)
+		}
+		data := &types.Data{Name: d.Name}
+		c.datas[d.Name] = data
+		c.info.Datas[d] = data
+	}
+
+	for _, d := range file.Types {
+		data := c.datas[d.Name]
+		for i, cd := range d.Ctors {
+			if _, ok := c.ctors[cd.Name]; ok {
+				return nil, diag.Errorf(cd.Pos, "duplicate constructor '%s'", cd.Name)
+			}
+			fields := make([]types.Type, len(cd.Fields))
+			for j, f := range cd.Fields {
+				ft, err := c.resolveType(f)
+				if err != nil {
+					return nil, err
+				}
+				fields[j] = ft
+			}
+			ctor := &types.Ctor{
+				Name:   cd.Name,
+				Index:  i,
+				Fields: fields,
+				Data:   data,
+			}
+			data.Ctors = append(data.Ctors, ctor)
+			c.ctors[cd.Name] = ctor
+			c.globals[cd.Name] = &Symbol{
+				Kind: SymCtor,
+				Name: cd.Name,
+				Type: ctorType(ctor),
+				Pos:  cd.Pos,
+				Ctor: ctor,
+			}
+		}
 	}
 
 	sigs := make([]*types.Func, len(file.Funcs))
 	for i, d := range file.Funcs {
+		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymCtor {
+			return nil, diag.Errorf(d.NamePos, "function '%s' conflicts with constructor '%s'", d.Name, d.Name)
+		}
 		if _, ok := c.globals[d.Name]; ok {
 			return nil, diag.Errorf(d.NamePos, "duplicate function '%s'", d.Name)
 		}
@@ -94,6 +155,8 @@ func Check(file *ast.File) (*Info, error) {
 type checker struct {
 	info    *Info
 	globals map[string]*Symbol
+	datas   map[string]*types.Data
+	ctors   map[string]*types.Ctor
 }
 
 // funcCtx is the scope stack of one function (a FuncDecl or a FuncLit).
@@ -134,6 +197,9 @@ func (c *checker) resolveType(t ast.TypeExpr) (types.Type, *diag.Error) {
 		case "Bool":
 			return types.Bool, nil
 		default:
+			if data, ok := c.datas[t.Name]; ok {
+				return data, nil
+			}
 			return nil, diag.Errorf(t.Pos, "unknown type '%s'", t.Name)
 		}
 	case *ast.FuncType:
@@ -163,6 +229,9 @@ func (c *checker) checkFunc(
 ) *diag.Error {
 	ctx.scope = &scope{names: make(map[string]*Symbol)}
 	for i, p := range params {
+		if err := c.checkBindable(p.Name, p.Pos); err != nil {
+			return err
+		}
 		if _, exists := ctx.scope.names[p.Name]; exists {
 			return diag.Errorf(p.Pos, "duplicate parameter '%s'", p.Name)
 		}
@@ -254,6 +323,8 @@ func (c *checker) inferExpr(ctx *funcCtx, e ast.Expr) (types.Type, *diag.Error) 
 		return c.inferBlock(ctx, e)
 	case *ast.FuncLit:
 		return c.inferFuncLit(ctx, e)
+	case *ast.MatchExpr:
+		return c.inferMatch(ctx, e)
 	default:
 		return nil, diag.Errorf(e.Position(), "unhandled expression %T", e)
 	}
@@ -267,7 +338,13 @@ func (c *checker) inferIdent(ctx *funcCtx, e *ast.Ident) (types.Type, *diag.Erro
 	if captured {
 		return nil, diag.Errorf(e.Pos, "cannot capture '%s' in anonymous function: closures are not supported in v0.1", e.Name)
 	}
+	if sym.Kind == SymCtor && len(sym.Ctor.Fields) > 0 {
+		return nil, diag.Errorf(e.Pos, "constructor '%s' cannot be used as a value; call it with its fields", sym.Name)
+	}
 	c.info.Uses[e] = sym
+	if sym.Kind == SymCtor {
+		return sym.Ctor.Data, nil
+	}
 	return sym.Type, nil
 }
 
@@ -332,6 +409,11 @@ func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *dia
 }
 
 func (c *checker) inferCall(ctx *funcCtx, e *ast.CallExpr) (types.Type, *diag.Error) {
+	if id, ok := e.Fn.(*ast.Ident); ok {
+		if sym, _ := c.lookup(ctx, id.Name); sym != nil && sym.Kind == SymCtor {
+			return c.inferCtorCall(ctx, e, id, sym)
+		}
+	}
 	ft, err := c.infer(ctx, e.Fn)
 	if err != nil {
 		return nil, err
@@ -391,6 +473,9 @@ func (c *checker) inferBlock(ctx *funcCtx, e *ast.BlockExpr) (types.Type, *diag.
 				return nil, err
 			}
 		}
+		if err := c.checkBindable(l.Name, l.NamePos); err != nil {
+			return nil, err
+		}
 		sym := &Symbol{
 			Kind: SymLocal,
 			Name: l.Name,
@@ -414,4 +499,249 @@ func (c *checker) inferFuncLit(ctx *funcCtx, e *ast.FuncLit) (types.Type, *diag.
 		return nil, err
 	}
 	return sig, nil
+}
+
+func ctorType(ctor *types.Ctor) types.Type {
+	if len(ctor.Fields) == 0 {
+		return ctor.Data
+	}
+	return &types.Func{Params: ctor.Fields, Result: ctor.Data}
+}
+
+func (c *checker) checkBindable(name string, pos diag.Pos) *diag.Error {
+	if sym := c.globals[name]; sym != nil && sym.Kind == SymCtor {
+		return diag.Errorf(pos, "cannot use constructor name '%s' as a variable", name)
+	}
+	return nil
+}
+
+func (c *checker) inferCtorCall(
+	ctx *funcCtx,
+	e *ast.CallExpr,
+	id *ast.Ident,
+	sym *Symbol,
+) (types.Type, *diag.Error) {
+	ctor := sym.Ctor
+	c.info.Uses[id] = sym
+	c.info.Types[e.Fn] = sym.Type
+	if len(ctor.Fields) == 0 {
+		return nil, diag.Errorf(e.LParen, "constructor '%s' has no fields; write it without parentheses", ctor.Name)
+	}
+	if len(e.Args) != len(ctor.Fields) {
+		return nil, diag.Errorf(e.LParen, "wrong number of arguments: expected %d, found %d", len(ctor.Fields), len(e.Args))
+	}
+	for i, arg := range e.Args {
+		if err := c.expect(ctx, arg, ctor.Fields[i]); err != nil {
+			return nil, err
+		}
+	}
+	return ctor.Data, nil
+}
+
+func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.Error) {
+	st, err := c.infer(ctx, m.Scrutinee)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := st.(*types.Func); ok {
+		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot match on values of type %s", st)
+	}
+
+	cov := newCoverage(st)
+	var result types.Type
+	for _, arm := range m.Arms {
+		c.pushScope(ctx)
+		t, err := c.inferMatchArm(ctx, arm, st, cov)
+		c.popScope(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			result = t
+		} else if !types.Equal(result, t) {
+			return nil, diag.Errorf(resultPos(arm.Body), "match arms have different types: %s and %s", result, t)
+		}
+	}
+	if missing := cov.missing(); missing != "" {
+		return nil, diag.Errorf(m.Pos, "non-exhaustive match: %s", missing)
+	}
+	return result, nil
+}
+
+func (c *checker) inferMatchArm(
+	ctx *funcCtx,
+	arm *ast.MatchArm,
+	st types.Type,
+	cov *coverage,
+) (types.Type, *diag.Error) {
+	if err := c.checkPattern(ctx, arm.Pattern, st); err != nil {
+		return nil, err
+	}
+	if cov.covers(arm.Pattern, c.ctors) {
+		return nil, diag.Errorf(arm.Pattern.Position(), "unreachable match arm")
+	}
+	cov.add(arm.Pattern, c.ctors)
+	return c.infer(ctx, arm.Body)
+}
+
+func (c *checker) checkPattern(ctx *funcCtx, p ast.Pattern, st types.Type) *diag.Error {
+	switch p := p.(type) {
+	case *ast.WildcardPat:
+		return nil
+	case *ast.VarPat:
+		if err := c.checkBindable(p.Name, p.Pos); err != nil {
+			return err
+		}
+		c.bindPatVar(ctx, p, st)
+		return nil
+	case *ast.IntPat:
+		if !types.Equal(st, types.Int) {
+			return diag.Errorf(p.Pos, "expected %s, found Int", st)
+		}
+		return nil
+	case *ast.BoolPat:
+		if !types.Equal(st, types.Bool) {
+			return diag.Errorf(p.Pos, "expected %s, found Bool", st)
+		}
+		return nil
+	case *ast.CtorPat:
+		ctor := c.ctors[p.Name]
+		if ctor == nil {
+			return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
+		}
+		if !types.Equal(st, ctor.Data) {
+			return diag.Errorf(p.Pos, "expected %s, found %s", st, ctor.Data)
+		}
+		if len(p.Args) != len(ctor.Fields) {
+			return diag.Errorf(p.Pos, "wrong number of fields in pattern '%s': expected %d, found %d", p.Name, len(ctor.Fields), len(p.Args))
+		}
+		seen := make(map[string]bool)
+		for i, arg := range p.Args {
+			vp, ok := arg.(*ast.VarPat)
+			if !ok {
+				continue
+			}
+			if seen[vp.Name] {
+				return diag.Errorf(vp.Pos, "duplicate variable '%s' in pattern", vp.Name)
+			}
+			seen[vp.Name] = true
+			if err := c.checkBindable(vp.Name, vp.Pos); err != nil {
+				return err
+			}
+			c.bindPatVar(ctx, vp, ctor.Fields[i])
+		}
+		c.info.CtorPats[p] = ctor
+		return nil
+	default:
+		return diag.Errorf(p.Position(), "unhandled pattern %T", p)
+	}
+}
+
+func (c *checker) bindPatVar(ctx *funcCtx, p *ast.VarPat, typ types.Type) {
+	sym := &Symbol{
+		Kind: SymLocal,
+		Name: p.Name,
+		Type: typ,
+		Pos:  p.Pos,
+	}
+	c.info.PatVars[p] = sym
+	ctx.scope.names[p.Name] = sym
+}
+
+// coverage records which values the arms of one match have already handled.
+// Constructor-pattern arguments are only variables or '_', so a constructor
+// pattern covers every value built with that constructor.
+type coverage struct {
+	scrutinee types.Type
+	all       bool           // a catch-all arm has been seen
+	ctors     map[int]bool   // constructor indices seen
+	ints      map[int64]bool // integer literals seen
+	bools     map[bool]bool  // boolean literals seen
+}
+
+func newCoverage(st types.Type) *coverage {
+	return &coverage{
+		scrutinee: st,
+		ctors:     make(map[int]bool),
+		ints:      make(map[int64]bool),
+		bools:     make(map[bool]bool),
+	}
+}
+
+// covers reports whether earlier arms already match every value p matches.
+func (cov *coverage) covers(p ast.Pattern, ctors map[string]*types.Ctor) bool {
+	if cov.all {
+		return true
+	}
+	switch p := p.(type) {
+	case *ast.WildcardPat, *ast.VarPat:
+		return cov.catchAllCovered()
+	case *ast.CtorPat:
+		return cov.ctors[ctors[p.Name].Index]
+	case *ast.IntPat:
+		return cov.ints[p.Value]
+	case *ast.BoolPat:
+		return cov.bools[p.Value]
+	default:
+		return false
+	}
+}
+
+func (cov *coverage) catchAllCovered() bool {
+	switch st := cov.scrutinee.(type) {
+	case types.BoolType:
+		return cov.bools[true] && cov.bools[false]
+	case *types.Data:
+		for _, ctor := range st.Ctors {
+			if !cov.ctors[ctor.Index] {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (cov *coverage) add(p ast.Pattern, ctors map[string]*types.Ctor) {
+	switch p := p.(type) {
+	case *ast.WildcardPat, *ast.VarPat:
+		cov.all = true
+	case *ast.CtorPat:
+		cov.ctors[ctors[p.Name].Index] = true
+	case *ast.IntPat:
+		cov.ints[p.Value] = true
+	case *ast.BoolPat:
+		cov.bools[p.Value] = true
+	}
+}
+
+// missing describes values not yet covered. It is empty when the match is exhaustive.
+func (cov *coverage) missing() string {
+	if cov.all {
+		return ""
+	}
+	switch st := cov.scrutinee.(type) {
+	case *types.Data:
+		var names []string
+		for _, ctor := range st.Ctors {
+			if !cov.ctors[ctor.Index] {
+				names = append(names, ctor.Name)
+			}
+		}
+		return strings.Join(names, ", ")
+	case types.BoolType:
+		var names []string
+		if !cov.bools[true] {
+			names = append(names, "true")
+		}
+		if !cov.bools[false] {
+			names = append(names, "false")
+		}
+		return strings.Join(names, ", ")
+	case types.IntType:
+		return "Int values need a '_' or variable pattern"
+	default:
+		return ""
+	}
 }
