@@ -22,7 +22,7 @@ func TestTokenize(t *testing.T) {
 		},
 		{
 			name: "keywords and identifiers",
-			src:  "fn let if else true false foo _bar x1",
+			src:  "fn let if else true false type match _ foo _bar __ x1",
 			want: []token.Token{
 				tok(token.Fn, "fn", 1, 1),
 				tok(token.Let, "let", 1, 4),
@@ -30,10 +30,14 @@ func TestTokenize(t *testing.T) {
 				tok(token.Else, "else", 1, 11),
 				tok(token.True, "true", 1, 16),
 				tok(token.False, "false", 1, 21),
-				tok(token.Ident, "foo", 1, 27),
-				tok(token.Ident, "_bar", 1, 31),
-				tok(token.Ident, "x1", 1, 36),
-				eof(1, 38),
+				tok(token.Type, "type", 1, 27),
+				tok(token.Match, "match", 1, 32),
+				tok(token.Underscore, "_", 1, 38),
+				tok(token.Ident, "foo", 1, 40),
+				tok(token.Ident, "_bar", 1, 44),
+				tok(token.Ident, "__", 1, 49),
+				tok(token.Ident, "x1", 1, 52),
+				eof(1, 54),
 			},
 		},
 		{
@@ -73,6 +77,49 @@ func TestTokenize(t *testing.T) {
 				tok(token.OrOr, "||", 1, 45),
 				tok(token.Bang, "!", 1, 48),
 				eof(1, 49),
+			},
+		},
+		{
+			name: "fat arrow and bar",
+			src:  "=> | = == || ->",
+			want: []token.Token{
+				tok(token.FatArrow, "=>", 1, 1),
+				tok(token.Bar, "|", 1, 4),
+				tok(token.Assign, "=", 1, 6),
+				tok(token.Eq, "==", 1, 8),
+				tok(token.OrOr, "||", 1, 11),
+				tok(token.Arrow, "->", 1, 14),
+				eof(1, 16),
+			},
+		},
+		{
+			name: "fat arrow between idents",
+			src:  "a=>b",
+			want: []token.Token{
+				tok(token.Ident, "a", 1, 1),
+				tok(token.FatArrow, "=>", 1, 2),
+				tok(token.Ident, "b", 1, 4),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "bar between idents",
+			src:  "a|b",
+			want: []token.Token{
+				tok(token.Ident, "a", 1, 1),
+				tok(token.Bar, "|", 1, 2),
+				tok(token.Ident, "b", 1, 3),
+				eof(1, 4),
+			},
+		},
+		{
+			name: "lone bar",
+			src:  "a | b",
+			want: []token.Token{
+				tok(token.Ident, "a", 1, 1),
+				tok(token.Bar, "|", 1, 3),
+				tok(token.Ident, "b", 1, 5),
+				eof(1, 6),
 			},
 		},
 		{
@@ -178,11 +225,6 @@ func TestTokenizeError(t *testing.T) {
 			name: "lone ampersand",
 			src:  []byte("a & b"),
 			want: "1:3: unexpected character '&'",
-		},
-		{
-			name: "lone bar",
-			src:  []byte("a | b"),
-			want: "1:3: unexpected character '|'",
 		},
 		{
 			name: "multibyte character",

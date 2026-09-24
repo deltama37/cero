@@ -371,6 +371,222 @@ fn main() -> Int {
 				"(main 1)",
 			),
 		},
+		{
+			name: "nullary constructor",
+			src: `type U = U
+
+fn main() -> Int {
+    match U { U => 7 }
+}
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals Ptr) (block (let 0 (construct 0)) (switch.tag 0 (case 0 7))))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "nested constructors",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn build() -> IntList {
+    Cons(1, Cons(2, Nil))
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 build (sig () Ptr) (locals) (construct 1 1 (construct 1 2 (construct 0))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "sum match",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + sum(rest),
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 sum (sig (Ptr) Int) (locals Ptr Ptr Int Ptr) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (case 1 (block (let 2 (field 1 0)) (let 3 (field 1 1)) (add (local 2) (call 0 (local 3))))))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "underscore in constructor pattern",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn first(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, _) => x,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 first (sig (Ptr) Int) (locals Ptr Ptr Int) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (case 1 (block (let 2 (field 1 0)) (local 2))))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "wildcard arm is default",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn f(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        _ => 1,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (default 1))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "variable arm refers to scrutinee local",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn f(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        other => f(other),
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr) (block (let 1 (local 0)) (switch.tag 1 (case 0 0) (default (call 0 (local 1))))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "integer patterns",
+			src: `fn f(n: Int) -> Int {
+    match n {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Int) Int) (locals Int Int) (block (let 1 (local 0)) (if (eq (local 1) 0) 10 (if (eq (local 1) 1) 20 30))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "boolean patterns omit the last test",
+			src: `fn f(b: Bool) -> Int {
+    match b {
+        true => 1,
+        false => 0,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Bool) Int) (locals Bool Bool) (block (let 1 (local 0)) (if (eq (local 1) true) 1 0)))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "local types",
+			src: `type Pair = Pair(Int, Bool)
+
+fn f(p: Pair) -> Int {
+    match p {
+        Pair(n, b) => if b { n } else { 0 },
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr Int Bool) (block (let 1 (local 0)) (switch.tag 1 (case 0 (block (let 2 (field 1 0)) (let 3 (field 1 1)) (if (local 3) (local 2) 0))))))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "match inside anonymous function",
+			src: `fn apply(f: Int -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn main() -> Int {
+    apply(fn(n: Int) -> Int {
+        match n {
+            0 => 1,
+            _ => n,
+        }
+    }, 0)
+}
+`,
+			want: lines(
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 1 main (sig () Int) (locals) (call 0 (func.ref 2) 0))",
+				"(func 2 lambda$0 (sig (Int) Int) (locals Int Int) (block (let 1 (local 0)) (if (eq (local 1) 0) 1 (local 0))))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
 	}
 
 	for _, tt := range tests {

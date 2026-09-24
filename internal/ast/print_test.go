@@ -35,6 +35,25 @@ func TestFormat(t *testing.T) {
 		Result: boolType,
 		Body:   block(&BoolLit{Value: false}),
 	}
+	nilCtor := &CtorDecl{Name: "Nil"}
+	consCtor := &CtorDecl{
+		Name:   "Cons",
+		Fields: []TypeExpr{intType, &NamedType{Name: "IntList"}},
+	}
+	boxCtor := &CtorDecl{
+		Name: "Box",
+		Fields: []TypeExpr{&FuncType{
+			Params: []TypeExpr{intType},
+			Result: intType,
+		}},
+	}
+	wild := &WildcardPat{}
+	varX := &VarPat{Name: "x"}
+	nilPat := &CtorPat{Name: "Nil"}
+	consPat := &CtorPat{
+		Name: "Cons",
+		Args: []Pattern{&VarPat{Name: "x"}, &WildcardPat{}},
+	}
 
 	tests := []struct {
 		name string
@@ -176,6 +195,88 @@ func TestFormat(t *testing.T) {
 			name: "empty file",
 			got:  FormatFile(&File{}),
 			want: "",
+		},
+		{
+			name: "type decl",
+			got:  FormatTypeDecl(&TypeDecl{Name: "IntList", Ctors: []*CtorDecl{nilCtor, consCtor}}),
+			want: "(type IntList (Nil) (Cons Int IntList))",
+		},
+		{
+			name: "ctor no fields",
+			got:  FormatTypeDecl(&TypeDecl{Name: "T", Ctors: []*CtorDecl{nilCtor}}),
+			want: "(type T (Nil))",
+		},
+		{
+			name: "ctor with fields",
+			got:  FormatTypeDecl(&TypeDecl{Name: "IntList", Ctors: []*CtorDecl{consCtor}}),
+			want: "(type IntList (Cons Int IntList))",
+		},
+		{
+			name: "ctor function field",
+			got:  FormatTypeDecl(&TypeDecl{Name: "Box", Ctors: []*CtorDecl{boxCtor}}),
+			want: "(type Box (Box (-> (Int) Int)))",
+		},
+		{
+			name: "wildcard pattern",
+			got:  FormatPattern(wild),
+			want: "_",
+		},
+		{
+			name: "var pattern",
+			got:  FormatPattern(varX),
+			want: "x",
+		},
+		{
+			name: "ctor pattern no args",
+			got:  FormatPattern(nilPat),
+			want: "Nil",
+		},
+		{
+			name: "ctor pattern with args",
+			got:  FormatPattern(consPat),
+			want: "(Cons x _)",
+		},
+		{
+			name: "int pattern",
+			got:  FormatPattern(&IntPat{Value: 42}),
+			want: "42",
+		},
+		{
+			name: "bool pattern true",
+			got:  FormatPattern(&BoolPat{Value: true}),
+			want: "true",
+		},
+		{
+			name: "bool pattern false",
+			got:  FormatPattern(&BoolPat{Value: false}),
+			want: "false",
+		},
+		{
+			name: "match expr",
+			got: FormatExpr(&MatchExpr{
+				Scrutinee: ident("xs"),
+				Arms: []*MatchArm{
+					{Pattern: nilPat, Body: intLit(0)},
+					{Pattern: consPat, Body: ident("x")},
+				},
+			}),
+			want: "(match xs (=> Nil 0) (=> (Cons x _) x))",
+		},
+		{
+			name: "match arm",
+			got: FormatExpr(&MatchExpr{
+				Scrutinee: ident("x"),
+				Arms:      []*MatchArm{{Pattern: wild, Body: intLit(0)}},
+			}),
+			want: "(match x (=> _ 0))",
+		},
+		{
+			name: "file types then funcs",
+			got: FormatFile(&File{
+				Types: []*TypeDecl{{Name: "Unit", Ctors: []*CtorDecl{{Name: "Unit"}}}},
+				Funcs: []*FuncDecl{add, id},
+			}),
+			want: "(type Unit (Unit))\n(fn add ((a Int) (b Int)) Int (block (+ a b)))\n(fn id () Bool (block false))",
 		},
 	}
 

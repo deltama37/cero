@@ -6,9 +6,26 @@ import (
 	"github.com/deltama37/cero/internal/token"
 )
 
-// File is a Cero source file: a sequence of function declarations.
+// File is a Cero source file. Types and Funcs each keep source order.
 type File struct {
+	Types []*TypeDecl
 	Funcs []*FuncDecl
+}
+
+// TypeDecl is a top-level algebraic data type declaration.
+type TypeDecl struct {
+	Pos     diag.Pos // 'type'
+	Name    string
+	NamePos diag.Pos
+	Ctors   []*CtorDecl // at least one
+}
+
+// CtorDecl is one constructor of a TypeDecl. Fields is empty for a
+// constructor written without parentheses.
+type CtorDecl struct {
+	Pos    diag.Pos // name
+	Name   string
+	Fields []TypeExpr
 }
 
 // FuncDecl is a top-level function declaration.
@@ -181,6 +198,88 @@ func (e *FuncLit) Position() diag.Pos { return e.Pos }
 
 func (*FuncLit) expr() {}
 
+// MatchExpr is a match expression.
+type MatchExpr struct {
+	Pos       diag.Pos // 'match'
+	Scrutinee Expr
+	Arms      []*MatchArm // at least one
+}
+
+// Position returns the position of 'match'.
+func (e *MatchExpr) Position() diag.Pos { return e.Pos }
+
+func (*MatchExpr) expr() {}
+
+// MatchArm is one "pattern => body" arm.
+type MatchArm struct {
+	Pattern Pattern
+	Body    Expr
+}
+
+// Pattern is a pattern in a match arm.
+type Pattern interface {
+	Position() diag.Pos
+	pattern()
+}
+
+// WildcardPat is '_'.
+type WildcardPat struct {
+	Pos diag.Pos
+}
+
+// Position returns the position of '_'.
+func (p *WildcardPat) Position() diag.Pos { return p.Pos }
+
+func (*WildcardPat) pattern() {}
+
+// VarPat binds the matched value to Name. Name does not start with an
+// uppercase ASCII letter.
+type VarPat struct {
+	Pos  diag.Pos
+	Name string
+}
+
+// Position returns the position of the name.
+func (p *VarPat) Position() diag.Pos { return p.Pos }
+
+func (*VarPat) pattern() {}
+
+// CtorPat matches values built with constructor Name. Name starts with an
+// uppercase ASCII letter. Args is empty when written without parentheses;
+// each element is a *VarPat or *WildcardPat.
+type CtorPat struct {
+	Pos  diag.Pos // name
+	Name string
+	Args []Pattern
+}
+
+// Position returns the position of the constructor name.
+func (p *CtorPat) Position() diag.Pos { return p.Pos }
+
+func (*CtorPat) pattern() {}
+
+// IntPat matches one non-negative integer.
+type IntPat struct {
+	Pos   diag.Pos
+	Value int64
+}
+
+// Position returns the position of the literal.
+func (p *IntPat) Position() diag.Pos { return p.Pos }
+
+func (*IntPat) pattern() {}
+
+// BoolPat matches true or false.
+type BoolPat struct {
+	Pos   diag.Pos
+	Value bool
+}
+
+// Position returns the position of the literal.
+func (p *BoolPat) Position() diag.Pos { return p.Pos }
+
+func (*BoolPat) pattern() {}
+
 var (
 	_ TypeExpr = (*NamedType)(nil)
 	_ TypeExpr = (*FuncType)(nil)
@@ -194,4 +293,11 @@ var (
 	_ Expr = (*IfExpr)(nil)
 	_ Expr = (*BlockExpr)(nil)
 	_ Expr = (*FuncLit)(nil)
+	_ Expr = (*MatchExpr)(nil)
+
+	_ Pattern = (*WildcardPat)(nil)
+	_ Pattern = (*VarPat)(nil)
+	_ Pattern = (*CtorPat)(nil)
+	_ Pattern = (*IntPat)(nil)
+	_ Pattern = (*BoolPat)(nil)
 )

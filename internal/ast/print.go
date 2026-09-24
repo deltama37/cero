@@ -8,11 +8,15 @@ import (
 	"github.com/deltama37/cero/internal/token"
 )
 
-// FormatFile formats each function with FormatFunc and joins them with "\n".
+// FormatFile formats each type with FormatTypeDecl, then each function with
+// FormatFunc, and joins them with "\n".
 func FormatFile(f *File) string {
-	parts := make([]string, len(f.Funcs))
-	for i, fn := range f.Funcs {
-		parts[i] = FormatFunc(fn)
+	parts := make([]string, 0, len(f.Types)+len(f.Funcs))
+	for _, decl := range f.Types {
+		parts = append(parts, FormatTypeDecl(decl))
+	}
+	for _, fn := range f.Funcs {
+		parts = append(parts, FormatFunc(fn))
 	}
 	return strings.Join(parts, "\n")
 }
@@ -20,6 +24,25 @@ func FormatFile(f *File) string {
 // FormatFunc formats a function declaration as an S-expression.
 func FormatFunc(d *FuncDecl) string {
 	return "(fn " + d.Name + " (" + formatParams(d.Params) + ") " + FormatType(d.Result) + " " + FormatExpr(d.Body) + ")"
+}
+
+// FormatTypeDecl formats a type declaration as an S-expression.
+func FormatTypeDecl(d *TypeDecl) string {
+	parts := make([]string, 0, 1+len(d.Ctors))
+	parts = append(parts, d.Name)
+	for _, ctor := range d.Ctors {
+		parts = append(parts, formatCtor(ctor))
+	}
+	return "(type " + strings.Join(parts, " ") + ")"
+}
+
+func formatCtor(ctor *CtorDecl) string {
+	parts := make([]string, 0, 1+len(ctor.Fields))
+	parts = append(parts, ctor.Name)
+	for _, field := range ctor.Fields {
+		parts = append(parts, FormatType(field))
+	}
+	return "(" + strings.Join(parts, " ") + ")"
 }
 
 // FormatExpr formats an expression as an S-expression.
@@ -56,9 +79,49 @@ func FormatExpr(e Expr) string {
 		return "(block " + strings.Join(parts, " ") + ")"
 	case *FuncLit:
 		return "(fn (" + formatParams(e.Params) + ") " + FormatType(e.Result) + " " + FormatExpr(e.Body) + ")"
+	case *MatchExpr:
+		parts := make([]string, 0, 1+len(e.Arms))
+		parts = append(parts, FormatExpr(e.Scrutinee))
+		for _, arm := range e.Arms {
+			parts = append(parts, formatArm(arm))
+		}
+		return "(match " + strings.Join(parts, " ") + ")"
 	default:
 		panic(fmt.Sprintf("ast.FormatExpr: unhandled type %T", e))
 	}
+}
+
+// FormatPattern formats a pattern as an S-expression.
+func FormatPattern(p Pattern) string {
+	switch p := p.(type) {
+	case *WildcardPat:
+		return "_"
+	case *VarPat:
+		return p.Name
+	case *CtorPat:
+		if len(p.Args) == 0 {
+			return p.Name
+		}
+		parts := make([]string, 0, 1+len(p.Args))
+		parts = append(parts, p.Name)
+		for _, arg := range p.Args {
+			parts = append(parts, FormatPattern(arg))
+		}
+		return "(" + strings.Join(parts, " ") + ")"
+	case *IntPat:
+		return strconv.FormatInt(p.Value, 10)
+	case *BoolPat:
+		if p.Value {
+			return "true"
+		}
+		return "false"
+	default:
+		panic(fmt.Sprintf("ast.FormatPattern: unhandled type %T", p))
+	}
+}
+
+func formatArm(arm *MatchArm) string {
+	return "(=> " + FormatPattern(arm.Pattern) + " " + FormatExpr(arm.Body) + ")"
 }
 
 // FormatType formats a type as an S-expression.

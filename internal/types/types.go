@@ -1,4 +1,4 @@
-// Package types defines the monomorphic types of Cero v0.1.
+// Package types defines the monomorphic types of Cero.
 package types
 
 import "strings"
@@ -21,6 +21,21 @@ type Func struct {
 	Result Type
 }
 
+// Data is a declared algebraic data type. Each type declaration has exactly
+// one *Data, and two data types are equal only when they are the same pointer.
+type Data struct {
+	Name  string
+	Ctors []*Ctor // declaration order
+}
+
+// Ctor is one constructor of a Data type.
+type Ctor struct {
+	Name   string
+	Index  int // position in Data.Ctors; used as the runtime tag
+	Fields []Type
+	Data   *Data
+}
+
 // Int is the Int type.
 var Int Type = IntType{}
 
@@ -31,6 +46,7 @@ var (
 	_ Type = IntType{}
 	_ Type = BoolType{}
 	_ Type = (*Func)(nil)
+	_ Type = (*Data)(nil)
 )
 
 // String returns "Int".
@@ -80,7 +96,14 @@ func (t *Func) String() string {
 
 func (*Func) isType() {}
 
+// String returns the declared name.
+func (t *Data) String() string { return t.Name }
+
+func (*Data) isType() {}
+
 // Equal reports structural equality of a and b.
+// Data types are nominal: they are equal only when they are the same pointer,
+// so a recursive data type does not make Equal recurse forever.
 func Equal(a, b Type) bool {
 	switch a := a.(type) {
 	case IntType:
@@ -100,6 +123,9 @@ func Equal(a, b Type) bool {
 			}
 		}
 		return Equal(a.Result, fb.Result)
+	case *Data:
+		db, ok := b.(*Data)
+		return ok && a == db
 	default:
 		return false
 	}

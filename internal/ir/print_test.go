@@ -124,6 +124,51 @@ func TestFormatExpr(t *testing.T) {
 			},
 			want: "(call.indirect (sig () Int) (func.ref 0))",
 		},
+		{
+			name: "construct no fields",
+			expr: &Construct{Tag: 0},
+			want: "(construct 0)",
+		},
+		{
+			name: "construct nested",
+			expr: &Construct{
+				Tag: 1,
+				Fields: []Expr{
+					&IntConst{Value: 1},
+					&Construct{Tag: 0},
+				},
+			},
+			want: "(construct 1 1 (construct 0))",
+		},
+		{
+			name: "field",
+			expr: &Field{Local: 1, Index: 0, T: Int},
+			want: "(field 1 0)",
+		},
+		{
+			name: "switch tag without default",
+			expr: &SwitchTag{
+				Local: 1,
+				Cases: []*TagCase{
+					{Tag: 0, Body: &IntConst{Value: 0}},
+					{Tag: 1, Body: &LocalGet{Local: 2, T: Int}},
+				},
+				T: Int,
+			},
+			want: "(switch.tag 1 (case 0 0) (case 1 (local 2)))",
+		},
+		{
+			name: "switch tag with default",
+			expr: &SwitchTag{
+				Local: 1,
+				Cases: []*TagCase{
+					{Tag: 0, Body: &IntConst{Value: 0}},
+				},
+				Default: &IntConst{Value: 7},
+				T:       Int,
+			},
+			want: "(switch.tag 1 (case 0 0) (default 7))",
+		},
 	}
 
 	for _, tt := range tests {
@@ -315,6 +360,9 @@ func TestType(t *testing.T) {
 			expr: &CallIndirect{Sig: Sig{Result: FuncRef}},
 			want: FuncRef,
 		},
+		{name: "construct", expr: &Construct{Tag: 1}, want: Ptr},
+		{name: "field", expr: &Field{Local: 0, Index: 1, T: Int}, want: Int},
+		{name: "switch tag", expr: &SwitchTag{T: Bool}, want: Bool},
 	}
 
 	for _, tt := range tests {
@@ -339,6 +387,7 @@ func TestValTypeString(t *testing.T) {
 		{name: "Int", typ: Int, want: "Int"},
 		{name: "Bool", typ: Bool, want: "Bool"},
 		{name: "FuncRef", typ: FuncRef, want: "FuncRef"},
+		{name: "Ptr", typ: Ptr, want: "Ptr"},
 	}
 
 	for _, tt := range tests {

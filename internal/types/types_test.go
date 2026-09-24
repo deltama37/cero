@@ -50,6 +50,16 @@ func TestString(t *testing.T) {
 			},
 			want: "(Int, Int -> Int) -> Bool",
 		},
+		{
+			name: "data type",
+			typ:  &Data{Name: "IntList"},
+			want: "IntList",
+		},
+		{
+			name: "function of data type",
+			typ:  &Func{Params: []Type{&Data{Name: "IntList"}}, Result: Int},
+			want: "IntList -> Int",
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,6 +85,20 @@ func TestEqual(t *testing.T) {
 			Result: &Func{Result: Bool},
 		}
 	}
+	list := &Data{Name: "IntList"}
+	list.Ctors = []*Ctor{{
+		Name:   "Cons",
+		Index:  0,
+		Fields: []Type{Int, list},
+		Data:   list,
+	}}
+	sameName := &Data{Name: "IntList"}
+	sameName.Ctors = []*Ctor{{
+		Name:   "Cons",
+		Index:  0,
+		Fields: []Type{Int, sameName},
+		Data:   sameName,
+	}}
 
 	tests := []struct {
 		name string
@@ -103,6 +127,9 @@ func TestEqual(t *testing.T) {
 			b:    &Func{Params: []Type{Int}, Result: Bool},
 			want: false,
 		},
+		{name: "same data pointer", a: list, b: list, want: true},
+		{name: "same data name different pointer", a: list, b: sameName, want: false},
+		{name: "data and Int", a: list, b: Int, want: false},
 	}
 
 	for _, tt := range tests {

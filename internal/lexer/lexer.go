@@ -165,6 +165,8 @@ func matchTwo(r, next rune) (token.Kind, string, bool) {
 		return token.Arrow, "->", true
 	case r == '=' && next == '=':
 		return token.Eq, "==", true
+	case r == '=' && next == '>':
+		return token.FatArrow, "=>", true
 	case r == '!' && next == '=':
 		return token.NotEq, "!=", true
 	case r == '<' && next == '=':
@@ -196,6 +198,8 @@ func matchOne(r rune) (token.Kind, string, bool) {
 		return token.Colon, ":", true
 	case '=':
 		return token.Assign, "=", true
+	case '|':
+		return token.Bar, "|", true
 	case '+':
 		return token.Plus, "+", true
 	case '-':

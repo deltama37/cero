@@ -810,6 +810,775 @@ fn g() -> Int { true }
 	}
 }
 
+func TestCheckDataSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		src      string
+		wantMain string
+		check    func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "shape area and intlist sum",
+			src: `type Shape =
+    | Circle(Int)
+    | Rect(Int, Int)
+
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+    }
+}
+
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + sum(rest),
+    }
+}
+
+fn main() -> Int {
+    area(Circle(2)) + sum(Cons(1, Cons(2, Nil)))
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantType(t, info, funcByName(t, file, "area").Body.Result, "Int")
+				wantType(t, info, funcByName(t, file, "sum").Body.Result, "Int")
+			},
+		},
+		{
+			name: "type declared after function",
+			src: `fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, r) => x + sum(r),
+    }
+}
+
+fn main() -> Int {
+    sum(Cons(1, Nil))
+}
+
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+`,
+			wantMain: "Int",
+		},
+		{
+			name: "mutually recursive types",
+			src: `type A =
+    | A0
+    | A1(B)
+
+type B =
+    | B0(A)
+
+fn main() -> Int {
+    match A1(B0(A0)) {
+        A0 => 0,
+        A1(b) => match b {
+            B0(a) => match a {
+                A0 => 1,
+                A1(_) => 2,
+            },
+        },
+    }
+}
+`,
+			wantMain: "Int",
+		},
+		{
+			name: "function field called from match",
+			src: `type Box =
+    | Box(Int -> Int)
+
+fn main() -> Int {
+    let b = Box(fn(x: Int) -> Int { x + 1 })
+    match b {
+        Box(f) => f(1),
+    }
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				wantType(t, info, m, "Int")
+				f := m.Arms[0].Pattern.(*ast.CtorPat).Args[0].(*ast.VarPat)
+				if got := info.PatVars[f].Type.String(); got != "Int -> Int" {
+					t.Errorf("f type = %s, want Int -> Int", got)
+				}
+			},
+		},
+		{
+			name: "nil expression type",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn main() -> Int {
+    let xs = Nil
+    0
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				id := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.Ident)
+				wantType(t, info, id, "IntList")
+				if info.Uses[id].Kind != SymCtor || info.Uses[id].Ctor.Data.Name != "IntList" {
+					t.Errorf("Nil symbol = %+v", info.Uses[id])
+				}
+			},
+		},
+		{
+			name: "cons expression type",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn main() -> Int {
+    let xs = Cons(1, Nil)
+    0
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.CallExpr)
+				wantType(t, info, call, "IntList")
+				id := call.Fn.(*ast.Ident)
+				wantType(t, info, id, "(Int, IntList) -> IntList")
+				if info.Uses[id].Kind != SymCtor {
+					t.Errorf("Cons kind = %v", info.Uses[id].Kind)
+				}
+				wantType(t, info, call.Args[1], "IntList")
+			},
+		},
+		{
+			name: "match type is arm type",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn main() -> Int {
+    let xs = Nil
+    let b = match xs {
+        Nil => true,
+        Cons(x, r) => false,
+    }
+    if b { 1 } else { 0 }
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				m := funcByName(t, file, "main").Body.Lets[1].Value.(*ast.MatchExpr)
+				wantType(t, info, m, "Bool")
+			},
+		},
+		{
+			name: "integer patterns",
+			src: `fn f(n: Int) -> Int {
+    match n {
+        0 => 1,
+        1 => 1,
+        _ => 2,
+    }
+}
+
+fn main() -> Int {
+    f(0)
+}
+`,
+			wantMain: "Int",
+		},
+		{
+			name: "boolean patterns",
+			src: `fn f(b: Bool) -> Int {
+    match b {
+        true => 1,
+        false => 0,
+    }
+}
+
+fn main() -> Int {
+    f(true)
+}
+`,
+			wantMain: "Int",
+		},
+		{
+			name: "variable pattern",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn f(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        other => 1,
+    }
+}
+
+fn main() -> Int {
+    f(Nil)
+}
+`,
+			wantMain: "Int",
+		},
+		{
+			name: "pattern variable shadows outer",
+			src: `fn main() -> Int {
+    let x = 1
+    let y = match x {
+        0 => x,
+        x => x,
+    }
+    x + y
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				mainFn := funcByName(t, file, "main")
+				outer := info.Defs[mainFn.Body.Lets[0]]
+				m := mainFn.Body.Lets[1].Value.(*ast.MatchExpr)
+				scrut := m.Scrutinee.(*ast.Ident)
+				arm0 := m.Arms[0].Body.(*ast.Ident)
+				pat := m.Arms[1].Pattern.(*ast.VarPat)
+				arm1 := m.Arms[1].Body.(*ast.Ident)
+				after := mainFn.Body.Result.(*ast.BinaryExpr).X.(*ast.Ident)
+				if info.Uses[scrut] != outer || info.Uses[arm0] != outer || info.Uses[after] != outer {
+					t.Error("x outside the variable pattern does not use the outer let")
+				}
+				if info.Uses[arm1] != info.PatVars[pat] || info.PatVars[pat] == outer {
+					t.Error("x in the variable arm does not use the pattern variable")
+				}
+			},
+		},
+		{
+			name: "match inside anonymous function",
+			src: `fn main() -> Int {
+    let f = fn(n: Int) -> Int {
+        match n {
+            x => x,
+        }
+    }
+    f(1)
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lit := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.FuncLit)
+				m := lit.Body.Result.(*ast.MatchExpr)
+				pat := m.Arms[0].Pattern.(*ast.VarPat)
+				body := m.Arms[0].Body.(*ast.Ident)
+				if info.Uses[body] != info.PatVars[pat] || info.Uses[body].Kind != SymLocal {
+					t.Error("pattern variable inside the anonymous function was treated as a capture")
+				}
+			},
+		},
+		{
+			name: "ctor pats and pat vars",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Nil => 0,
+        Cons(x, r) => x,
+    }
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				data := info.Datas[typeByName(t, file, "IntList")]
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				nilPat := m.Arms[0].Pattern.(*ast.CtorPat)
+				consPat := m.Arms[1].Pattern.(*ast.CtorPat)
+				if info.CtorPats[nilPat] != data.Ctors[0] || info.CtorPats[nilPat].Index != 0 {
+					t.Errorf("Nil pattern = %+v", info.CtorPats[nilPat])
+				}
+				if info.CtorPats[consPat] != data.Ctors[1] || info.CtorPats[consPat].Index != 1 {
+					t.Errorf("Cons pattern = %+v", info.CtorPats[consPat])
+				}
+				x := consPat.Args[0].(*ast.VarPat)
+				r := consPat.Args[1].(*ast.VarPat)
+				if info.PatVars[x].Kind != SymLocal || info.PatVars[x].Type.String() != "Int" {
+					t.Errorf("x = %+v", info.PatVars[x])
+				}
+				if info.PatVars[r].Kind != SymLocal || info.PatVars[r].Type.String() != "IntList" {
+					t.Errorf("r = %+v", info.PatVars[r])
+				}
+				if info.Uses[m.Arms[1].Body.(*ast.Ident)] != info.PatVars[x] {
+					t.Error("arm body does not use the pattern variable x")
+				}
+			},
+		},
+		{
+			name: "data type annotations",
+			src: `type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn id(xs: IntList) -> IntList {
+    let ys: IntList = xs
+    ys
+}
+
+fn main() -> Int {
+    let zs: IntList = id(Nil)
+    match zs {
+        Nil => 0,
+        Cons(x, r) => x,
+    }
+}
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				idFn := funcByName(t, file, "id")
+				if got := info.Params[idFn.Params[0]].Type.String(); got != "IntList" {
+					t.Errorf("param type = %s, want IntList", got)
+				}
+				if got := info.Funcs[idFn].Type.String(); got != "IntList -> IntList" {
+					t.Errorf("id type = %s, want IntList -> IntList", got)
+				}
+				if got := info.Defs[idFn.Body.Lets[0]].Type.String(); got != "IntList" {
+					t.Errorf("ys type = %s, want IntList", got)
+				}
+				mainFn := funcByName(t, file, "main")
+				if got := info.Defs[mainFn.Body.Lets[0]].Type.String(); got != "IntList" {
+					t.Errorf("zs type = %s, want IntList", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.wantMain != "" {
+				mainFn := funcByName(t, file, "main")
+				wantType(t, info, mainFn.Body.Result, tt.wantMain)
+			}
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckDataError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "redefine built-in type",
+			src:  "type Int = A\n",
+			want: "1:6: cannot redefine built-in type 'Int'",
+		},
+		{
+			name: "duplicate type",
+			src: `type T = | A
+type T = | B
+`,
+			want: "2:6: duplicate type 'T'",
+		},
+		{
+			name: "duplicate constructor",
+			src: `type T = | A
+type U = | A
+`,
+			want: "2:12: duplicate constructor 'A'",
+		},
+		{
+			name: "function conflicts with constructor",
+			src: `fn Nil() -> Int { 1 }
+type L = Nil
+fn main() -> Int { 1 }
+`,
+			want: "1:4: function 'Nil' conflicts with constructor 'Nil'",
+		},
+		{
+			name: "unknown field type",
+			src: `type T = | A(Foo)
+fn main() -> Int { 1 }
+`,
+			want: "1:14: unknown type 'Foo'",
+		},
+		{
+			name: "parameter uses constructor name",
+			src: `type L = Nil
+fn f(Nil: Int) -> Int { 1 }
+fn main() -> Int { 1 }
+`,
+			want: "2:6: cannot use constructor name 'Nil' as a variable",
+		},
+		{
+			name: "let uses constructor name",
+			src: `type L = Nil
+fn main() -> Int {
+    let Nil = 1
+    1
+}
+`,
+			want: "3:9: cannot use constructor name 'Nil' as a variable",
+		},
+		{
+			name: "constructor used as value",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let f = Cons
+    1
+}
+`,
+			want: "3:13: constructor 'Cons' cannot be used as a value; call it with its fields",
+		},
+		{
+			name: "nullary constructor call",
+			src: `type L = Nil
+fn main() -> Int { Nil() }
+`,
+			want: "2:23: constructor 'Nil' has no fields; write it without parentheses",
+		},
+		{
+			name: "constructor arity",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int { Cons(1) }
+`,
+			want: "2:24: wrong number of arguments: expected 2, found 1",
+		},
+		{
+			name: "constructor argument type",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int { Cons(true, Nil) }
+`,
+			want: "2:25: expected Int, found Bool",
+		},
+		{
+			name: "compare data types",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int { if Nil == Nil { 1 } else { 0 } }
+`,
+			want: "2:23: cannot compare values of type IntList",
+		},
+		{
+			name: "match on function",
+			src: `fn id(x: Int) -> Int { x }
+fn main() -> Int {
+    match id {
+        _ => 0,
+    }
+}
+`,
+			want: "3:11: cannot match on values of type Int -> Int",
+		},
+		{
+			name: "int pattern on data",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        0 => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: expected IntList, found Int",
+		},
+		{
+			name: "bool pattern on int",
+			src: `fn main() -> Int {
+    let n = 1
+    match n {
+        true => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "4:9: expected Int, found Bool",
+		},
+		{
+			name: "constructor pattern on int",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let n = 1
+    match n {
+        Nil => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: expected Int, found IntList",
+		},
+		{
+			name: "constructor of another type",
+			src: `type Shape = | Circle(Int) | Rect(Int, Int)
+type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let s = Circle(1)
+    match s {
+        Nil => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "6:9: expected Shape, found IntList",
+		},
+		{
+			name: "unknown constructor",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Foo => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: unknown constructor 'Foo'",
+		},
+		{
+			name: "too many fields in nil pattern",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Nil(x) => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: wrong number of fields in pattern 'Nil': expected 0, found 1",
+		},
+		{
+			name: "too few fields in cons pattern",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Cons(x) => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: wrong number of fields in pattern 'Cons': expected 2, found 1",
+		},
+		{
+			name: "duplicate pattern variable",
+			src: `type Pair = | Pair(Int, Int)
+fn main() -> Int {
+    match Pair(1, 2) {
+        Pair(x, x) => x,
+    }
+}
+`,
+			want: "4:17: duplicate variable 'x' in pattern",
+		},
+		{
+			name: "unreachable after wildcard",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        _ => 0,
+        Nil => 1,
+    }
+}
+`,
+			want: "6:9: unreachable match arm",
+		},
+		{
+			name: "unreachable after variable",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        y => 0,
+        _ => 1,
+    }
+}
+`,
+			want: "6:9: unreachable match arm",
+		},
+		{
+			name: "unreachable repeated constructor",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Nil => 0,
+        Nil => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "6:9: unreachable match arm",
+		},
+		{
+			name: "unreachable wildcard after constructors",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Nil => 0,
+        Cons(x, r) => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "7:9: unreachable match arm",
+		},
+		{
+			name: "unreachable wildcard after booleans",
+			src: `fn main() -> Int {
+    let b = true
+    match b {
+        true => 0,
+        false => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "6:9: unreachable match arm",
+		},
+		{
+			name: "unreachable repeated integer",
+			src: `fn main() -> Int {
+    let n = 1
+    match n {
+        1 => 0,
+        1 => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: unreachable match arm",
+		},
+		{
+			name: "non-exhaustive constructor",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Nil => 0,
+    }
+}
+`,
+			want: "4:5: non-exhaustive match: Cons",
+		},
+		{
+			name: "non-exhaustive constructors in order",
+			src: `type Shape = | Circle(Int) | Rect(Int, Int) | Tri(Int, Int)
+fn main() -> Int {
+    let s = Circle(1)
+    match s {
+        Circle(r) => r,
+    }
+}
+`,
+			want: "4:5: non-exhaustive match: Rect, Tri",
+		},
+		{
+			name: "non-exhaustive bool",
+			src: `fn main() -> Int {
+    let b = true
+    match b {
+        true => 1,
+    }
+}
+`,
+			want: "3:5: non-exhaustive match: false",
+		},
+		{
+			name: "non-exhaustive int",
+			src: `fn main() -> Int {
+    let n = 0
+    match n {
+        0 => 1,
+    }
+}
+`,
+			want: "3:5: non-exhaustive match: Int values need a '_' or variable pattern",
+		},
+		{
+			name: "match arm types differ",
+			src: `type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let xs = Nil
+    match xs {
+        Nil => 0,
+        Cons(x, r) => true,
+    }
+}
+`,
+			want: "6:23: match arms have different types: Int and Bool",
+		},
+		{
+			name: "pattern error before body error",
+			src: `fn main() -> Int {
+    let n = 1
+    match n {
+        true => missing,
+        _ => 0,
+    }
+}
+`,
+			want: "4:9: expected Int, found Bool",
+		},
+		{
+			name: "unreachable before exhaustiveness",
+			src: `fn main() -> Int {
+    let b = true
+    match b {
+        _ => 0,
+        true => 1,
+    }
+}
+`,
+			want: "5:9: unreachable match arm",
+		},
+		{
+			name: "capture pattern variable",
+			src: `fn f(n: Int) -> Int {
+    match n {
+        x => {
+            let g = fn(m: Int) -> Int {
+                match m {
+                    _ => x,
+                }
+            }
+            g(1)
+        },
+    }
+}
+fn main() -> Int { f(1) }
+`,
+			want: "6:26: cannot capture 'x' in anonymous function: closures are not supported in v0.1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
 func mustCheck(t *testing.T, src string) (*ast.File, *Info) {
 	t.Helper()
 
@@ -858,6 +1627,18 @@ func funcByName(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
 		}
 	}
 	t.Fatalf("function %s not found", name)
+	return nil
+}
+
+func typeByName(t *testing.T, file *ast.File, name string) *ast.TypeDecl {
+	t.Helper()
+
+	for _, td := range file.Types {
+		if td.Name == name {
+			return td
+		}
+	}
+	t.Fatalf("type %s not found", name)
 	return nil
 }
 
@@ -920,6 +1701,11 @@ func visitExprs(e ast.Expr, fn func(ast.Expr)) {
 		visitExprs(e.Result, fn)
 	case *ast.FuncLit:
 		visitExprs(e.Body, fn)
+	case *ast.MatchExpr:
+		visitExprs(e.Scrutinee, fn)
+		for _, arm := range e.Arms {
+			visitExprs(arm.Body, fn)
+		}
 	default:
 		panic(fmt.Sprintf("unhandled expression %T", e))
 	}
@@ -929,8 +1715,27 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 	t.Helper()
 
 	if info.Types == nil || info.Uses == nil || info.Defs == nil ||
-		info.Params == nil || info.Funcs == nil || info.FuncLits == nil {
+		info.Params == nil || info.Funcs == nil || info.FuncLits == nil ||
+		info.Datas == nil || info.CtorPats == nil || info.PatVars == nil {
 		t.Fatal("Check() returned a nil map")
+	}
+	if len(info.Datas) != len(file.Types) {
+		t.Errorf("len(Datas) = %d, want %d", len(info.Datas), len(file.Types))
+	}
+	for _, td := range file.Types {
+		data := info.Datas[td]
+		if data == nil || data.Name != td.Name || len(data.Ctors) != len(td.Ctors) {
+			t.Errorf("data for %s = %+v", td.Name, data)
+			continue
+		}
+		for i, ctor := range data.Ctors {
+			if ctor == nil || ctor.Index != i || ctor.Data != data || ctor.Name != td.Ctors[i].Name {
+				t.Errorf("%s constructor %d = %+v", td.Name, i, ctor)
+			}
+			if ctor != nil && len(ctor.Fields) != len(td.Ctors[i].Fields) {
+				t.Errorf("%s constructor %s fields = %d, want %d", td.Name, ctor.Name, len(ctor.Fields), len(td.Ctors[i].Fields))
+			}
+		}
 	}
 
 	var exprs, lets, params, lits, idents int
@@ -1037,6 +1842,9 @@ func walkExpr(
 		if sym.Name != e.Name || !types.Equal(info.Types[e], sym.Type) {
 			t.Errorf("use of %s = %+v, expr type %s", e.Name, sym, info.Types[e])
 		}
+		if sym.Kind == SymCtor && (sym.Ctor == nil || sym.Decl != nil) {
+			t.Errorf("constructor %s = %+v", e.Name, sym)
+		}
 	case *ast.UnaryExpr:
 		walkExpr(t, info, e.X, exprs, lets, params, lits, idents)
 	case *ast.BinaryExpr:
@@ -1080,7 +1888,62 @@ func walkExpr(
 			*params += checkParams(t, info, e.Params, sig.Params)
 		}
 		walkExpr(t, info, e.Body, exprs, lets, params, lits, idents)
+	case *ast.MatchExpr:
+		walkExpr(t, info, e.Scrutinee, exprs, lets, params, lits, idents)
+		for _, arm := range e.Arms {
+			walkPattern(t, info, arm.Pattern, info.Types[e.Scrutinee])
+			walkExpr(t, info, arm.Body, exprs, lets, params, lits, idents)
+			if bt, ok := info.Types[arm.Body]; ok && !types.Equal(info.Types[e], bt) {
+				t.Errorf("match type = %s, arm type = %s", info.Types[e], bt)
+			}
+		}
 	default:
 		t.Errorf("unhandled expression %T", e)
+	}
+}
+
+func walkPattern(
+	t *testing.T,
+	info *Info,
+	p ast.Pattern,
+	want types.Type,
+) {
+	t.Helper()
+
+	switch p := p.(type) {
+	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat:
+	case *ast.VarPat:
+		sym := info.PatVars[p]
+		if sym == nil {
+			t.Errorf("missing pattern variable %s", p.Name)
+			return
+		}
+		if sym.Kind != SymLocal || sym.Name != p.Name || sym.Pos != p.Pos || sym.Decl != nil || sym.Ctor != nil {
+			t.Errorf("pattern variable %s = %+v", p.Name, sym)
+		}
+		if want != nil && !types.Equal(sym.Type, want) {
+			t.Errorf("pattern variable %s type = %s, want %s", p.Name, sym.Type, want)
+		}
+	case *ast.CtorPat:
+		ctor := info.CtorPats[p]
+		if ctor == nil {
+			t.Errorf("missing constructor pattern %s", p.Name)
+			return
+		}
+		if ctor.Name != p.Name {
+			t.Errorf("constructor pattern %s resolved to %s", p.Name, ctor.Name)
+		}
+		if want != nil && !types.Equal(ctor.Data, want) {
+			t.Errorf("constructor pattern %s type = %s, want %s", p.Name, ctor.Data, want)
+		}
+		for i, arg := range p.Args {
+			var field types.Type
+			if i < len(ctor.Fields) {
+				field = ctor.Fields[i]
+			}
+			walkPattern(t, info, arg, field)
+		}
+	default:
+		t.Errorf("unhandled pattern %T", p)
 	}
 }
