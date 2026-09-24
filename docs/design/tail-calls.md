@@ -507,10 +507,15 @@ IR を手で組み立てて `Encode` し、`functionBodies(t, got)[1]`（`main` 
 
 既存のテーブルの `main` は `Sig: ir.Sig{Result: ir.Bool}` で、引数とローカルを持たない。
 
-| name | body |
-| --- | --- |
-| `tail call result differs from function result` | `&ir.Call{Func: 0, T: ir.Int, Tail: true}` |
-| `tail call indirect result differs from function result` | `&ir.CallIndirect{Callee: &ir.LocalGet{Local: 0, T: ir.FuncRef}, Sig: ir.Sig{Result: ir.Int}, Tail: true}` |
+panic が起きたことだけでなく、意図した理由で起きたことを確かめるため、テーブルに `want string` フィールドを追加する。
+`recover()` の値を `fmt.Sprint` で文字列にし、`strings.Contains(msg, tt.want)` でなければ `t.Fatalf("panic = %q, want it to contain %q", msg, tt.want)` とする。
+`recover()` が `nil` のときの扱い（`t.Fatal("Encode did not panic")`）は変えない。
+
+| name | body | want |
+| --- | --- | --- |
+| `funcref equality`（既存） | 既存のまま | `wasm: unexpected binary operand type FuncRef` |
+| `tail call result differs from function result` | `&ir.Call{Func: 0, T: ir.Int, Tail: true}` | `wasm: tail call returns Int, function returns Bool` |
+| `tail call indirect result differs from function result` | `&ir.CallIndirect{Callee: &ir.LocalGet{Local: 0, T: ir.FuncRef}, Sig: ir.Sig{Result: ir.Int}, Tail: true}` | `wasm: tail call returns Int, function returns Bool` |
 
 ### `internal/driver/e2e_test.go`
 
