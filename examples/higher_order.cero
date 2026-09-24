@@ -1,0 +1,19 @@
+// expected output: 42
+
+fn apply(f: Int -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn pick(b: Bool) -> Int -> Int {
+    if b {
+        fn(n: Int) -> Int { n * 2 }
+    } else {
+        fn(n: Int) -> Int { n }
+    }
+}
+
+fn main() -> Int {
+    let n = 1
+    let n = apply(fn(x: Int) -> Int { x + 20 }, n)
+    pick(true)(n)
+}

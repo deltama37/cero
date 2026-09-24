@@ -17,6 +17,8 @@ The bootstrap compiler and CLI, `ceroc`, is written in Go (per ADR-0001) and
 will later be re-implemented in Cero itself to reach self-hosting.
 
 * Go 1.22+
+* [wasmtime](https://wasmtime.dev/) for `ceroc run` and the end-to-end tests
+  (the end-to-end tests are skipped when `wasmtime` is not in `PATH`)
 
 ## Getting started
 
@@ -24,14 +26,15 @@ will later be re-implemented in Cero itself to reach self-hosting.
 # Build the ceroc binary into ./bin/ceroc
 make build
 
-# Run the CLI
-./bin/ceroc version
-./bin/ceroc help
+# Compile Cero to WebAssembly and run it
+./bin/ceroc build examples/fib.cero          # writes examples/fib.wasm
+wasmtime run --invoke main examples/fib.wasm # prints 55
+./bin/ceroc run examples/fib.cero            # compile + run in one step
 
 # Run the test suite, formatting and vet in one shot
 make check
 ```
 
-The compiler subcommands declared by ADR-0001 (`build`, `run`, `fmt`) are still
-stubs while the v0.1 pipeline is under construction; `version` and `help` are
-fully implemented.
+The v0.1 pipeline (`lexer → parser → type checker → IR → WebAssembly`) is
+described in [`docs/adr/0002-v0.1-syntax-and-wasm-abi.md`](docs/adr/0002-v0.1-syntax-and-wasm-abi.md)
+and [`docs/design/`](docs/design/). `ceroc fmt` is not implemented yet.

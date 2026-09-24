@@ -1,4 +1,4 @@
 {
   "name": "cero (ceroc / Go)",
-  "install": "go mod download && go build ./..."
+  "install": "./scripts/install-wasmtime.sh && go mod download && go build ./..."
 }

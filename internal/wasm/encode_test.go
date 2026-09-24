@@ -1,0 +1,360 @@
+package wasm
+
+import (
+	"bytes"
+	"encoding/hex"
+	"testing"
+
+	"github.com/deltama37/cero/internal/ir"
+	"github.com/deltama37/cero/internal/lower"
+	"github.com/deltama37/cero/internal/parser"
+	"github.com/deltama37/cero/internal/typecheck"
+)
+
+func TestEncodeGolden(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want []byte
+	}{
+		{
+			name: "main returns 42",
+			src:  "fn main() -> Int { 42 }\n",
+			want: []byte{
+				0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+				0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7e,
+				0x03, 0x02, 0x01, 0x00,
+				0x04, 0x05, 0x01, 0x70, 0x01, 0x00, 0x00,
+				0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00,
+				0x0a, 0x06, 0x01, 0x04, 0x00, 0x42, 0x2a, 0x0b,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Encode(lowerModule(t, tt.src))
+			if !bytes.Equal(got, tt.want) {
+				t.Errorf("Encode() =\n%s\nwant:\n%s", hex.Dump(got), hex.Dump(tt.want))
+			}
+		})
+	}
+}
+
+func TestEncodeTypeDedup(t *testing.T) {
+	t.Parallel()
+
+	intResult := ir.Sig{Result: ir.Int}
+	boolToInt := ir.Sig{Params: []ir.ValType{ir.Bool}, Result: ir.Int}
+	funcToInt := ir.Sig{Params: []ir.ValType{ir.FuncRef}, Result: ir.Int}
+
+	tests := []struct {
+		name         string
+		m            *ir.Module
+		wantTypes    int
+		wantFuncSec  []byte
+		wantContains []byte
+	}{
+		{
+			name: "identical signatures share one type",
+			m: &ir.Module{
+				Funcs: []*ir.Func{
+					{Name: "a", Sig: intResult, Body: &ir.IntConst{Value: 1}},
+					{Name: "main", Sig: intResult, Body: &ir.IntConst{Value: 2}},
+				},
+				Main: 1,
+			},
+			wantTypes:   1,
+			wantFuncSec: []byte{0x02, 0x00, 0x00},
+		},
+		{
+			name: "bool and funcref parameters share one type",
+			m: &ir.Module{
+				Funcs: []*ir.Func{
+					{
+						Name:   "fromBool",
+						Sig:    boolToInt,
+						Locals: []ir.ValType{ir.Bool},
+						Body:   &ir.IntConst{Value: 1},
+					},
+					{
+						Name:   "fromFunc",
+						Sig:    funcToInt,
+						Locals: []ir.ValType{ir.FuncRef},
+						Body:   &ir.IntConst{Value: 2},
+					},
+				},
+				Main: 0,
+			},
+			wantTypes:   1,
+			wantFuncSec: []byte{0x02, 0x00, 0x00},
+		},
+		{
+			name: "call_indirect signature matches a bool parameter",
+			m: &ir.Module{
+				Funcs: []*ir.Func{
+					{
+						Name:   "fromBool",
+						Sig:    boolToInt,
+						Locals: []ir.ValType{ir.Bool},
+						Body:   &ir.IntConst{Value: 0},
+					},
+					{
+						Name: "main",
+						Sig:  intResult,
+						Body: &ir.CallIndirect{
+							Callee: &ir.FuncValue{Func: 0},
+							Sig:    funcToInt,
+							Args:   []ir.Expr{&ir.FuncValue{Func: 0}},
+						},
+					},
+				},
+				Table: []ir.FuncID{0},
+				Main:  1,
+			},
+			wantTypes: 2,
+			// i32.const 0, i32.const 0, call_indirect type 0 table 0.
+			// Type 0 is (i32)->i64; a missed dedup would use type 2.
+			wantContains: []byte{0x41, 0x00, 0x41, 0x00, 0x11, 0x00, 0x00},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Encode(tt.m)
+			secs := moduleSections(t, got)
+			if n := vecCount(t, secs[secType]); n != tt.wantTypes {
+				t.Errorf("type count = %d, want %d", n, tt.wantTypes)
+			}
+			if tt.wantFuncSec != nil && !bytes.Equal(secs[secFunction], tt.wantFuncSec) {
+				t.Errorf("function section = %x, want %x", secs[secFunction], tt.wantFuncSec)
+			}
+			if tt.wantContains != nil && !bytes.Contains(got, tt.wantContains) {
+				t.Errorf("module missing %x\n%s", tt.wantContains, hex.Dump(got))
+			}
+		})
+	}
+}
+
+func TestEncodeElementSection(t *testing.T) {
+	t.Parallel()
+
+	mainFn := func() *ir.Func {
+		return &ir.Func{
+			Name: "main",
+			Sig:  ir.Sig{Result: ir.Int},
+			Body: &ir.IntConst{Value: 1},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		m           *ir.Module
+		wantPayload []byte
+		wantPresent bool
+	}{
+		{
+			name: "empty table omits the element section",
+			m: &ir.Module{
+				Funcs: []*ir.Func{mainFn()},
+				Main:  0,
+			},
+		},
+		{
+			name: "non-empty table emits table order",
+			m: &ir.Module{
+				Funcs: []*ir.Func{mainFn(), mainFn(), mainFn()},
+				Table: []ir.FuncID{2, 0},
+				Main:  0,
+			},
+			wantPresent: true,
+			wantPayload: []byte{0x01, 0x00, 0x41, 0x00, 0x0b, 0x02, 0x02, 0x00},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			secs := moduleSections(t, Encode(tt.m))
+			payload, ok := secs[secElement]
+			if ok != tt.wantPresent {
+				t.Fatalf("element section present = %v, want %v", ok, tt.wantPresent)
+			}
+			if tt.wantPresent && !bytes.Equal(payload, tt.wantPayload) {
+				t.Errorf("element payload = %x, want %x", payload, tt.wantPayload)
+			}
+		})
+	}
+}
+
+func TestEncodeLocalGroups(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		m    *ir.Module
+		want []byte
+	}{
+		{
+			name: "Int Int Bool Int",
+			m: &ir.Module{
+				Funcs: []*ir.Func{{
+					Name: "main",
+					Sig:  ir.Sig{Result: ir.Int},
+					Locals: []ir.ValType{
+						ir.Int,
+						ir.Int,
+						ir.Bool,
+						ir.Int,
+					},
+					Body: &ir.IntConst{Value: 0},
+				}},
+				Main: 0,
+			},
+			want: []byte{0x03, 0x02, 0x7e, 0x01, 0x7f, 0x01, 0x7e},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bodies := functionBodies(t, Encode(tt.m))
+			if len(bodies) != 1 {
+				t.Fatalf("bodies = %d, want 1", len(bodies))
+			}
+			if !bytes.HasPrefix(bodies[0], tt.want) {
+				t.Errorf("locals = %x, want prefix %x", bodies[0], tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodePanics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body ir.Expr
+	}{
+		{
+			name: "funcref equality",
+			body: &ir.Binary{
+				Op: ir.Eq,
+				X:  &ir.LocalGet{Local: 0, T: ir.FuncRef},
+				Y:  &ir.LocalGet{Local: 0, T: ir.FuncRef},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &ir.Module{
+				Funcs: []*ir.Func{{
+					Name: "main",
+					Sig:  ir.Sig{Result: ir.Bool},
+					Body: tt.body,
+				}},
+			}
+			defer func() {
+				if recover() == nil {
+					t.Fatal("Encode did not panic")
+				}
+			}()
+			Encode(m)
+		})
+	}
+}
+
+func lowerModule(t *testing.T, src string) *ir.Module {
+	t.Helper()
+
+	file, err := parser.ParseFile([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info, err := typecheck.Check(file)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	return lower.Lower(file, info)
+}
+
+func moduleSections(t *testing.T, wasm []byte) map[byte][]byte {
+	t.Helper()
+
+	if !bytes.HasPrefix(wasm, wasmHeader) {
+		t.Fatalf("missing wasm header:\n%s", hex.Dump(wasm))
+	}
+	rest := wasm[len(wasmHeader):]
+	out := make(map[byte][]byte)
+	for len(rest) > 0 {
+		id := rest[0]
+		rest = rest[1:]
+		n, width, ok := readUleb(rest)
+		if !ok || uint64(len(rest)) < uint64(width)+n {
+			t.Fatalf("truncated section %d", id)
+		}
+		rest = rest[width:]
+		out[id] = rest[:n]
+		rest = rest[n:]
+	}
+	return out
+}
+
+func functionBodies(t *testing.T, wasm []byte) [][]byte {
+	t.Helper()
+
+	payload := moduleSections(t, wasm)[secCode]
+	count, width, ok := readUleb(payload)
+	if !ok {
+		t.Fatal("truncated code section")
+	}
+	rest := payload[width:]
+	bodies := make([][]byte, 0, count)
+	for i := uint64(0); i < count; i++ {
+		n, w, ok := readUleb(rest)
+		if !ok || uint64(len(rest)) < uint64(w)+n {
+			t.Fatalf("truncated function body %d", i)
+		}
+		rest = rest[w:]
+		bodies = append(bodies, rest[:n])
+		rest = rest[n:]
+	}
+	return bodies
+}
+
+func vecCount(t *testing.T, payload []byte) int {
+	t.Helper()
+
+	n, _, ok := readUleb(payload)
+	if !ok {
+		t.Fatal("truncated vector")
+	}
+	return int(n)
+}
+
+func readUleb(b []byte) (uint64, int, bool) {
+	var v uint64
+	var shift uint
+	for i, c := range b {
+		if shift > 63 {
+			return 0, 0, false
+		}
+		v |= uint64(c&0x7f) << shift
+		if c&0x80 == 0 {
+			return v, i + 1, true
+		}
+		shift += 7
+	}
+	return 0, 0, false
+}
