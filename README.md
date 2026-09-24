@@ -38,3 +38,7 @@ make check
 The v0.1 pipeline (`lexer → parser → type checker → IR → WebAssembly`) is
 described in [`docs/adr/0002-v0.1-syntax-and-wasm-abi.md`](docs/adr/0002-v0.1-syntax-and-wasm-abi.md)
 and [`docs/design/`](docs/design/). `ceroc fmt` is not implemented yet.
+
+## License
+
+Cero is released under the [MIT License](LICENSE).
