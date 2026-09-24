@@ -50,7 +50,7 @@ ceroc run
 ceroc fmt
 ```
 
-`ceroc fmt` は self-hosting の後に追加する（「Development Policy」の成長過程を参照）。
+`ceroc fmt` と LSP サーバ（例: `ceroc lsp`）は self-hosting の後に追加する（「Development Policy」の成長過程を参照）。
 
 ## 初期コンパイラ
 
@@ -638,14 +638,22 @@ ceroc fmt
 
 ↓
 
+LSP / VS Code 拡張
+
+↓
+
 x86-64 backend
 ```
 
-`ceroc fmt` は self-hosting の達成後に、Cero製 `ceroc` の機能として追加する。
+`ceroc fmt`、LSP、VS Code 拡張などの開発者ツールは、self-hosting の達成後に Cero製 `ceroc` の機能として追加する。
 
-* self-hosting までは構文が段階的に増えるため、それ以前にフォーマッタを作ると構文の追加ごとに作り直しが必要になる。
-* Go製 `ceroc` はいずれ置き換えるので、Go でフォーマッタを実装する労力を避ける。
-* スタイル規則やコメントの扱いは、追加する時点で別の ADR として決める。
+* self-hosting までは構文が段階的に増えるため、それ以前に開発者ツールを作ると構文の追加ごとに作り直しが必要になる。
+* Go製 `ceroc` はいずれ置き換えるので、Go で開発者ツールを実装する労力を避ける。
+* LSP サーバは `ceroc` に組み込み（例: `ceroc lsp`）、パーサ・型検査・`fmt` を再利用する。
+  エラー表示、ホバーでの型表示、定義へのジャンプ、フォーマットなどを LSP 経由で提供する。
+* VS Code 拡張は、シンタックスハイライトと LSP クライアントだけを持つ薄い拡張とし、言語処理は `ceroc` 側に置く。
+* LSP は標準入出力で JSON-RPC をやり取りするため、IO / Effect と String が前提になる。
+* スタイル規則、コメントの扱い、LSP で提供する機能の範囲は、それぞれ追加する時点で別の ADR として決める。
 
 この順序は固定されたロードマップではなく、実装・学習上の要求に応じて変更する。
 
