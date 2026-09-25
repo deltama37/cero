@@ -114,6 +114,15 @@ func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
 	nameTok := p.cur()
 	p.advance()
 
+	var typeParams []*ast.TypeParam
+	if p.cur().Kind == token.LBracket {
+		var err error
+		typeParams, err = p.parseTypeParams()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	params, err := p.parseParamList()
 	if err != nil {
 		return nil, err
@@ -130,12 +139,13 @@ func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
 		return nil, err
 	}
 	return &ast.FuncDecl{
-		Pos:     fnTok.Pos,
-		Name:    nameTok.Text,
-		NamePos: nameTok.Pos,
-		Params:  params,
-		Result:  result,
-		Body:    body,
+		Pos:        fnTok.Pos,
+		Name:       nameTok.Text,
+		NamePos:    nameTok.Pos,
+		TypeParams: typeParams,
+		Params:     params,
+		Result:     result,
+		Body:       body,
 	}, nil
 }
 
@@ -223,8 +233,29 @@ func (p *parser) parseType() (ast.TypeExpr, error) {
 
 	switch p.cur().Kind {
 	case token.Ident:
-		atom = &ast.NamedType{Pos: p.cur().Pos, Name: p.cur().Text}
+		nameTok := p.cur()
 		p.advance()
+		var args []ast.TypeExpr
+		if p.cur().Kind == token.LBracket {
+			p.advance()
+			arg, err := p.parseType()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, arg)
+			for p.cur().Kind == token.Comma {
+				p.advance()
+				arg, err = p.parseType()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, arg)
+			}
+			if err := p.expect(token.RBracket); err != nil {
+				return nil, err
+			}
+		}
+		atom = &ast.NamedType{Pos: nameTok.Pos, Name: nameTok.Text, Args: args}
 	case token.LParen:
 		p.advance()
 		if p.cur().Kind == token.RParen {
@@ -446,6 +477,9 @@ func (p *parser) parsePostfix() (ast.Expr, error) {
 			Args:   args,
 		}
 	}
+	if p.cur().Kind == token.LBracket {
+		return nil, diag.Errorf(p.cur().Pos, "explicit type arguments are not supported in v0.3")
+	}
 	return expr, nil
 }
 
@@ -542,6 +576,14 @@ func (p *parser) parseTypeDecl() (*ast.TypeDecl, error) {
 	if !isUpperName(nameTok.Text) {
 		return nil, diag.Errorf(nameTok.Pos, "type name '%s' must start with an uppercase letter", nameTok.Text)
 	}
+	var typeParams []*ast.TypeParam
+	if p.cur().Kind == token.LBracket {
+		var err error
+		typeParams, err = p.parseTypeParams()
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := p.expect(token.Assign); err != nil {
 		return nil, err
 	}
@@ -562,11 +604,40 @@ func (p *parser) parseTypeDecl() (*ast.TypeDecl, error) {
 		ctors = append(ctors, ctor)
 	}
 	return &ast.TypeDecl{
-		Pos:     typeTok.Pos,
-		Name:    nameTok.Text,
-		NamePos: nameTok.Pos,
-		Ctors:   ctors,
+		Pos:        typeTok.Pos,
+		Name:       nameTok.Text,
+		NamePos:    nameTok.Pos,
+		TypeParams: typeParams,
+		Ctors:      ctors,
 	}, nil
+}
+
+// parseTypeParams parses "[T, U]". The current token is '['.
+func (p *parser) parseTypeParams() ([]*ast.TypeParam, error) {
+	if err := p.expect(token.LBracket); err != nil {
+		return nil, err
+	}
+	var params []*ast.TypeParam
+	for {
+		if p.cur().Kind != token.Ident {
+			return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
+		}
+		name := p.cur()
+		p.advance()
+		if !isUpperName(name.Text) {
+			return nil, diag.Errorf(name.Pos, "type parameter name '%s' must start with an uppercase letter", name.Text)
+		}
+		params = append(params, &ast.TypeParam{Pos: name.Pos, Name: name.Text})
+		if p.cur().Kind == token.Comma {
+			p.advance()
+			continue
+		}
+		break
+	}
+	if err := p.expect(token.RBracket); err != nil {
+		return nil, err
+	}
+	return params, nil
 }
 
 func (p *parser) parseCtorDecl() (*ast.CtorDecl, error) {
