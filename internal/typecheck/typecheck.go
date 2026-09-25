@@ -29,6 +29,10 @@ type Symbol struct {
 	Pos  diag.Pos      // position of the declaring name
 	Decl *ast.FuncDecl // set only for SymFunc
 	Ctor *types.Ctor   // set only for SymCtor
+	// TypeParams are the type parameters Type is generic over: the function's
+	// own for a generic SymFunc, Ctor.Data.Params for a SymCtor, and nil
+	// otherwise.
+	TypeParams []*types.TypeParam
 }
 
 // Info records the result of a successful type check.
@@ -42,6 +46,9 @@ type Info struct {
 	Datas    map[*ast.TypeDecl]*types.Data // every type declaration
 	CtorPats map[*ast.CtorPat]*types.Ctor  // constructor of every constructor pattern
 	PatVars  map[*ast.VarPat]*Symbol       // symbol declared by every variable pattern
+	// TypeArgs holds, for every Ident whose symbol has TypeParams, the type
+	// arguments of that use in TypeParams order.
+	TypeArgs map[*ast.Ident][]types.Type
 }
 
 // Check resolves names and type-checks file.
@@ -58,6 +65,7 @@ func Check(file *ast.File) (*Info, error) {
 			Datas:    make(map[*ast.TypeDecl]*types.Data),
 			CtorPats: make(map[*ast.CtorPat]*types.Ctor),
 			PatVars:  make(map[*ast.VarPat]*Symbol),
+			TypeArgs: make(map[*ast.Ident][]types.Type),
 		},
 		globals: make(map[string]*Symbol),
 		datas:   make(map[string]*types.Data),
@@ -79,7 +87,16 @@ func Check(file *ast.File) (*Info, error) {
 	}
 
 	for _, d := range file.Types {
+		params, err := c.declareTypeParams(d.TypeParams)
+		if err != nil {
+			return nil, err
+		}
+		c.datas[d.Name].Params = params
+	}
+
+	for _, d := range file.Types {
 		data := c.datas[d.Name]
+		c.tparams = scopeOf(data.Params)
 		for i, cd := range d.Ctors {
 			if _, ok := c.ctors[cd.Name]; ok {
 				return nil, diag.Errorf(cd.Pos, "duplicate constructor '%s'", cd.Name)
@@ -101,13 +118,15 @@ func Check(file *ast.File) (*Info, error) {
 			data.Ctors = append(data.Ctors, ctor)
 			c.ctors[cd.Name] = ctor
 			c.globals[cd.Name] = &Symbol{
-				Kind: SymCtor,
-				Name: cd.Name,
-				Type: ctorType(ctor),
-				Pos:  cd.Pos,
-				Ctor: ctor,
+				Kind:       SymCtor,
+				Name:       cd.Name,
+				Type:       ctorType(ctor),
+				Pos:        cd.Pos,
+				Ctor:       ctor,
+				TypeParams: data.Params,
 			}
 		}
+		c.tparams = nil
 	}
 
 	sigs := make([]*types.Func, len(file.Funcs))
@@ -118,37 +137,59 @@ func Check(file *ast.File) (*Info, error) {
 		if _, ok := c.globals[d.Name]; ok {
 			return nil, diag.Errorf(d.NamePos, "duplicate function '%s'", d.Name)
 		}
+		tps, err := c.declareTypeParams(d.TypeParams)
+		if err != nil {
+			return nil, err
+		}
+		c.tparams = scopeOf(tps)
 		sig, err := c.resolveFuncType(d.Params, d.Result)
 		if err != nil {
 			return nil, err
 		}
+		for j, tp := range tps {
+			if !types.Mentions(sig, tp) {
+				return nil, diag.Errorf(d.TypeParams[j].Pos, "type parameter '%s' is not used in the signature of '%s'", tp.Name, d.Name)
+			}
+		}
+		c.tparams = nil
 		sigs[i] = sig
 		sym := &Symbol{
-			Kind: SymFunc,
-			Name: d.Name,
-			Type: sig,
-			Pos:  d.NamePos,
-			Decl: d,
+			Kind:       SymFunc,
+			Name:       d.Name,
+			Type:       sig,
+			Pos:        d.NamePos,
+			Decl:       d,
+			TypeParams: tps,
 		}
 		c.globals[d.Name] = sym
 		c.info.Funcs[d] = sym
 	}
 
 	for i, d := range file.Funcs {
+		c.tparams = scopeOf(c.info.Funcs[d].TypeParams)
+		c.metas = nil
 		ctx := &funcCtx{}
 		if err := c.checkFunc(ctx, d.Params, sigs[i], d.Body); err != nil {
 			return nil, err
 		}
+		if err := c.checkSolved(); err != nil {
+			return nil, err
+		}
+		c.tparams = nil
 	}
 
 	main, ok := c.globals["main"]
 	if !ok {
 		return nil, diag.Errorf(diag.Pos{Line: 1, Col: 1}, "missing function 'main'")
 	}
+	if len(main.TypeParams) > 0 {
+		return nil, diag.Errorf(main.Pos, "function 'main' cannot have type parameters")
+	}
 	want := &types.Func{Result: types.Int}
 	if !types.Equal(main.Type, want) {
 		return nil, diag.Errorf(main.Pos, "function 'main' must have type () -> Int, found %s", main.Type)
 	}
+	c.resolveInfo()
 	return c.info, nil
 }
 
@@ -157,6 +198,47 @@ type checker struct {
 	globals map[string]*Symbol
 	datas   map[string]*types.Data
 	ctors   map[string]*types.Ctor
+	tparams map[string]*types.TypeParam // type parameters in scope; nil outside generic declarations
+	metas   []*pendingMeta              // created while checking the current top-level function, in creation order
+}
+
+// pendingMeta remembers where a unification variable was created so that an
+// unsolved one can be reported.
+type pendingMeta struct {
+	meta  *types.Meta
+	owner string   // name of the instantiated function or constructor
+	pos   diag.Pos // position of the instantiating Ident
+}
+
+// scopeOf returns a name-to-parameter map, or nil when ps is empty.
+func scopeOf(ps []*types.TypeParam) map[string]*types.TypeParam {
+	if len(ps) == 0 {
+		return nil
+	}
+	m := make(map[string]*types.TypeParam, len(ps))
+	for _, p := range ps {
+		m[p.Name] = p
+	}
+	return m
+}
+
+func (c *checker) declareTypeParams(ps []*ast.TypeParam) ([]*types.TypeParam, *diag.Error) {
+	if len(ps) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(ps))
+	out := make([]*types.TypeParam, 0, len(ps))
+	for _, p := range ps {
+		if p.Name == "Int" || p.Name == "Bool" || c.datas[p.Name] != nil {
+			return nil, diag.Errorf(p.Pos, "type parameter '%s' conflicts with type '%s'", p.Name, p.Name)
+		}
+		if seen[p.Name] {
+			return nil, diag.Errorf(p.Pos, "duplicate type parameter '%s'", p.Name)
+		}
+		seen[p.Name] = true
+		out = append(out, &types.TypeParam{Name: p.Name})
+	}
+	return out, nil
 }
 
 // funcCtx is the scope stack of one function (a FuncDecl or a FuncLit).
@@ -191,17 +273,41 @@ func (c *checker) resolveFuncType(params []*ast.Param, result ast.TypeExpr) (*ty
 func (c *checker) resolveType(t ast.TypeExpr) (types.Type, *diag.Error) {
 	switch t := t.(type) {
 	case *ast.NamedType:
-		switch t.Name {
-		case "Int":
-			return types.Int, nil
-		case "Bool":
-			return types.Bool, nil
-		default:
-			if data, ok := c.datas[t.Name]; ok {
-				return data, nil
+		m := len(t.Args)
+		if tp := c.tparams[t.Name]; tp != nil {
+			if m != 0 {
+				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for '%s': expected 0, found %d", t.Name, m)
 			}
-			return nil, diag.Errorf(t.Pos, "unknown type '%s'", t.Name)
+			return tp, nil
 		}
+		if t.Name == "Int" || t.Name == "Bool" {
+			if m != 0 {
+				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for '%s': expected 0, found %d", t.Name, m)
+			}
+			if t.Name == "Int" {
+				return types.Int, nil
+			}
+			return types.Bool, nil
+		}
+		if data, ok := c.datas[t.Name]; ok {
+			n := len(data.Params)
+			if m != n {
+				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for '%s': expected %d, found %d", t.Name, n, m)
+			}
+			if n == 0 {
+				return &types.Named{Data: data}, nil
+			}
+			args := make([]types.Type, m)
+			for i, a := range t.Args {
+				at, err := c.resolveType(a)
+				if err != nil {
+					return nil, err
+				}
+				args[i] = at
+			}
+			return &types.Named{Data: data, Args: args}, nil
+		}
+		return nil, diag.Errorf(t.Pos, "unknown type '%s'", t.Name)
 	case *ast.FuncType:
 		params := make([]types.Type, len(t.Params))
 		for i, p := range t.Params {
@@ -281,7 +387,7 @@ func (c *checker) expect(ctx *funcCtx, e ast.Expr, want types.Type) *diag.Error 
 	if err != nil {
 		return err
 	}
-	if !types.Equal(got, want) {
+	if !unify(want, got) {
 		return diag.Errorf(resultPos(e), "expected %s, found %s", want, got)
 	}
 	return nil
@@ -342,10 +448,24 @@ func (c *checker) inferIdent(ctx *funcCtx, e *ast.Ident) (types.Type, *diag.Erro
 		return nil, diag.Errorf(e.Pos, "constructor '%s' cannot be used as a value; call it with its fields", sym.Name)
 	}
 	c.info.Uses[e] = sym
-	if sym.Kind == SymCtor {
-		return sym.Ctor.Data, nil
+	return c.instantiate(sym, e), nil
+}
+
+// instantiate returns sym.Type with sym.TypeParams replaced by fresh metas
+// and records the metas in Info.TypeArgs[id]. For a symbol without type
+// parameters it returns sym.Type and records nothing.
+func (c *checker) instantiate(sym *Symbol, id *ast.Ident) types.Type {
+	if len(sym.TypeParams) == 0 {
+		return sym.Type
 	}
-	return sym.Type, nil
+	args := make([]types.Type, len(sym.TypeParams))
+	for i, tp := range sym.TypeParams {
+		m := &types.Meta{Name: tp.Name}
+		c.metas = append(c.metas, &pendingMeta{meta: m, owner: sym.Name, pos: id.Pos})
+		args[i] = m
+	}
+	c.info.TypeArgs[id] = args
+	return types.Subst(sym.Type, sym.TypeParams, args)
 }
 
 func (c *checker) inferUnary(ctx *funcCtx, e *ast.UnaryExpr) (types.Type, *diag.Error) {
@@ -418,7 +538,7 @@ func (c *checker) inferCall(ctx *funcCtx, e *ast.CallExpr) (types.Type, *diag.Er
 	if err != nil {
 		return nil, err
 	}
-	sig, ok := ft.(*types.Func)
+	sig, ok := types.Prune(ft).(*types.Func)
 	if !ok {
 		return nil, diag.Errorf(resultPos(e.Fn), "cannot call non-function value of type %s", ft)
 	}
@@ -445,7 +565,7 @@ func (c *checker) inferIf(ctx *funcCtx, e *ast.IfExpr) (types.Type, *diag.Error)
 	if err != nil {
 		return nil, err
 	}
-	if !types.Equal(tt, et) {
+	if !unify(tt, et) {
 		return nil, diag.Errorf(resultPos(e.Else), "if branches have different types: %s and %s", tt, et)
 	}
 	return tt, nil
@@ -503,9 +623,9 @@ func (c *checker) inferFuncLit(ctx *funcCtx, e *ast.FuncLit) (types.Type, *diag.
 
 func ctorType(ctor *types.Ctor) types.Type {
 	if len(ctor.Fields) == 0 {
-		return ctor.Data
+		return types.SelfType(ctor.Data)
 	}
-	return &types.Func{Params: ctor.Fields, Result: ctor.Data}
+	return &types.Func{Params: ctor.Fields, Result: types.SelfType(ctor.Data)}
 }
 
 func (c *checker) checkBindable(name string, pos diag.Pos) *diag.Error {
@@ -523,19 +643,20 @@ func (c *checker) inferCtorCall(
 ) (types.Type, *diag.Error) {
 	ctor := sym.Ctor
 	c.info.Uses[id] = sym
-	c.info.Types[e.Fn] = sym.Type
 	if len(ctor.Fields) == 0 {
 		return nil, diag.Errorf(e.LParen, "constructor '%s' has no fields; write it without parentheses", ctor.Name)
 	}
 	if len(e.Args) != len(ctor.Fields) {
 		return nil, diag.Errorf(e.LParen, "wrong number of arguments: expected %d, found %d", len(ctor.Fields), len(e.Args))
 	}
+	ft := c.instantiate(sym, id).(*types.Func)
+	c.info.Types[e.Fn] = ft
 	for i, arg := range e.Args {
-		if err := c.expect(ctx, arg, ctor.Fields[i]); err != nil {
+		if err := c.expect(ctx, arg, ft.Params[i]); err != nil {
 			return nil, err
 		}
 	}
-	return ctor.Data, nil
+	return ft.Result, nil
 }
 
 func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.Error) {
@@ -543,9 +664,15 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := st.(*types.Func); ok {
+	switch types.Prune(st).(type) {
+	case *types.Func:
 		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot match on values of type %s", st)
+	case *types.TypeParam:
+		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot match on values of type %s", st)
+	case *types.Meta:
+		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot infer the type of the matched value; add a type annotation")
 	}
+	st = types.Prune(st)
 
 	cov := newCoverage(st)
 	var result types.Type
@@ -558,7 +685,7 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 		}
 		if result == nil {
 			result = t
-		} else if !types.Equal(result, t) {
+		} else if !unify(result, t) {
 			return nil, diag.Errorf(resultPos(arm.Body), "match arms have different types: %s and %s", result, t)
 		}
 	}
@@ -609,8 +736,9 @@ func (c *checker) checkPattern(ctx *funcCtx, p ast.Pattern, st types.Type) *diag
 		if ctor == nil {
 			return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
 		}
-		if !types.Equal(st, ctor.Data) {
-			return diag.Errorf(p.Pos, "expected %s, found %s", st, ctor.Data)
+		named, ok := st.(*types.Named)
+		if !ok || named.Data != ctor.Data {
+			return diag.Errorf(p.Pos, "expected %s, found %s", st, dataDisplay(ctor.Data))
 		}
 		if len(p.Args) != len(ctor.Fields) {
 			return diag.Errorf(p.Pos, "wrong number of fields in pattern '%s': expected %d, found %d", p.Name, len(ctor.Fields), len(p.Args))
@@ -628,7 +756,8 @@ func (c *checker) checkPattern(ctx *funcCtx, p ast.Pattern, st types.Type) *diag
 			if err := c.checkBindable(vp.Name, vp.Pos); err != nil {
 				return err
 			}
-			c.bindPatVar(ctx, vp, ctor.Fields[i])
+			field := types.Subst(ctor.Fields[i], ctor.Data.Params, named.Args)
+			c.bindPatVar(ctx, vp, field)
 		}
 		c.info.CtorPats[p] = ctor
 		return nil
@@ -691,8 +820,8 @@ func (cov *coverage) catchAllCovered() bool {
 	switch st := cov.scrutinee.(type) {
 	case types.BoolType:
 		return cov.bools[true] && cov.bools[false]
-	case *types.Data:
-		for _, ctor := range st.Ctors {
+	case *types.Named:
+		for _, ctor := range st.Data.Ctors {
 			if !cov.ctors[ctor.Index] {
 				return false
 			}
@@ -722,9 +851,9 @@ func (cov *coverage) missing() string {
 		return ""
 	}
 	switch st := cov.scrutinee.(type) {
-	case *types.Data:
+	case *types.Named:
 		var names []string
-		for _, ctor := range st.Ctors {
+		for _, ctor := range st.Data.Ctors {
 			if !cov.ctors[ctor.Index] {
 				names = append(names, ctor.Name)
 			}
@@ -744,4 +873,50 @@ func (cov *coverage) missing() string {
 	default:
 		return ""
 	}
+}
+
+func (c *checker) checkSolved() *diag.Error {
+	for _, pm := range c.metas {
+		if _, ok := types.Prune(pm.meta).(*types.Meta); ok {
+			return diag.Errorf(pm.pos, "cannot infer type argument '%s' of '%s'; add a type annotation", pm.meta.Name, pm.owner)
+		}
+	}
+	return nil
+}
+
+func (c *checker) resolveInfo() {
+	for e, t := range c.info.Types {
+		c.info.Types[e] = types.Resolve(t)
+	}
+	for _, sym := range c.info.Defs {
+		sym.Type = types.Resolve(sym.Type)
+	}
+	for _, sym := range c.info.PatVars {
+		sym.Type = types.Resolve(sym.Type)
+	}
+	for _, args := range c.info.TypeArgs {
+		for i := range args {
+			args[i] = types.Resolve(args[i])
+		}
+	}
+}
+
+// dataDisplay formats d for an error message: its name, followed by
+// "[?P1, ?P2, ...]" when it has parameters (e.g. "Option[?T]").
+func dataDisplay(d *types.Data) string {
+	if len(d.Params) == 0 {
+		return d.Name
+	}
+	var b strings.Builder
+	b.WriteString(d.Name)
+	b.WriteByte('[')
+	for i, p := range d.Params {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteByte('?')
+		b.WriteString(p.Name)
+	}
+	b.WriteByte(']')
+	return b.String()
 }
