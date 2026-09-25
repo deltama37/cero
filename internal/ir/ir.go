@@ -136,18 +136,25 @@ type Block struct {
 	Result Expr
 }
 
-// Call calls a function directly.
+// Call calls a function directly. Tail reports that the call is in tail
+// position of the enclosing function (ADR-0005); it is then encoded as
+// return_call, and T equals the enclosing function's result type.
 type Call struct {
 	Func FuncID
 	Args []Expr
 	T    ValType
+	Tail bool
 }
 
 // CallIndirect calls the FuncRef value Callee, whose signature is Sig.
+// Tail reports that the call is in tail position of the enclosing function
+// (ADR-0005); it is then encoded as return_call_indirect, and Sig.Result
+// equals the enclosing function's result type.
 type CallIndirect struct {
 	Callee Expr
 	Sig    Sig
 	Args   []Expr
+	Tail   bool
 }
 
 // Construct allocates a block for the constructor with tag Tag, stores

@@ -17,53 +17,55 @@ const (
 	secElement  byte = 9
 	secCode     byte = 10
 
-	opUnreachable   byte = 0x00
-	opEnd           byte = 0x0b
-	opIf            byte = 0x04
-	opElse          byte = 0x05
-	opCall          byte = 0x10
-	opCallIndirect  byte = 0x11
-	opLocalGet      byte = 0x20
-	opLocalSet      byte = 0x21
-	opGlobalGet     byte = 0x23
-	opGlobalSet     byte = 0x24
-	opI32Load       byte = 0x28
-	opI64Load       byte = 0x29
-	opI32Store      byte = 0x36
-	opI64Store      byte = 0x37
-	opMemorySize    byte = 0x3f
-	opMemoryGrow    byte = 0x40
-	opI32Const      byte = 0x41
-	opI64Const      byte = 0x42
-	opI32Eqz        byte = 0x45
-	opI32Eq         byte = 0x46
-	opI32Ne         byte = 0x47
-	opI32GtU        byte = 0x4b
-	opI64Eq         byte = 0x51
-	opI64Ne         byte = 0x52
-	opI64LtS        byte = 0x53
-	opI64GtS        byte = 0x55
-	opI64LeS        byte = 0x57
-	opI64GeS        byte = 0x59
-	opI32Add        byte = 0x6a
-	opI32Sub        byte = 0x6b
-	opI32Shl        byte = 0x74
-	opI32ShrU       byte = 0x76
-	opI64Add        byte = 0x7c
-	opI64Sub        byte = 0x7d
-	opI64Mul        byte = 0x7e
-	opI64DivS       byte = 0x7f
-	valI32          byte = 0x7f
-	valI64          byte = 0x7e
-	typeFunc        byte = 0x60
-	refFunc         byte = 0x70
-	blockEmpty      byte = 0x40
-	limitsMinMax    byte = 0x01
-	mutVar          byte = 0x01
-	externalFunc    byte = 0x00
-	elemActiveFlags byte = 0x00
-	alignI32        byte = 0x02
-	alignI64        byte = 0x03
+	opUnreachable        byte = 0x00
+	opEnd                byte = 0x0b
+	opIf                 byte = 0x04
+	opElse               byte = 0x05
+	opCall               byte = 0x10
+	opCallIndirect       byte = 0x11
+	opReturnCall         byte = 0x12
+	opReturnCallIndirect byte = 0x13
+	opLocalGet           byte = 0x20
+	opLocalSet           byte = 0x21
+	opGlobalGet          byte = 0x23
+	opGlobalSet          byte = 0x24
+	opI32Load            byte = 0x28
+	opI64Load            byte = 0x29
+	opI32Store           byte = 0x36
+	opI64Store           byte = 0x37
+	opMemorySize         byte = 0x3f
+	opMemoryGrow         byte = 0x40
+	opI32Const           byte = 0x41
+	opI64Const           byte = 0x42
+	opI32Eqz             byte = 0x45
+	opI32Eq              byte = 0x46
+	opI32Ne              byte = 0x47
+	opI32GtU             byte = 0x4b
+	opI64Eq              byte = 0x51
+	opI64Ne              byte = 0x52
+	opI64LtS             byte = 0x53
+	opI64GtS             byte = 0x55
+	opI64LeS             byte = 0x57
+	opI64GeS             byte = 0x59
+	opI32Add             byte = 0x6a
+	opI32Sub             byte = 0x6b
+	opI32Shl             byte = 0x74
+	opI32ShrU            byte = 0x76
+	opI64Add             byte = 0x7c
+	opI64Sub             byte = 0x7d
+	opI64Mul             byte = 0x7e
+	opI64DivS            byte = 0x7f
+	valI32               byte = 0x7f
+	valI64               byte = 0x7e
+	typeFunc             byte = 0x60
+	refFunc              byte = 0x70
+	blockEmpty           byte = 0x40
+	limitsMinMax         byte = 0x01
+	mutVar               byte = 0x01
+	externalFunc         byte = 0x00
+	elemActiveFlags      byte = 0x00
+	alignI32             byte = 0x02
+	alignI64             byte = 0x03
 
 	// memoryMaxPages is 32768 so that page count << 16 stays inside an
 	// unsigned i32 (ADR-0003).
@@ -110,6 +112,7 @@ type encoder struct {
 	buf      []byte
 	allocIdx int
 	newIdx   map[string]int
+	result   ir.ValType // result type of the function being encoded
 }
 
 // usesMemory reports whether any function body contains a Construct,
@@ -487,10 +490,19 @@ func encodeNewBody(allocIdx int, fields []ir.ValType) []byte {
 }
 
 func (e *encoder) encodeBody(fn *ir.Func) []byte {
+	e.result = fn.Sig.Result
 	e.buf = encodeLocals(fn)
 	e.expr(fn.Body)
 	e.buf = append(e.buf, opEnd)
 	return e.buf
+}
+
+// checkTail panics unless a tail call returning t can replace the frame of
+// the function being encoded.
+func (e *encoder) checkTail(t ir.ValType) {
+	if t != e.result {
+		panic(fmt.Sprintf("wasm: tail call returns %s, function returns %s", t, e.result))
+	}
 }
 
 // encodeLocals groups non-parameter locals into runs of the same wasm type.
@@ -557,14 +569,24 @@ func (e *encoder) expr(x ir.Expr) {
 		for _, arg := range x.Args {
 			e.expr(arg)
 		}
-		e.buf = append(e.buf, opCall)
+		if x.Tail {
+			e.checkTail(x.T)
+			e.buf = append(e.buf, opReturnCall)
+		} else {
+			e.buf = append(e.buf, opCall)
+		}
 		e.buf = appendUleb128(e.buf, uint64(x.Func))
 	case *ir.CallIndirect:
 		for _, arg := range x.Args {
 			e.expr(arg)
 		}
 		e.expr(x.Callee)
-		e.buf = append(e.buf, opCallIndirect)
+		if x.Tail {
+			e.checkTail(x.Sig.Result)
+			e.buf = append(e.buf, opReturnCallIndirect)
+		} else {
+			e.buf = append(e.buf, opCallIndirect)
+		}
 		e.buf = appendUleb128(e.buf, e.typeIndex(x.Sig))
 		e.buf = append(e.buf, 0x00)
 	case *ir.Construct:

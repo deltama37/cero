@@ -1,0 +1,13 @@
+// expected output: 50000005000000
+
+fn sumTo(n: Int, acc: Int) -> Int {
+    if n == 0 {
+        acc
+    } else {
+        sumTo(n - 1, acc + n)
+    }
+}
+
+fn main() -> Int {
+    sumTo(10000000, 0)
+}

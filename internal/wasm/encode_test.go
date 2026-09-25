@@ -3,6 +3,8 @@ package wasm
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/deltama37/cero/internal/ir"
@@ -237,12 +239,113 @@ func TestEncodeLocalGroups(t *testing.T) {
 	}
 }
 
+func TestEncodeTailCall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		body  ir.Expr
+		table []ir.FuncID
+		want  string
+	}{
+		{
+			name: "direct tail call",
+			body: &ir.Call{
+				Func: 0,
+				Args: []ir.Expr{&ir.IntConst{Value: 7}},
+				T:    ir.Int,
+				Tail: true,
+			},
+			want: "00 42 07 12 00 0b",
+		},
+		{
+			name: "direct call not in tail position",
+			body: &ir.Call{
+				Func: 0,
+				Args: []ir.Expr{&ir.IntConst{Value: 7}},
+				T:    ir.Int,
+			},
+			want: "00 42 07 10 00 0b",
+		},
+		{
+			name: "indirect tail call",
+			body: &ir.CallIndirect{
+				Callee: &ir.FuncValue{Func: 0},
+				Sig:    ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Int},
+				Args:   []ir.Expr{&ir.IntConst{Value: 7}},
+				Tail:   true,
+			},
+			table: []ir.FuncID{0},
+			want:  "00 42 07 41 00 13 00 00 0b",
+		},
+		{
+			name: "indirect call not in tail position",
+			body: &ir.CallIndirect{
+				Callee: &ir.FuncValue{Func: 0},
+				Sig:    ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Int},
+				Args:   []ir.Expr{&ir.IntConst{Value: 7}},
+			},
+			table: []ir.FuncID{0},
+			want:  "00 42 07 41 00 11 00 00 0b",
+		},
+		{
+			name: "tail call inside if",
+			body: &ir.If{
+				Cond: &ir.BoolConst{Value: true},
+				Then: &ir.Call{
+					Func: 0,
+					Args: []ir.Expr{&ir.IntConst{Value: 1}},
+					T:    ir.Int,
+					Tail: true,
+				},
+				Else: &ir.IntConst{Value: 0},
+				T:    ir.Int,
+			},
+			want: "00 41 01 04 7e 42 01 12 00 05 42 00 0b 0b",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &ir.Module{
+				Funcs: []*ir.Func{
+					{
+						Name:   "f",
+						Sig:    ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Int},
+						Locals: []ir.ValType{ir.Int},
+						Body:   &ir.LocalGet{Local: 0, T: ir.Int},
+					},
+					{
+						Name: "main",
+						Sig:  ir.Sig{Result: ir.Int},
+						Body: tt.body,
+					},
+				},
+				Table: tt.table,
+				Main:  1,
+			}
+			bodies := functionBodies(t, Encode(m))
+			got := bodies[1]
+			want, err := hex.DecodeString(strings.ReplaceAll(tt.want, " ", ""))
+			if err != nil {
+				t.Fatalf("decode want: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("main body = %x, want %x", got, want)
+			}
+		})
+	}
+}
+
 func TestEncodePanics(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
 		body ir.Expr
+		want string
 	}{
 		{
 			name: "funcref equality",
@@ -251,6 +354,21 @@ func TestEncodePanics(t *testing.T) {
 				X:  &ir.LocalGet{Local: 0, T: ir.FuncRef},
 				Y:  &ir.LocalGet{Local: 0, T: ir.FuncRef},
 			},
+			want: "wasm: unexpected binary operand type FuncRef",
+		},
+		{
+			name: "tail call result differs from function result",
+			body: &ir.Call{Func: 0, T: ir.Int, Tail: true},
+			want: "wasm: tail call returns Int, function returns Bool",
+		},
+		{
+			name: "tail call indirect result differs from function result",
+			body: &ir.CallIndirect{
+				Callee: &ir.LocalGet{Local: 0, T: ir.FuncRef},
+				Sig:    ir.Sig{Result: ir.Int},
+				Tail:   true,
+			},
+			want: "wasm: tail call returns Int, function returns Bool",
 		},
 	}
 
@@ -266,8 +384,13 @@ func TestEncodePanics(t *testing.T) {
 				}},
 			}
 			defer func() {
-				if recover() == nil {
+				r := recover()
+				if r == nil {
 					t.Fatal("Encode did not panic")
+				}
+				msg := fmt.Sprint(r)
+				if !strings.Contains(msg, tt.want) {
+					t.Fatalf("panic = %q, want it to contain %q", msg, tt.want)
 				}
 			}()
 			Encode(m)
