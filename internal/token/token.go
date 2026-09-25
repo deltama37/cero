@@ -37,6 +37,8 @@ const (
 	Assign   // =
 	FatArrow // =>
 	Bar      // |
+	LBracket // [
+	RBracket // ]
 
 	// Operators
 	Plus   // +
@@ -106,6 +108,10 @@ func (k Kind) String() string {
 		return "'=>'"
 	case Bar:
 		return "'|'"
+	case LBracket:
+		return "'['"
+	case RBracket:
+		return "']'"
 	case Plus:
 		return "'+'"
 	case Minus:

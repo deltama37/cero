@@ -23,17 +23,30 @@ func FormatFile(f *File) string {
 
 // FormatFunc formats a function declaration as an S-expression.
 func FormatFunc(d *FuncDecl) string {
-	return "(fn " + d.Name + " (" + formatParams(d.Params) + ") " + FormatType(d.Result) + " " + FormatExpr(d.Body) + ")"
+	return "(fn " + d.Name + formatTypeParams(d.TypeParams) + " (" + formatParams(d.Params) + ") " + FormatType(d.Result) + " " + FormatExpr(d.Body) + ")"
 }
 
 // FormatTypeDecl formats a type declaration as an S-expression.
 func FormatTypeDecl(d *TypeDecl) string {
 	parts := make([]string, 0, 1+len(d.Ctors))
-	parts = append(parts, d.Name)
+	parts = append(parts, d.Name+formatTypeParams(d.TypeParams))
 	for _, ctor := range d.Ctors {
 		parts = append(parts, formatCtor(ctor))
 	}
 	return "(type " + strings.Join(parts, " ") + ")"
+}
+
+// formatTypeParams returns "" for no type parameters, otherwise "[" + the
+// names joined by " " + "]".
+func formatTypeParams(ps []*TypeParam) string {
+	if len(ps) == 0 {
+		return ""
+	}
+	names := make([]string, len(ps))
+	for i, param := range ps {
+		names[i] = param.Name
+	}
+	return "[" + strings.Join(names, " ") + "]"
 }
 
 func formatCtor(ctor *CtorDecl) string {
@@ -128,7 +141,14 @@ func formatArm(arm *MatchArm) string {
 func FormatType(t TypeExpr) string {
 	switch t := t.(type) {
 	case *NamedType:
-		return t.Name
+		if len(t.Args) == 0 {
+			return t.Name
+		}
+		args := make([]string, len(t.Args))
+		for i, arg := range t.Args {
+			args[i] = FormatType(arg)
+		}
+		return t.Name + "[" + strings.Join(args, " ") + "]"
 	case *FuncType:
 		params := make([]string, len(t.Params))
 		for i, param := range t.Params {
