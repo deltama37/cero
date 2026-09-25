@@ -3,6 +3,7 @@ package lower
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/deltama37/cero/internal/ast"
 	"github.com/deltama37/cero/internal/ir"
@@ -15,18 +16,22 @@ import (
 // It panics if info is inconsistent with file (a type checker bug).
 func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 	l := &lowerer{
-		info:   info,
-		module: &ir.Module{Funcs: make([]*ir.Func, 0, len(file.Funcs))},
-		declID: make(map[*ast.FuncDecl]ir.FuncID, len(file.Funcs)),
+		info:      info,
+		module:    &ir.Module{Funcs: make([]*ir.Func, 0, len(file.Funcs))},
+		declID:    make(map[*ast.FuncDecl]ir.FuncID, len(file.Funcs)),
+		instances: make(map[*ast.FuncDecl]map[string]ir.FuncID),
 	}
 
 	foundMain := false
-	for i, d := range file.Funcs {
+	for _, d := range file.Funcs {
 		sym := info.Funcs[d]
 		if sym == nil {
 			panic(fmt.Sprintf("lower: missing symbol for function '%s'", d.Name))
 		}
-		id := ir.FuncID(i)
+		if len(sym.TypeParams) > 0 {
+			continue
+		}
+		id := ir.FuncID(len(l.module.Funcs))
 		l.module.Funcs = append(l.module.Funcs, &ir.Func{
 			Name: d.Name,
 			Sig:  l.sigOf(sym.Type),
@@ -42,16 +47,39 @@ func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 	}
 
 	for _, d := range file.Funcs {
-		l.lowerFunc(l.module.Funcs[l.declID[d]], d.Params, d.Body)
+		id, ok := l.declID[d]
+		if !ok {
+			continue
+		}
+		l.env = nil
+		l.lowerFunc(l.module.Funcs[id], d.Params, d.Body)
 	}
+
+	for len(l.queue) > 0 {
+		inst := l.queue[0]
+		l.queue = l.queue[1:]
+		l.env = inst.env
+		l.lowerFunc(l.module.Funcs[inst.id], inst.decl.Params, inst.decl.Body)
+	}
+	l.env = nil
 	return l.module
 }
 
 type lowerer struct {
-	info    *typecheck.Info
-	module  *ir.Module
-	declID  map[*ast.FuncDecl]ir.FuncID
-	lambdas int
+	info      *typecheck.Info
+	module    *ir.Module
+	declID    map[*ast.FuncDecl]ir.FuncID            // functions without type parameters
+	instances map[*ast.FuncDecl]map[string]ir.FuncID // specializations of generic functions, keyed by repKey
+	queue     []*instance                            // specializations whose bodies are not lowered yet, in creation order
+	env       map[*types.TypeParam]ir.ValType        // representation of each type parameter of the function being lowered; nil when it has none
+	lambdas   int
+}
+
+// instance is one specialization of a generic function.
+type instance struct {
+	decl *ast.FuncDecl
+	id   ir.FuncID
+	env  map[*types.TypeParam]ir.ValType
 }
 
 func (l *lowerer) lowerFunc(fn *ir.Func, params []*ast.Param, body *ast.BlockExpr) {
@@ -151,10 +179,7 @@ func (l *lowerer) lowerIdent(e *ast.Ident, locals map[*typecheck.Symbol]ir.Local
 		}
 		return &ir.LocalGet{Local: id, T: l.valType(l.mustType(e))}
 	case typecheck.SymFunc:
-		id, ok := l.declID[sym.Decl]
-		if !ok {
-			panic(fmt.Sprintf("lower: no function id for '%s' at %s", e.Name, e.Pos))
-		}
+		id := l.funcID(e, sym)
 		l.addTable(id)
 		return &ir.FuncValue{Func: id}
 	case typecheck.SymCtor:
@@ -226,10 +251,7 @@ func (l *lowerer) lowerCall(
 			}
 		}
 		if sym.Kind == typecheck.SymFunc {
-			fid, ok := l.declID[sym.Decl]
-			if !ok {
-				panic(fmt.Sprintf("lower: no function id for '%s' at %s", id.Name, id.Pos))
-			}
+			fid := l.funcID(id, sym)
 			return &ir.Call{
 				Func: fid,
 				Args: l.lowerArgs(fn, locals, e.Args),
@@ -406,7 +428,7 @@ func (l *lowerer) armBody(
 				sym := l.patVar(arg)
 				id := ir.LocalID(len(fn.Locals))
 				locals[sym] = id
-				fieldType := l.valType(ctor.Fields[i])
+				fieldType := l.valType(sym.Type)
 				fn.Locals = append(fn.Locals, fieldType)
 				lets = append(lets, &ir.Let{
 					Local: id,
@@ -494,8 +516,70 @@ func (l *lowerer) mustType(e ast.Expr) types.Type {
 	return t
 }
 
-func (l *lowerer) valType(t types.Type) ir.ValType {
-	switch t.(type) {
+// funcID returns the IR function for a use at id of the SymFunc sym,
+// creating a specialization when sym has type parameters.
+func (l *lowerer) funcID(id *ast.Ident, sym *typecheck.Symbol) ir.FuncID {
+	if len(sym.TypeParams) == 0 {
+		fid, ok := l.declID[sym.Decl]
+		if !ok {
+			panic(fmt.Sprintf("lower: no function id for '%s' at %s", id.Name, id.Pos))
+		}
+		return fid
+	}
+	args := l.info.TypeArgs[id]
+	if len(args) != len(sym.TypeParams) {
+		panic(fmt.Sprintf("lower: missing type arguments for '%s' at %s", id.Name, id.Pos))
+	}
+	reps := make([]ir.ValType, len(args))
+	for i, a := range args {
+		reps[i] = l.valType(a)
+	}
+	return l.instance(sym, reps)
+}
+
+// instance returns the specialization of the generic function sym for reps,
+// creating it and queueing its body when it does not exist yet.
+func (l *lowerer) instance(sym *typecheck.Symbol, reps []ir.ValType) ir.FuncID {
+	key := repKey(reps)
+	if byKey := l.instances[sym.Decl]; byKey != nil {
+		if id, ok := byKey[key]; ok {
+			return id
+		}
+	}
+	env := make(map[*types.TypeParam]ir.ValType, len(sym.TypeParams))
+	for i, tp := range sym.TypeParams {
+		env[tp] = reps[i]
+	}
+	id := ir.FuncID(len(l.module.Funcs))
+	l.module.Funcs = append(l.module.Funcs, &ir.Func{
+		Name: sym.Decl.Name + "[" + key + "]",
+		Sig:  sigIn(env, sym.Type),
+	})
+	if l.instances[sym.Decl] == nil {
+		l.instances[sym.Decl] = make(map[string]ir.FuncID)
+	}
+	l.instances[sym.Decl][key] = id
+	l.queue = append(l.queue, &instance{decl: sym.Decl, id: id, env: env})
+	return id
+}
+
+// repKey joins the names of reps with ",", e.g. "Int,Ptr".
+func repKey(reps []ir.ValType) string {
+	names := make([]string, len(reps))
+	for i, r := range reps {
+		names[i] = r.String()
+	}
+	return strings.Join(names, ",")
+}
+
+func (l *lowerer) valType(t types.Type) ir.ValType { return valTypeIn(l.env, t) }
+
+func (l *lowerer) sigOf(t types.Type) ir.Sig { return sigIn(l.env, t) }
+
+// valTypeIn maps a type to its IR value type. Type parameters are looked up
+// in env.
+func valTypeIn(env map[*types.TypeParam]ir.ValType, t types.Type) ir.ValType {
+	switch t := t.(type) {
 	case types.IntType:
 		return ir.Int
 	case types.BoolType:
@@ -504,21 +588,29 @@ func (l *lowerer) valType(t types.Type) ir.ValType {
 		return ir.FuncRef
 	case *types.Named:
 		return ir.Ptr
+	case *types.TypeParam:
+		vt, ok := env[t]
+		if !ok {
+			panic(fmt.Sprintf("lower: unbound type parameter '%s'", t.Name))
+		}
+		return vt
 	default:
 		panic(fmt.Sprintf("lower: unhandled type %T", t))
 	}
 }
 
-func (l *lowerer) sigOf(t types.Type) ir.Sig {
+// sigIn maps a function type to an IR signature, looking up type parameters
+// in env. It panics when t is not a *types.Func.
+func sigIn(env map[*types.TypeParam]ir.ValType, t types.Type) ir.Sig {
 	ft, ok := t.(*types.Func)
 	if !ok {
 		panic(fmt.Sprintf("lower: expected function type, found %T", t))
 	}
 	params := make([]ir.ValType, len(ft.Params))
 	for i, p := range ft.Params {
-		params[i] = l.valType(p)
+		params[i] = valTypeIn(env, p)
 	}
-	return ir.Sig{Params: params, Result: l.valType(ft.Result)}
+	return ir.Sig{Params: params, Result: valTypeIn(env, ft.Result)}
 }
 
 func binOp(e *ast.BinaryExpr) ir.BinOp {
