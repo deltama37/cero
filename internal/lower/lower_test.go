@@ -948,6 +948,83 @@ fn main() -> Int { if f(None) { 1 } else { 0 } }
 				"(main 1)",
 			),
 		},
+		{
+			name: "let generalizes a generic function",
+			src: `fn identity[T](x: T) -> T { x }
+fn main() -> Int { let f = identity if f(true) { f(1) } else { 0 } }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call.indirect (sig (Bool) Bool) (func.ref 1) true) (return.call.indirect (sig (Int) Int) (func.ref 2) 1) 0))",
+				"(func 1 identity[Bool] (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table 1 2)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "let generalizes an anonymous function",
+			src:  "fn main() -> Int { let id = fn(x) { x } if id(true) { id(1) } else { 0 } }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call.indirect (sig (Bool) Bool) (func.ref 1) true) (return.call.indirect (sig (Int) Int) (func.ref 2) 1) 0))",
+				"(func 1 lambda$0 (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 2 lambda$1 (sig (Int) Int) (locals Int) (local 0))",
+				"(table 1 2)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "generalized constructor next to monomorphic lets",
+			src: `type Option[T] = | None | Some(T)
+fn main() -> Int { let n = None let a: Option[Int] = n let b: Option[Bool] = n 0 }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals Ptr Ptr) (block (let 0 (construct 0)) (let 1 (construct 0)) 0))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "unannotated anonymous function argument",
+			src: `fn apply(f: Int -> Int, x: Int) -> Int { f(x) }
+fn main() -> Int { apply(fn(x) { x + 1 }, 2) }
+`,
+			want: lines(
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 2))",
+				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (add (local 0) 1))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "generalized let inside a generic function",
+			src: `fn twice[T](x: T) -> T { let id = fn(y) { y } id(id(x)) }
+fn main() -> Int { if twice(true) { twice(1) } else { 0 } }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call 1 true) (return.call 2 1) 0))",
+				"(func 1 twice[Bool] (sig (Bool) Bool) (locals Bool) (return.call.indirect (sig (Bool) Bool) (func.ref 3) (call.indirect (sig (Bool) Bool) (func.ref 4) (local 0))))",
+				"(func 2 twice[Int] (sig (Int) Int) (locals Int) (return.call.indirect (sig (Int) Int) (func.ref 5) (call.indirect (sig (Int) Int) (func.ref 6) (local 0))))",
+				"(func 3 lambda$0 (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 4 lambda$1 (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 5 lambda$2 (sig (Int) Int) (locals Int) (local 0))",
+				"(func 6 lambda$3 (sig (Int) Int) (locals Int) (local 0))",
+				"(table 3 4 5 6)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "generalized let of a generalized let",
+			src: `fn identity[T](x: T) -> T { x }
+fn main() -> Int { let f = identity let g = f g(5) }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (return.call.indirect (sig (Int) Int) (func.ref 1) 5))",
+				"(func 1 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table 1)",
+				"(main 0)",
+			),
+		},
 	}
 
 	for _, tt := range tests {

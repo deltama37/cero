@@ -234,6 +234,37 @@ func Subst(t Type, params []*TypeParam, args []Type) Type {
 	}
 }
 
+// Metas returns the unsolved metas that occur in t, following solved metas.
+// They are listed once each, in order of first occurrence in a depth-first,
+// left-to-right walk: a function's parameters before its result, and a named
+// type's arguments in order. It returns nil when there are none.
+func Metas(t Type) []*Meta {
+	var out []*Meta
+	seen := make(map[*Meta]bool)
+	var walk func(Type)
+	walk = func(t Type) {
+		t = Prune(t)
+		switch t := t.(type) {
+		case *Meta:
+			if !seen[t] {
+				seen[t] = true
+				out = append(out, t)
+			}
+		case *Func:
+			for _, p := range t.Params {
+				walk(p)
+			}
+			walk(t.Result)
+		case *Named:
+			for _, a := range t.Args {
+				walk(a)
+			}
+		}
+	}
+	walk(t)
+	return out
+}
+
 // Mentions reports whether v, a *TypeParam or *Meta, occurs in t, comparing
 // by pointer and following solved metas.
 func Mentions(t Type, v Type) bool {

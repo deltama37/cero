@@ -1,0 +1,41 @@
+// expected output: 42
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn range(from: Int, to: Int) -> List[Int] {
+    if from > to {
+        Nil
+    } else {
+        Cons(from, range(from + 1, to))
+    }
+}
+
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+
+fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn main() -> Int {
+    // Generalized: used at Int and at List[Bool] below.
+    let id = fn(x) { x }
+    let twice = fn(f, x) { f(f(x)) }
+
+    // The parameter types come from map's and foldl's signatures.
+    let xs = map(range(1, 3), fn(x) { x * 2 })
+    let flags = id(map(xs, fn(x) { x > 3 }))
+    let sum = foldl(xs, 0, fn(acc, x) { acc + x })
+    let trues = foldl(flags, 0, fn(n, b) { if b { n + 1 } else { n } })
+
+    twice(fn(n) { n + 10 }, id(sum)) + trues * 5
+}
