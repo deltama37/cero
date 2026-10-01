@@ -298,7 +298,7 @@ func (l *lowerer) lowerMatch(
 
 	var result ir.Expr
 	switch l.mustType(e.Scrutinee).(type) {
-	case *types.Data:
+	case *types.Named:
 		result = l.lowerDataMatch(fn, locals, e, s)
 	case types.IntType, types.BoolType:
 		result = l.lowerValueMatch(fn, locals, e, s)
@@ -502,7 +502,7 @@ func (l *lowerer) valType(t types.Type) ir.ValType {
 		return ir.Bool
 	case *types.Func:
 		return ir.FuncRef
-	case *types.Data:
+	case *types.Named:
 		return ir.Ptr
 	default:
 		panic(fmt.Sprintf("lower: unhandled type %T", t))
