@@ -51,7 +51,7 @@ type FuncDecl struct {
 type Param struct {
 	Pos  diag.Pos // name
 	Name string
-	Type TypeExpr
+	Type TypeExpr // nil when omitted; only parameters of a FuncLit can omit it
 }
 
 // TypeExpr is a type written in source.
@@ -200,7 +200,7 @@ type LetStmt struct {
 type FuncLit struct {
 	Pos    diag.Pos // 'fn'
 	Params []*Param
-	Result TypeExpr
+	Result TypeExpr // nil when omitted
 	Body   *BlockExpr
 }
 
