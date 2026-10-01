@@ -1,0 +1,46 @@
+// expected output: 26
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn range(from: Int, to: Int) -> List[Int] {
+    if from > to {
+        Nil
+    } else {
+        Cons(from, range(from + 1, to))
+    }
+}
+
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+
+fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn length[T](xs: List[T]) -> Int {
+    foldl(xs, 0, fn(n: Int, x: T) -> Int { n + 1 })
+}
+
+fn sum(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc + x })
+}
+
+fn count(bs: List[Bool]) -> Int {
+    foldl(bs, 0, fn(n: Int, b: Bool) -> Int { if b { n + 1 } else { n } })
+}
+
+fn main() -> Int {
+    let xs = range(1, 4)
+    let doubled = map(xs, fn(x: Int) -> Int { x * 2 })
+    let flags = map(xs, fn(x: Int) -> Bool { x > 2 })
+    sum(doubled) + length(flags) + count(flags)
+}

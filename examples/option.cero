@@ -1,0 +1,35 @@
+// expected output: 42
+
+type Option[T] =
+    | None
+    | Some(T)
+
+fn withDefault[T](o: Option[T], d: T) -> T {
+    match o {
+        None => d,
+        Some(x) => x,
+    }
+}
+
+fn mapOption[T, U](o: Option[T], f: T -> U) -> Option[U] {
+    match o {
+        None => None,
+        Some(x) => Some(f(x)),
+    }
+}
+
+fn safeDiv(a: Int, b: Int) -> Option[Int] {
+    if b == 0 {
+        None
+    } else {
+        Some(a / b)
+    }
+}
+
+fn main() -> Int {
+    let a = withDefault(mapOption(safeDiv(84, 2), fn(x: Int) -> Int { x - 2 }), 0)
+    let b = withDefault(safeDiv(1, 0), 2)
+    let nested = Some(Some(true))
+    let c = if withDefault(withDefault(nested, None), false) { 0 } else { 100 }
+    a + b + c
+}

@@ -612,6 +612,205 @@ fn main() -> Int {
 `,
 			want: "50000005000000",
 		},
+		{
+			name: "generic list example",
+			file: "examples/generic_list.cero",
+			want: "26",
+		},
+		{
+			name: "option example",
+			file: "examples/option.cero",
+			want: "42",
+		},
+		{
+			name: "two representations of identity",
+			src: `fn identity[T](x: T) -> T { x }
+
+fn main() -> Int {
+    if identity(true) { identity(40) + 2 } else { 0 }
+}
+`,
+			want: "42",
+		},
+		{
+			name: "generic function passed as a value",
+			src: `fn identity[T](x: T) -> T { x }
+
+fn apply(f: Int -> Int, x: Int) -> Int { f(x) }
+
+fn main() -> Int { apply(identity, 7) }
+`,
+			want: "7",
+		},
+		{
+			name: "let bound to a generic function",
+			src: `fn identity[T](x: T) -> T { x }
+
+fn main() -> Int {
+    let f = identity
+    f(5) + 1
+}
+`,
+			want: "6",
+		},
+		{
+			name: "polymorphic recursion",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn depth[T](x: T, n: Int) -> Int {
+    if n == 0 { 0 } else { 1 + depth(Cons(x, Nil), n - 1) }
+}
+
+fn main() -> Int { depth(7, 10) }
+`,
+			want: "10",
+		},
+		{
+			name: "Pair fields swapped between Int and Bool",
+			src: `type Pair[A, B] = Pair(A, B)
+
+fn fst[A, B](p: Pair[A, B]) -> A { match p { Pair(a, _) => a } }
+
+fn snd[A, B](p: Pair[A, B]) -> B { match p { Pair(_, b) => b } }
+
+fn main() -> Int {
+    let p = Pair(3, true)
+    let q = Pair(false, 20)
+    fst(p) + (if snd(p) { 10 } else { 0 }) + (if fst(q) { 1000 } else { snd(q) })
+}
+`,
+			want: "33",
+		},
+		{
+			name: "lambda inside a generic function",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn wrap[T](x: T) -> Option[T] {
+    let mk = fn(v: T) -> Option[T] { Some(v) }
+    mk(x)
+}
+
+fn getInt(o: Option[Int]) -> Int { match o { None => 0, Some(n) => n } }
+
+fn getBool(o: Option[Bool]) -> Bool { match o { None => false, Some(b) => b } }
+
+fn main() -> Int {
+    if getBool(wrap(true)) { getInt(wrap(41)) + 1 } else { 0 }
+}
+`,
+			want: "42",
+		},
+		{
+			name: "long generic list",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn range(from: Int, to: Int) -> List[Int] {
+    if from > to { Nil } else { Cons(from, range(from + 1, to)) }
+}
+
+fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn main() -> Int {
+    foldl(range(1, 10000), 0, fn(a: Int, x: Int) -> Int { a + x })
+}
+`,
+			want: "50005000",
+		},
+		{
+			name: "nested type application",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn sumSome(xs: List[Option[Int]]) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(o, rest) => match o { None => 0, Some(n) => n } + sumSome(rest),
+    }
+}
+
+fn main() -> Int {
+    sumSome(Cons(Some(1), Cons(None, Cons(Some(5), Nil))))
+}
+`,
+			want: "6",
+		},
+		{
+			name: "type parameter annotation in the body",
+			src: `type Pair[A, B] = Pair(A, B)
+
+fn dup[T](x: T) -> Pair[T, T] {
+    let y: T = x
+    Pair(x, y)
+}
+
+fn addPair(p: Pair[Int, Int]) -> Int { match p { Pair(a, b) => a + b } }
+
+fn main() -> Int { addPair(dup(21)) }
+`,
+			want: "42",
+		},
+		{
+			name: "non-regular data type and polymorphic recursion",
+			src: `type Pair[A, B] = Pair(A, B)
+
+type Nest[T] =
+    | Flat(T)
+    | Deep(Nest[Pair[T, T]])
+
+fn size[T](n: Nest[T]) -> Int {
+    match n {
+        Flat(_) => 1,
+        Deep(inner) => 2 * size(inner),
+    }
+}
+
+fn main() -> Int {
+    size(Deep(Deep(Flat(Pair(Pair(1, 2), Pair(3, 4))))))
+}
+`,
+			want: "4",
+		},
+		{
+			name: "deep tail recursion of specialized functions",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn countdown[T](n: Int, x: T) -> T {
+    if n == 0 { x } else { countdown(n - 1, x) }
+}
+
+fn loop[A](n: Int, acc: A, step: A -> A) -> A {
+    if n == 0 { acc } else { loop(n - 1, step(acc), step) }
+}
+
+fn main() -> Int {
+    let a = countdown(10000000, 30)
+    let b = match countdown(10000000, Some(true)) {
+        None => 0,
+        Some(t) => if t { 2 } else { 0 },
+    }
+    a + b + loop(10000000, 0, fn(x: Int) -> Int { x + 1 }) - 9999990
+}
+`,
+			want: "42",
+		},
 	}
 
 	for _, tt := range tests {

@@ -1579,6 +1579,483 @@ fn main() -> Int { f(1) }
 	}
 }
 
+const genericPrelude = `type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Pair[A, B] = Pair(A, B)
+
+fn identity[T](x: T) -> T { x }
+`
+
+func TestCheckGenericSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		src      string
+		wantMain string
+		check    func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name:     "identity at two types",
+			src:      genericPrelude + "fn main() -> Int { if identity(true) { identity(1) } else { 0 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				iff := funcByName(t, file, "main").Body.Result.(*ast.IfExpr)
+				cond := iff.Cond.(*ast.CallExpr)
+				then := iff.Then.Result.(*ast.CallExpr)
+				wantType(t, info, cond, "Bool")
+				wantType(t, info, then, "Int")
+				wantTypeArgs(t, info, cond.Fn.(*ast.Ident), "Bool")
+				wantTypeArgs(t, info, then.Fn.(*ast.Ident), "Int")
+			},
+		},
+		{
+			name:     "constructor type arguments",
+			src:      genericPrelude + "fn main() -> Int { let o = Some(1) 0 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.CallExpr)
+				wantType(t, info, call, "Option[Int]")
+				id := call.Fn.(*ast.Ident)
+				wantType(t, info, id, "Int -> Option[Int]")
+				wantTypeArgs(t, info, id, "Int")
+			},
+		},
+		{
+			name:     "annotation determines None",
+			src:      genericPrelude + "fn main() -> Int { let o: Option[Int] = None 0 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				id := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.Ident)
+				wantType(t, info, id, "Option[Int]")
+				wantTypeArgs(t, info, id, "Int")
+			},
+		},
+		{
+			name:     "later use determines None",
+			src:      genericPrelude + "fn main() -> Int { let o = None match o { Some(n) => n + 1, None => 0 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				mainFn := funcByName(t, file, "main")
+				if got := info.Defs[mainFn.Body.Lets[0]].Type.String(); got != "Option[Int]" {
+					t.Errorf("o type = %s, want Option[Int]", got)
+				}
+				pat := mainFn.Body.Result.(*ast.MatchExpr).Arms[0].Pattern.(*ast.CtorPat)
+				n := pat.Args[0].(*ast.VarPat)
+				if got := info.PatVars[n].Type.String(); got != "Int" {
+					t.Errorf("n type = %s, want Int", got)
+				}
+			},
+		},
+		{
+			name: "argument type determines None",
+			src: genericPrelude + `fn get(o: Option[Int]) -> Int { 0 }
+fn main() -> Int { get(None) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				wantTypeArgs(t, info, call.Args[0].(*ast.Ident), "Int")
+			},
+		},
+		{
+			name:     "type argument chain",
+			src:      genericPrelude + "fn main() -> Int { let p = Pair(Some(true), Cons(1, Nil)) 0 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				if got := info.Defs[letStmt].Type.String(); got != "Pair[Option[Bool], List[Int]]" {
+					t.Errorf("p type = %s, want Pair[Option[Bool], List[Int]]", got)
+				}
+			},
+		},
+		{
+			name: "recursive generic function",
+			src: genericPrelude + `fn length[T](xs: List[T]) -> Int { match xs { Nil => 0, Cons(_, r) => 1 + length(r) } }
+fn main() -> Int { length(Cons(1, Nil)) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lengthFn := funcByName(t, file, "length")
+				arm := lengthFn.Body.Result.(*ast.MatchExpr).Arms[1]
+				id := arm.Body.(*ast.BinaryExpr).Y.(*ast.CallExpr).Fn.(*ast.Ident)
+				wantTypeArgs(t, info, id, "T")
+				got, ok := info.TypeArgs[id][0].(*types.TypeParam)
+				if !ok || got != info.Funcs[lengthFn].TypeParams[0] {
+					t.Errorf("length type arg = %v, want the function's type parameter", info.TypeArgs[id])
+				}
+				mainCall := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				wantTypeArgs(t, info, mainCall.Fn.(*ast.Ident), "Int")
+			},
+		},
+		{
+			name: "polymorphic recursion",
+			src: genericPrelude + `fn depth[T](x: T, n: Int) -> Int { if n == 0 { 0 } else { 1 + depth(Cons(x, Nil), n - 1) } }
+fn main() -> Int { depth(7, 3) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				iff := funcByName(t, file, "depth").Body.Result.(*ast.IfExpr)
+				call := iff.Else.(*ast.BlockExpr).Result.(*ast.BinaryExpr).Y.(*ast.CallExpr)
+				wantTypeArgs(t, info, call.Fn.(*ast.Ident), "List[T]")
+			},
+		},
+		{
+			name: "type parameter in the body",
+			src: genericPrelude + `fn twice[T](x: T) -> T { let f = fn(v: T) -> T { v } let y: T = f(x) f(y) }
+fn main() -> Int { twice(1) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				body := funcByName(t, file, "twice").Body
+				lit := body.Lets[0].Value.(*ast.FuncLit)
+				if got := info.FuncLits[lit].String(); got != "T -> T" {
+					t.Errorf("func lit type = %s, want T -> T", got)
+				}
+				if got := info.Defs[body.Lets[1]].Type.String(); got != "T" {
+					t.Errorf("y type = %s, want T", got)
+				}
+			},
+		},
+		{
+			name: "pass a generic function as a value",
+			src: genericPrelude + `fn apply(f: Int -> Int, x: Int) -> Int { f(x) }
+fn main() -> Int { apply(identity, 7) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				id := funcByName(t, file, "main").Body.Result.(*ast.CallExpr).Args[0].(*ast.Ident)
+				wantType(t, info, id, "Int -> Int")
+				wantTypeArgs(t, info, id, "Int")
+			},
+		},
+		{
+			name:     "let is monomorphic",
+			src:      genericPrelude + "fn main() -> Int { let f = identity f(5) }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				if got := info.Defs[letStmt].Type.String(); got != "Int -> Int" {
+					t.Errorf("f type = %s, want Int -> Int", got)
+				}
+			},
+		},
+		{
+			name: "type parameter only in the result",
+			src: genericPrelude + `fn none[T]() -> Option[T] { None }
+fn main() -> Int { let o: Option[Bool] = none() 0 }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.CallExpr)
+				wantTypeArgs(t, info, call.Fn.(*ast.Ident), "Bool")
+			},
+		},
+		{
+			name: "project a generic field",
+			src: genericPrelude + `fn fst[A, B](p: Pair[A, B]) -> A { match p { Pair(a, _) => a } }
+fn main() -> Int { fst(Pair(3, true)) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				pat := funcByName(t, file, "fst").Body.Result.(*ast.MatchExpr).Arms[0].Pattern.(*ast.CtorPat)
+				a := pat.Args[0].(*ast.VarPat)
+				if got := info.PatVars[a].Type.String(); got != "A" {
+					t.Errorf("a type = %s, want A", got)
+				}
+				call := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				wantTypeArgs(t, info, call.Fn.(*ast.Ident), "Int", "Bool")
+			},
+		},
+		{
+			name: "phantom type",
+			src: `type Tag[T] = Tag
+fn main() -> Int { let t: Tag[Int] = Tag 0 }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				id := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.Ident)
+				wantType(t, info, id, "Tag[Int]")
+			},
+		},
+		{
+			name:     "nested type application",
+			src:      genericPrelude + "fn main() -> Int { let x: Option[List[Int]] = Some(Nil) 0 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.CallExpr)
+				wantType(t, info, call.Args[0].(*ast.Ident), "List[Int]")
+			},
+		},
+		{
+			name: "non-regular data type",
+			src: genericPrelude + `type Nest[T] = | Flat(T) | Deep(Nest[Pair[T, T]])
+fn main() -> Int { let n = Deep(Flat(Pair(1, 2))) 0 }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				if got := info.Defs[letStmt].Type.String(); got != "Nest[Int]" {
+					t.Errorf("n type = %s, want Nest[Int]", got)
+				}
+			},
+		},
+		{
+			name: "type declared after its use",
+			src: `fn main() -> Int { let o: Opt[Int] = Non 0 }
+type Opt[T] = | Non | Som(T)
+`,
+			wantMain: "Int",
+		},
+		{
+			name:     "type parameter info",
+			src:      genericPrelude + "fn main() -> Int { let o = Some(1) 0 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				idFn := funcByName(t, file, "identity")
+				tps := info.Funcs[idFn].TypeParams
+				if len(tps) != 1 || tps[0].Name != "T" {
+					t.Errorf("identity type params = %v, want [T]", tps)
+				}
+				pair := info.Datas[typeByName(t, file, "Pair")]
+				if len(pair.Params) != 2 || pair.Params[0].Name != "A" || pair.Params[1].Name != "B" {
+					t.Errorf("Pair params = %v, want [A, B]", pair.Params)
+				}
+				some := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.CallExpr).Fn.(*ast.Ident)
+				opt := info.Datas[typeByName(t, file, "Option")]
+				got := info.Uses[some].TypeParams
+				if len(got) != 1 || got[0] != opt.Params[0] {
+					t.Errorf("Some type param = %v, want Option's T", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.wantMain != "" {
+				mainFn := funcByName(t, file, "main")
+				wantType(t, info, mainFn.Body.Result, tt.wantMain)
+			}
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckGenericError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "type parameter conflicts with Int",
+			src:  "type Option[Int] = Some(Int)\n",
+			want: "1:13: type parameter 'Int' conflicts with type 'Int'",
+		},
+		{
+			name: "type parameter conflicts with a data type",
+			src:  "type A = A0\nfn f[A](x: A) -> A { x }\n",
+			want: "2:6: type parameter 'A' conflicts with type 'A'",
+		},
+		{
+			name: "type parameter conflicts with a later type",
+			src:  "fn f[T](x: T) -> T { x }\ntype T = T0\n",
+			want: "1:6: type parameter 'T' conflicts with type 'T'",
+		},
+		{
+			name: "duplicate function type parameter",
+			src:  "fn f[T, T](x: T) -> T { x }\n",
+			want: "1:9: duplicate type parameter 'T'",
+		},
+		{
+			name: "duplicate data type parameter",
+			src:  "type P[T, T] = P(T)\n",
+			want: "1:11: duplicate type parameter 'T'",
+		},
+		{
+			name: "unused type parameter",
+			src:  "fn f[T](x: Int) -> Int { x }\n",
+			want: "1:6: type parameter 'T' is not used in the signature of 'f'",
+		},
+		{
+			name: "unused type parameter of main",
+			src:  "fn main[T]() -> Int { 0 }\n",
+			want: "1:9: type parameter 'T' is not used in the signature of 'main'",
+		},
+		{
+			name: "main has type parameters",
+			src:  "type Option[T] = | None | Some(T)\nfn main[T]() -> Option[T] { None }\n",
+			want: "2:4: function 'main' cannot have type parameters",
+		},
+		{
+			name: "missing type argument",
+			src:  "type Option[T] = | None | Some(T)\nfn f(x: Option) -> Int { 0 }\n",
+			want: "2:9: wrong number of type arguments for 'Option': expected 1, found 0",
+		},
+		{
+			name: "type argument on Int",
+			src:  "fn f(x: Int[Bool]) -> Int { 0 }\n",
+			want: "1:9: wrong number of type arguments for 'Int': expected 0, found 1",
+		},
+		{
+			name: "type argument on a type parameter",
+			src:  "fn f[T](x: T[Int]) -> Int { 0 }\n",
+			want: "1:12: wrong number of type arguments for 'T': expected 0, found 1",
+		},
+		{
+			name: "missing type argument in a field",
+			src:  "type List[T] = | Nil | Cons(T, List)\n",
+			want: "1:32: wrong number of type arguments for 'List': expected 1, found 0",
+		},
+		{
+			name: "type argument on a monomorphic type",
+			src:  "type Box = Box(Int)\nfn f(x: Box[Int]) -> Int { 0 }\n",
+			want: "2:9: wrong number of type arguments for 'Box': expected 0, found 1",
+		},
+		{
+			name: "unknown type argument",
+			src:  "type P[A, B] = P(A, B)\nfn f(x: P[Int, Foo]) -> Int { 0 }\n",
+			want: "2:16: unknown type 'Foo'",
+		},
+		{
+			name: "type parameter out of scope",
+			src:  "fn f[T](x: T) -> T { x }\nfn g(y: T) -> Int { 0 }\n",
+			want: "2:9: unknown type 'T'",
+		},
+		{
+			name: "unknown field type parameter",
+			src:  "type Box = Box(T)\n",
+			want: "1:16: unknown type 'T'",
+		},
+		{
+			name: "identity calls disagree",
+			src:  "fn identity[T](x: T) -> T { x }\nfn main() -> Int { identity(1) + identity(true) }\n",
+			want: "2:34: expected Int, found Bool",
+		},
+		{
+			name: "body does not match Int",
+			src:  "fn f[T](x: T) -> Int { x }\n",
+			want: "1:24: expected Int, found T",
+		},
+		{
+			name: "addition on a type parameter",
+			src:  "fn f[T](x: T) -> T { x + 1 }\n",
+			want: "1:22: expected Int, found T",
+		},
+		{
+			name: "return the wrong type parameter",
+			src:  "fn f[T, U](x: T) -> U { x }\n",
+			want: "1:25: expected U, found T",
+		},
+		{
+			name: "compare type parameters",
+			src:  "fn f[T](x: T, y: T) -> Bool { x == y }\n",
+			want: "1:31: cannot compare values of type T",
+		},
+		{
+			name: "match on a type parameter",
+			src:  "fn f[T](x: T) -> Int { match x { _ => 0 } }\n",
+			want: "1:30: cannot match on values of type T",
+		},
+		{
+			name: "unsolved None",
+			src:  "type Option[T] = | None | Some(T)\nfn main() -> Int { let x = None 0 }\n",
+			want: "2:28: cannot infer type argument 'T' of 'None'; add a type annotation",
+		},
+		{
+			name: "unsolved length",
+			src: `type List[T] = | Nil | Cons(T, List[T])
+fn length[T](xs: List[T]) -> Int { 0 }
+fn main() -> Int { length(Nil) }
+`,
+			want: "3:20: cannot infer type argument 'T' of 'length'; add a type annotation",
+		},
+		{
+			name: "unsolved none",
+			src: `type Option[T] = | None | Some(T)
+fn none[T]() -> Option[T] { None }
+fn main() -> Int { match none() { _ => 0 } }
+`,
+			want: "3:26: cannot infer type argument 'T' of 'none'; add a type annotation",
+		},
+		{
+			name: "match on an unsolved meta",
+			src:  "fn nothing[T]() -> T { nothing() }\nfn main() -> Int { match nothing() { _ => 0 } }\n",
+			want: "2:26: cannot infer the type of the matched value; add a type annotation",
+		},
+		{
+			name: "call an unsolved meta",
+			src:  "fn nothing[T]() -> T { nothing() }\nfn main() -> Int { nothing()(1) }\n",
+			want: "2:20: cannot call non-function value of type ?T",
+		},
+		{
+			name: "occurs check on a let binding",
+			src:  "fn identity[T](x: T) -> T { x }\nfn main() -> Int { let f = identity f(f) }\n",
+			want: "2:39: expected ?T, found ?T -> ?T",
+		},
+		{
+			name: "option argument mismatch",
+			src:  "type Option[T] = | None | Some(T)\nfn main() -> Int { let x: Option[Bool] = Some(1) 0 }\n",
+			want: "2:42: expected Option[Bool], found Option[Int]",
+		},
+		{
+			name: "if branches of options",
+			src:  "type Option[T] = | None | Some(T)\nfn f(b: Bool) -> Int { let x = if b { Some(1) } else { Some(true) } 0 }\n",
+			want: "2:56: if branches have different types: Option[Int] and Option[Bool]",
+		},
+		{
+			name: "match arms of option and int",
+			src:  "type Option[T] = | None | Some(T)\nfn f(b: Bool) -> Int { match b { true => None, false => 1 } }\n",
+			want: "2:57: match arms have different types: Option[?T] and Int",
+		},
+		{
+			name: "constructor of another generic type",
+			src: `type Option[T] = | None | Some(T)
+type List[T] = | Nil | Cons(T, List[T])
+fn f(o: Option[Int]) -> Int { match o { Nil => 0, _ => 1 } }
+`,
+			want: "3:41: expected Option[Int], found List[?T]",
+		},
+		{
+			name: "wrong number of pattern fields",
+			src:  "type Option[T] = | None | Some(T)\nfn f(o: Option[Int]) -> Int { match o { Some(x, y) => 0, _ => 1 } }\n",
+			want: "2:41: wrong number of fields in pattern 'Some': expected 1, found 2",
+		},
+		{
+			name: "generic function argument arity",
+			src:  "fn apply2[T](f: (T, T) -> T, x: T) -> T { f(x, x) }\nfn main() -> Int { apply2(fn(a: Int) -> Int { a }, 1) }\n",
+			want: "2:27: expected (?T, ?T) -> ?T, found Int -> Int",
+		},
+		{
+			name: "capture a type parameter value",
+			src:  "fn f[T](x: T) -> Int { let g = fn(y: Int) -> T { x } 0 }\n",
+			want: "1:50: cannot capture 'x' in anonymous function: closures are not supported in v0.1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
 func mustCheck(t *testing.T, src string) (*ast.File, *Info) {
 	t.Helper()
 
@@ -1654,6 +2131,23 @@ func wantType(t *testing.T, info *Info, e ast.Expr, want string) {
 	}
 }
 
+func wantTypeArgs(t *testing.T, info *Info, id *ast.Ident, want ...string) {
+	t.Helper()
+
+	args, ok := info.TypeArgs[id]
+	if !ok {
+		t.Fatalf("missing type args for %s", id.Name)
+	}
+	if len(args) != len(want) {
+		t.Fatalf("type args for %s = %d, want %d", id.Name, len(args), len(want))
+	}
+	for i, a := range args {
+		if a.String() != want[i] {
+			t.Errorf("type arg %d of %s = %s, want %s", i, id.Name, a, want[i])
+		}
+	}
+}
+
 func usesOf(info *Info, ids []*ast.Ident) []*Symbol {
 	out := make([]*Symbol, len(ids))
 	for i, id := range ids {
@@ -1716,7 +2210,8 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 
 	if info.Types == nil || info.Uses == nil || info.Defs == nil ||
 		info.Params == nil || info.Funcs == nil || info.FuncLits == nil ||
-		info.Datas == nil || info.CtorPats == nil || info.PatVars == nil {
+		info.Datas == nil || info.CtorPats == nil || info.PatVars == nil ||
+		info.TypeArgs == nil {
 		t.Fatal("Check() returned a nil map")
 	}
 	if len(info.Datas) != len(file.Types) {
@@ -1728,6 +2223,14 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 			t.Errorf("data for %s = %+v", td.Name, data)
 			continue
 		}
+		if len(data.Params) != len(td.TypeParams) {
+			t.Errorf("type %s params = %d, want %d", td.Name, len(data.Params), len(td.TypeParams))
+		}
+		for i, p := range td.TypeParams {
+			if i >= len(data.Params) || data.Params[i] == nil || data.Params[i].Name != p.Name {
+				t.Errorf("type %s param %d name = %v, want %s", td.Name, i, data.Params, p.Name)
+			}
+		}
 		for i, ctor := range data.Ctors {
 			if ctor == nil || ctor.Index != i || ctor.Data != data || ctor.Name != td.Ctors[i].Name {
 				t.Errorf("%s constructor %d = %+v", td.Name, i, ctor)
@@ -1738,7 +2241,7 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 		}
 	}
 
-	var exprs, lets, params, lits, idents int
+	var exprs, lets, params, lits, idents, typeArgs int
 	var mainFound bool
 	if len(info.Funcs) != len(file.Funcs) {
 		t.Errorf("len(Funcs) = %d, want %d", len(info.Funcs), len(file.Funcs))
@@ -1764,7 +2267,7 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 			}
 		}
 		params += checkParams(t, info, fn.Params, sig.Params)
-		walkExpr(t, info, fn.Body, &exprs, &lets, &params, &lits, &idents)
+		walkExpr(t, info, fn.Body, &exprs, &lets, &params, &lits, &idents, &typeArgs)
 	}
 	if !mainFound {
 		t.Error("missing function main")
@@ -1783,6 +2286,70 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 	}
 	if idents != len(info.Uses) {
 		t.Errorf("idents = %d, len(Uses) = %d", idents, len(info.Uses))
+	}
+	if typeArgs != len(info.TypeArgs) {
+		t.Errorf("type args = %d, len(TypeArgs) = %d", typeArgs, len(info.TypeArgs))
+	}
+	assertNoMeta(t, info)
+}
+
+func assertNoMeta(t *testing.T, info *Info) {
+	t.Helper()
+
+	for e, typ := range info.Types {
+		if containsMeta(typ) {
+			t.Errorf("type of %T contains a meta: %s", e, typ)
+		}
+	}
+	for stmt, sym := range info.Defs {
+		if sym != nil && containsMeta(sym.Type) {
+			t.Errorf("def %s contains a meta: %s", stmt.Name, sym.Type)
+		}
+	}
+	for pat, sym := range info.PatVars {
+		if sym != nil && containsMeta(sym.Type) {
+			t.Errorf("pattern variable %s contains a meta: %s", pat.Name, sym.Type)
+		}
+	}
+	for param, sym := range info.Params {
+		if sym != nil && containsMeta(sym.Type) {
+			t.Errorf("param %s contains a meta: %s", param.Name, sym.Type)
+		}
+	}
+	for lit, sig := range info.FuncLits {
+		if containsMeta(sig) {
+			t.Errorf("func lit at %s contains a meta: %s", lit.Pos, sig)
+		}
+	}
+	for id, args := range info.TypeArgs {
+		for i, arg := range args {
+			if containsMeta(arg) {
+				t.Errorf("type arg %d of %s contains a meta: %s", i, id.Name, arg)
+			}
+		}
+	}
+}
+
+func containsMeta(t types.Type) bool {
+	switch t := t.(type) {
+	case *types.Meta:
+		return true
+	case *types.Func:
+		for _, p := range t.Params {
+			if containsMeta(p) {
+				return true
+			}
+		}
+		return containsMeta(t.Result)
+	case *types.Named:
+		for _, a := range t.Args {
+			if containsMeta(a) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }
 
@@ -1819,6 +2386,7 @@ func walkExpr(
 	params *int,
 	lits *int,
 	idents *int,
+	typeArgs *int,
 ) {
 	t.Helper()
 
@@ -1839,26 +2407,43 @@ func walkExpr(
 			t.Errorf("missing use of %s", e.Name)
 			return
 		}
-		if sym.Name != e.Name || !types.Equal(info.Types[e], sym.Type) {
+		if sym.Name != e.Name {
+			t.Errorf("use of %s has name %s", e.Name, sym.Name)
+		}
+		if len(sym.TypeParams) > 0 {
+			args, ok := info.TypeArgs[e]
+			if !ok {
+				t.Errorf("missing type args for %s", e.Name)
+			} else if len(args) != len(sym.TypeParams) {
+				t.Errorf("type args for %s = %d, want %d", e.Name, len(args), len(sym.TypeParams))
+			} else if !types.Equal(info.Types[e], types.Subst(sym.Type, sym.TypeParams, args)) {
+				t.Errorf("use of %s = %+v, expr type %s", e.Name, sym, info.Types[e])
+			}
+		} else if _, ok := info.TypeArgs[e]; ok {
+			t.Errorf("unexpected type args for %s", e.Name)
+		} else if !types.Equal(info.Types[e], sym.Type) {
 			t.Errorf("use of %s = %+v, expr type %s", e.Name, sym, info.Types[e])
+		}
+		if _, ok := info.TypeArgs[e]; ok {
+			*typeArgs++
 		}
 		if sym.Kind == SymCtor && (sym.Ctor == nil || sym.Decl != nil) {
 			t.Errorf("constructor %s = %+v", e.Name, sym)
 		}
 	case *ast.UnaryExpr:
-		walkExpr(t, info, e.X, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.X, exprs, lets, params, lits, idents, typeArgs)
 	case *ast.BinaryExpr:
-		walkExpr(t, info, e.X, exprs, lets, params, lits, idents)
-		walkExpr(t, info, e.Y, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.X, exprs, lets, params, lits, idents, typeArgs)
+		walkExpr(t, info, e.Y, exprs, lets, params, lits, idents, typeArgs)
 	case *ast.CallExpr:
-		walkExpr(t, info, e.Fn, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.Fn, exprs, lets, params, lits, idents, typeArgs)
 		for _, arg := range e.Args {
-			walkExpr(t, info, arg, exprs, lets, params, lits, idents)
+			walkExpr(t, info, arg, exprs, lets, params, lits, idents, typeArgs)
 		}
 	case *ast.IfExpr:
-		walkExpr(t, info, e.Cond, exprs, lets, params, lits, idents)
-		walkExpr(t, info, e.Then, exprs, lets, params, lits, idents)
-		walkExpr(t, info, e.Else, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.Cond, exprs, lets, params, lits, idents, typeArgs)
+		walkExpr(t, info, e.Then, exprs, lets, params, lits, idents, typeArgs)
+		walkExpr(t, info, e.Else, exprs, lets, params, lits, idents, typeArgs)
 	case *ast.BlockExpr:
 		for _, letStmt := range e.Lets {
 			*lets++
@@ -1870,9 +2455,9 @@ func walkExpr(
 			} else if vt, ok := info.Types[letStmt.Value]; ok && !types.Equal(sym.Type, vt) {
 				t.Errorf("let %s type = %s, value type = %s", letStmt.Name, sym.Type, vt)
 			}
-			walkExpr(t, info, letStmt.Value, exprs, lets, params, lits, idents)
+			walkExpr(t, info, letStmt.Value, exprs, lets, params, lits, idents, typeArgs)
 		}
-		walkExpr(t, info, e.Result, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.Result, exprs, lets, params, lits, idents, typeArgs)
 		if rt, ok := info.Types[e.Result]; ok && !types.Equal(info.Types[e], rt) {
 			t.Errorf("block type = %s, result type = %s", info.Types[e], rt)
 		}
@@ -1887,12 +2472,12 @@ func walkExpr(
 		if sig != nil {
 			*params += checkParams(t, info, e.Params, sig.Params)
 		}
-		walkExpr(t, info, e.Body, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.Body, exprs, lets, params, lits, idents, typeArgs)
 	case *ast.MatchExpr:
-		walkExpr(t, info, e.Scrutinee, exprs, lets, params, lits, idents)
+		walkExpr(t, info, e.Scrutinee, exprs, lets, params, lits, idents, typeArgs)
 		for _, arm := range e.Arms {
 			walkPattern(t, info, arm.Pattern, info.Types[e.Scrutinee])
-			walkExpr(t, info, arm.Body, exprs, lets, params, lits, idents)
+			walkExpr(t, info, arm.Body, exprs, lets, params, lits, idents, typeArgs)
 			if bt, ok := info.Types[arm.Body]; ok && !types.Equal(info.Types[e], bt) {
 				t.Errorf("match type = %s, arm type = %s", info.Types[e], bt)
 			}
@@ -1933,13 +2518,16 @@ func walkPattern(
 		if ctor.Name != p.Name {
 			t.Errorf("constructor pattern %s resolved to %s", p.Name, ctor.Name)
 		}
-		if want != nil && !types.Equal(ctor.Data, want) {
-			t.Errorf("constructor pattern %s type = %s, want %s", p.Name, ctor.Data, want)
+		if want != nil {
+			named, ok := want.(*types.Named)
+			if !ok || named.Data != ctor.Data {
+				t.Errorf("constructor pattern %s data = %s, want %s", p.Name, ctor.Data.Name, want)
+			}
 		}
 		for i, arg := range p.Args {
 			var field types.Type
-			if i < len(ctor.Fields) {
-				field = ctor.Fields[i]
+			if named, ok := want.(*types.Named); ok && i < len(ctor.Fields) {
+				field = types.Subst(ctor.Fields[i], ctor.Data.Params, named.Args)
 			}
 			walkPattern(t, info, arg, field)
 		}
