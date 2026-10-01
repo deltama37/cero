@@ -352,6 +352,101 @@ fn sum(xs: IntList) -> Int {
 			types: 2,
 			funcs: 2,
 		},
+		{
+			name:  "option type param",
+			src:   "type Option[T] = | None | Some(T)",
+			want:  "(type Option[T] (None) (Some T))",
+			types: 1,
+		},
+		{
+			name:  "pair type params",
+			src:   "type Pair[A, B] = Pair(A, B)",
+			want:  "(type Pair[A B] (Pair A B))",
+			types: 1,
+		},
+		{
+			name:  "list type application",
+			src:   "type List[T] = Nil | Cons(T, List[T])",
+			want:  "(type List[T] (Nil) (Cons T List[T]))",
+			types: 1,
+		},
+		{
+			name:  "box function type argument",
+			src:   "type Box[T] = Box(T -> T)",
+			want:  "(type Box[T] (Box (-> (T) T)))",
+			types: 1,
+		},
+		{
+			name:  "identity type param",
+			src:   "fn identity[T](x: T) -> T { x }",
+			want:  "(fn identity[T] ((x T)) T (block x))",
+			funcs: 1,
+		},
+		{
+			name:  "map type params",
+			src:   "fn map[T, U](xs: List[T], f: T -> U) -> List[U] { xs }",
+			want:  "(fn map[T U] ((xs List[T]) (f (-> (T) U))) List[U] (block xs))",
+			funcs: 1,
+		},
+		{
+			name:  "nested type application param",
+			src:   "fn f(x: Option[List[Int]]) -> Int { 0 }",
+			want:  "(fn f ((x Option[List[Int]])) Int (block 0))",
+			funcs: 1,
+		},
+		{
+			name:  "function type inside application",
+			src:   "fn f(x: Option[Int -> Int]) -> Int { 0 }",
+			want:  "(fn f ((x Option[(-> (Int) Int)])) Int (block 0))",
+			funcs: 1,
+		},
+		{
+			name:  "application before arrow",
+			src:   "fn f(g: Option[Int] -> Int) -> Int { 0 }",
+			want:  "(fn f ((g (-> (Option[Int]) Int))) Int (block 0))",
+			funcs: 1,
+		},
+		{
+			name:  "application in tuple function type",
+			src:   "fn f(g: (Option[Int], Bool) -> Int) -> Int { 0 }",
+			want:  "(fn f ((g (-> (Option[Int] Bool) Int))) Int (block 0))",
+			funcs: 1,
+		},
+		{
+			name:  "let annotation type application",
+			src:   "fn f() -> Int { let x: Option[Int] = None x }",
+			want:  "(fn f () Int (block (let x : Option[Int] None) x))",
+			funcs: 1,
+		},
+		{
+			name:  "func lit type application",
+			src:   "fn f() -> Int { let g = fn(x: List[Int]) -> Int { 0 } 1 }",
+			want:  "(fn f () Int (block (let g (fn ((x List[Int])) Int (block 0))) 1))",
+			funcs: 1,
+		},
+		{
+			name: "option list and map",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+`,
+			want: `(type Option[T] (None) (Some T))
+(type List[T] (Nil) (Cons T List[T]))
+(fn map[T U] ((xs List[T]) (f (-> (T) U))) List[U] (block (match xs (=> Nil Nil) (=> (Cons x rest) (call Cons (call f x) (call map rest f))))))`,
+			types: 2,
+			funcs: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -544,6 +639,74 @@ func TestParseError(t *testing.T) {
 			expr: true,
 			want: "1:7: expected identifier, found '_'",
 		},
+		{
+			name: "empty type param list",
+			src:  "fn f[]() -> Int { 1 }",
+			want: "1:6: expected identifier, found ']'",
+		},
+		{
+			name: "lowercase type param",
+			src:  "fn f[t]() -> Int { 1 }",
+			want: "1:6: type parameter name 't' must start with an uppercase letter",
+		},
+		{
+			name: "trailing comma in type params",
+			src:  "fn f[T,]() -> Int { 1 }",
+			want: "1:8: expected identifier, found ']'",
+		},
+		{
+			name: "missing comma in type params",
+			src:  "fn f[T U]() -> Int { 1 }",
+			want: `1:8: expected ']', found identifier "U"`,
+		},
+		{
+			name: "empty type param list on type",
+			src:  "type T[] = A",
+			want: "1:8: expected identifier, found ']'",
+		},
+		{
+			name: "lowercase type param on type",
+			src:  "type Box[a] = B(a)",
+			want: "1:10: type parameter name 'a' must start with an uppercase letter",
+		},
+		{
+			name: "type params without equals",
+			src:  "type Option[T] Some(T)",
+			want: `1:16: expected '=', found identifier "Some"`,
+		},
+		{
+			name: "empty type arguments",
+			src:  "fn f(x: Option[]) -> Int { 1 }",
+			want: "1:16: expected type, found ']'",
+		},
+		{
+			name: "unclosed type arguments",
+			src:  "fn f(x: Option[Int) -> Int { 1 }",
+			want: "1:19: expected ']', found ')'",
+		},
+		{
+			name: "missing comma in type arguments",
+			src:  "fn f(x: Pair[Int Bool]) -> Int { 1 }",
+			want: `1:18: expected ']', found identifier "Bool"`,
+		},
+		{
+			name: "explicit type arguments on call",
+			src:  "identity[Int](1)",
+			expr: true,
+			want: "1:9: explicit type arguments are not supported in v0.3",
+		},
+		{
+			name: "explicit type arguments after call",
+			src:  "f(x)[Int]",
+			expr: true,
+			want: "1:5: explicit type arguments are not supported in v0.3",
+		},
+		{
+			name: "func lit type params",
+			src:  "fn[T](x: T) -> T { x }",
+			expr: true,
+			want: "1:3: expected '(', found '['",
+		},
 	}
 
 	for _, tt := range tests {
@@ -557,6 +720,110 @@ func TestParseError(t *testing.T) {
 				_, err = ParseFile([]byte(tt.src))
 			}
 			requireDiag(t, err, tt.want)
+		})
+	}
+}
+
+func TestTypeParamsAbsent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(t *testing.T, file *ast.File)
+	}{
+		{
+			name: "type decl",
+			src:  "type IntList = Nil | Cons(Int, IntList)",
+			check: func(t *testing.T, file *ast.File) {
+				t.Helper()
+				decl := file.Types[0]
+				if decl.TypeParams != nil {
+					t.Errorf("TypeParams = %#v, want nil", decl.TypeParams)
+				}
+				for _, field := range decl.Ctors[1].Fields {
+					named, ok := field.(*ast.NamedType)
+					if !ok {
+						t.Fatalf("field type = %T, want *ast.NamedType", field)
+					}
+					if named.Args != nil {
+						t.Errorf("NamedType %s Args = %#v, want nil", named.Name, named.Args)
+					}
+				}
+			},
+		},
+		{
+			name: "func decl",
+			src:  "fn f(x: Int) -> Int { x }",
+			check: func(t *testing.T, file *ast.File) {
+				t.Helper()
+				fn := file.Funcs[0]
+				if fn.TypeParams != nil {
+					t.Errorf("TypeParams = %#v, want nil", fn.TypeParams)
+				}
+				for _, typ := range []ast.TypeExpr{fn.Params[0].Type, fn.Result} {
+					named, ok := typ.(*ast.NamedType)
+					if !ok {
+						t.Fatalf("type = %T, want *ast.NamedType", typ)
+					}
+					if named.Args != nil {
+						t.Errorf("NamedType %s Args = %#v, want nil", named.Name, named.Args)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := ParseFile([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("ParseFile() error = %v", err)
+			}
+			tt.check(t, file)
+		})
+	}
+}
+
+func TestTypeParamNameAndPos(t *testing.T) {
+	t.Parallel()
+
+	const src = "fn map[T, U](xs: List[T], f: T -> U) -> List[U] { xs }"
+	tests := []struct {
+		name string
+		idx  int
+		want string
+		line int
+		col  int
+	}{
+		{name: "T", idx: 0, want: "T", line: 1, col: 8},
+		{name: "U", idx: 1, want: "U", line: 1, col: 11},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := ParseFile([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseFile() error = %v", err)
+			}
+			params := file.Funcs[0].TypeParams
+			if params == nil {
+				t.Fatal("TypeParams = nil, want two type parameters")
+			}
+			if len(params) != 2 {
+				t.Fatalf("len(TypeParams) = %d, want 2", len(params))
+			}
+			got := params[tt.idx]
+			if got.Name != tt.want {
+				t.Errorf("Name = %q, want %q", got.Name, tt.want)
+			}
+			if got.Pos != (diag.Pos{Line: tt.line, Col: tt.col}) {
+				t.Errorf("Pos = %s, want %d:%d", got.Pos, tt.line, tt.col)
+			}
 		})
 	}
 }

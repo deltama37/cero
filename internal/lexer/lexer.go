@@ -192,6 +192,10 @@ func matchOne(r rune) (token.Kind, string, bool) {
 		return token.LBrace, "{", true
 	case '}':
 		return token.RBrace, "}", true
+	case '[':
+		return token.LBracket, "[", true
+	case ']':
+		return token.RBracket, "]", true
 	case ',':
 		return token.Comma, ",", true
 	case ':':

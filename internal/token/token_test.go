@@ -20,6 +20,8 @@ func TestKindString(t *testing.T) {
 		{name: "Arrow", kind: Arrow, want: "'->'"},
 		{name: "FatArrow", kind: FatArrow, want: "'=>'"},
 		{name: "Bar", kind: Bar, want: "'|'"},
+		{name: "LBracket", kind: LBracket, want: "'['"},
+		{name: "RBracket", kind: RBracket, want: "']'"},
 		{name: "AndAnd", kind: AndAnd, want: "'&&'"},
 	}
 

@@ -12,12 +12,20 @@ type File struct {
 	Funcs []*FuncDecl
 }
 
+// TypeParam declares one type parameter in "[T, U]". Name starts with an
+// uppercase ASCII letter.
+type TypeParam struct {
+	Pos  diag.Pos
+	Name string
+}
+
 // TypeDecl is a top-level algebraic data type declaration.
 type TypeDecl struct {
-	Pos     diag.Pos // 'type'
-	Name    string
-	NamePos diag.Pos
-	Ctors   []*CtorDecl // at least one
+	Pos        diag.Pos // 'type'
+	Name       string
+	NamePos    diag.Pos
+	TypeParams []*TypeParam // nil when written without brackets
+	Ctors      []*CtorDecl  // at least one
 }
 
 // CtorDecl is one constructor of a TypeDecl. Fields is empty for a
@@ -30,12 +38,13 @@ type CtorDecl struct {
 
 // FuncDecl is a top-level function declaration.
 type FuncDecl struct {
-	Pos     diag.Pos // 'fn'
-	Name    string
-	NamePos diag.Pos
-	Params  []*Param
-	Result  TypeExpr
-	Body    *BlockExpr
+	Pos        diag.Pos // 'fn'
+	Name       string
+	NamePos    diag.Pos
+	TypeParams []*TypeParam // nil when written without brackets
+	Params     []*Param
+	Result     TypeExpr
+	Body       *BlockExpr
 }
 
 // Param is a function parameter.
@@ -51,10 +60,12 @@ type TypeExpr interface {
 	typeExpr()
 }
 
-// NamedType is a type referred to by name.
+// NamedType is a type referred to by name, optionally applied to type
+// arguments.
 type NamedType struct {
 	Pos  diag.Pos
-	Name string // "Int", "Bool", or an unknown name (rejected by the type checker)
+	Name string     // "Int", "Bool", a type parameter, a declared type, or an unknown name (rejected by the type checker)
+	Args []TypeExpr // type arguments in "Name[A, B]"; nil when written without brackets
 }
 
 // Position returns the position of the type name.

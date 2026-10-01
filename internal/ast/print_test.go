@@ -66,6 +66,49 @@ func TestFormat(t *testing.T) {
 			want: "Int",
 		},
 		{
+			name: "named type application",
+			got:  FormatType(&NamedType{Name: "Option", Args: []TypeExpr{intType}}),
+			want: "Option[Int]",
+		},
+		{
+			name: "named type two arguments",
+			got: FormatType(&NamedType{
+				Name: "Pair",
+				Args: []TypeExpr{intType, boolType},
+			}),
+			want: "Pair[Int Bool]",
+		},
+		{
+			name: "nested type application",
+			got: FormatType(&NamedType{
+				Name: "List",
+				Args: []TypeExpr{&NamedType{
+					Name: "List",
+					Args: []TypeExpr{&NamedType{Name: "T"}},
+				}},
+			}),
+			want: "List[List[T]]",
+		},
+		{
+			name: "type application of function type",
+			got: FormatType(&NamedType{
+				Name: "Option",
+				Args: []TypeExpr{&FuncType{
+					Params: []TypeExpr{intType},
+					Result: intType,
+				}},
+			}),
+			want: "Option[(-> (Int) Int)]",
+		},
+		{
+			name: "function type of applied type",
+			got: FormatType(&FuncType{
+				Params: []TypeExpr{&NamedType{Name: "Option", Args: []TypeExpr{intType}}},
+				Result: intType,
+			}),
+			want: "(-> (Option[Int]) Int)",
+		},
+		{
 			name: "function type two params",
 			got: FormatType(&FuncType{
 				Params: []TypeExpr{intType, intType},
@@ -187,6 +230,39 @@ func TestFormat(t *testing.T) {
 			want: "(fn add ((a Int) (b Int)) Int (block (+ a b)))",
 		},
 		{
+			name: "func decl no type params",
+			got:  FormatFunc(id),
+			want: "(fn id () Bool (block false))",
+		},
+		{
+			name: "func decl one type param",
+			got: FormatFunc(&FuncDecl{
+				Name:       "identity",
+				TypeParams: []*TypeParam{{Name: "T"}},
+				Params:     []*Param{{Name: "x", Type: &NamedType{Name: "T"}}},
+				Result:     &NamedType{Name: "T"},
+				Body:       block(ident("x")),
+			}),
+			want: "(fn identity[T] ((x T)) T (block x))",
+		},
+		{
+			name: "func decl two type params",
+			got: FormatFunc(&FuncDecl{
+				Name:       "map",
+				TypeParams: []*TypeParam{{Name: "T"}, {Name: "U"}},
+				Params: []*Param{
+					{Name: "xs", Type: &NamedType{Name: "List", Args: []TypeExpr{&NamedType{Name: "T"}}}},
+					{Name: "f", Type: &FuncType{
+						Params: []TypeExpr{&NamedType{Name: "T"}},
+						Result: &NamedType{Name: "U"},
+					}},
+				},
+				Result: &NamedType{Name: "List", Args: []TypeExpr{&NamedType{Name: "U"}}},
+				Body:   block(ident("xs")),
+			}),
+			want: "(fn map[T U] ((xs List[T]) (f (-> (T) U))) List[U] (block xs))",
+		},
+		{
 			name: "file joins functions",
 			got:  FormatFile(&File{Funcs: []*FuncDecl{add, id}}),
 			want: "(fn add ((a Int) (b Int)) Int (block (+ a b)))\n(fn id () Bool (block false))",
@@ -200,6 +276,35 @@ func TestFormat(t *testing.T) {
 			name: "type decl",
 			got:  FormatTypeDecl(&TypeDecl{Name: "IntList", Ctors: []*CtorDecl{nilCtor, consCtor}}),
 			want: "(type IntList (Nil) (Cons Int IntList))",
+		},
+		{
+			name: "type decl no type params",
+			got:  FormatTypeDecl(&TypeDecl{Name: "IntList", Ctors: []*CtorDecl{nilCtor, consCtor}}),
+			want: "(type IntList (Nil) (Cons Int IntList))",
+		},
+		{
+			name: "type decl one type param",
+			got: FormatTypeDecl(&TypeDecl{
+				Name:       "Option",
+				TypeParams: []*TypeParam{{Name: "T"}},
+				Ctors: []*CtorDecl{
+					{Name: "None"},
+					{Name: "Some", Fields: []TypeExpr{&NamedType{Name: "T"}}},
+				},
+			}),
+			want: "(type Option[T] (None) (Some T))",
+		},
+		{
+			name: "type decl two type params",
+			got: FormatTypeDecl(&TypeDecl{
+				Name:       "Pair",
+				TypeParams: []*TypeParam{{Name: "A"}, {Name: "B"}},
+				Ctors: []*CtorDecl{{
+					Name:   "Pair",
+					Fields: []TypeExpr{&NamedType{Name: "A"}, &NamedType{Name: "B"}},
+				}},
+			}),
+			want: "(type Pair[A B] (Pair A B))",
 		},
 		{
 			name: "ctor no fields",

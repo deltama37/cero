@@ -80,6 +80,39 @@ func TestTokenize(t *testing.T) {
 			},
 		},
 		{
+			name: "brackets",
+			src:  "[ ]",
+			want: []token.Token{
+				tok(token.LBracket, "[", 1, 1),
+				tok(token.RBracket, "]", 1, 3),
+				eof(1, 4),
+			},
+		},
+		{
+			name: "type application",
+			src:  "Option[Int]",
+			want: []token.Token{
+				tok(token.Ident, "Option", 1, 1),
+				tok(token.LBracket, "[", 1, 7),
+				tok(token.Ident, "Int", 1, 8),
+				tok(token.RBracket, "]", 1, 11),
+				eof(1, 12),
+			},
+		},
+		{
+			name: "brackets with comma",
+			src:  "a[b,c]",
+			want: []token.Token{
+				tok(token.Ident, "a", 1, 1),
+				tok(token.LBracket, "[", 1, 2),
+				tok(token.Ident, "b", 1, 3),
+				tok(token.Comma, ",", 1, 4),
+				tok(token.Ident, "c", 1, 5),
+				tok(token.RBracket, "]", 1, 6),
+				eof(1, 7),
+			},
+		},
+		{
 			name: "fat arrow and bar",
 			src:  "=> | = == || ->",
 			want: []token.Token{
