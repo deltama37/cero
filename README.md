@@ -48,6 +48,10 @@ with design documents in [`docs/design/`](docs/design/):
 * v0.3: parametric polymorphism such as `fn map[T, U]` and `type Option[T]`
   ([ADR-0004](docs/adr/0004-v0.3-parametric-polymorphism.md);
   `examples/option.cero`, `examples/generic_list.cero`)
+* v0.4: let polymorphism and type inference for anonymous functions, such as
+  `let id = fn(x) { x }`
+  ([ADR-0006](docs/adr/0006-v0.4-let-polymorphism-and-local-inference.md);
+  `examples/inference.cero`)
 
 `ceroc fmt` is not implemented yet.
 

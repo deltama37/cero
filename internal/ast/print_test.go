@@ -225,6 +225,23 @@ func TestFormat(t *testing.T) {
 			want: "(fn ((x Int)) Int (block x))",
 		},
 		{
+			name: "func lit without annotations",
+			got: FormatExpr(&FuncLit{
+				Params: []*Param{{Name: "x"}},
+				Body:   block(ident("x")),
+			}),
+			want: "(fn ((x _)) _ (block x))",
+		},
+		{
+			name: "func lit partially annotated",
+			got: FormatExpr(&FuncLit{
+				Params: []*Param{{Name: "x", Type: intType}, {Name: "y"}},
+				Result: intType,
+				Body:   block(ident("x")),
+			}),
+			want: "(fn ((x Int) (y _)) Int (block x))",
+		},
+		{
 			name: "func decl",
 			got:  FormatFunc(add),
 			want: "(fn add ((a Int) (b Int)) Int (block (+ a b)))",

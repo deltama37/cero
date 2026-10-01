@@ -544,3 +544,106 @@ func TestSelfType(t *testing.T) {
 		})
 	}
 }
+
+func TestMetas(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		make func() (Type, []*Meta)
+	}{
+		{
+			name: "Int",
+			make: func() (Type, []*Meta) { return Int, nil },
+		},
+		{
+			name: "type parameter",
+			make: func() (Type, []*Meta) { return &TypeParam{Name: "T"}, nil },
+		},
+		{
+			name: "unsolved meta",
+			make: func() (Type, []*Meta) {
+				a := &Meta{Name: "a"}
+				return a, []*Meta{a}
+			},
+		},
+		{
+			name: "function and named",
+			make: func() (Type, []*Meta) {
+				a := &Meta{Name: "a"}
+				b := &Meta{Name: "b"}
+				list := &Data{Name: "List"}
+				typ := &Func{
+					Params: []Type{a},
+					Result: &Named{Data: list, Args: []Type{b}},
+				}
+				return typ, []*Meta{a, b}
+			},
+		},
+		{
+			name: "duplicate meta",
+			make: func() (Type, []*Meta) {
+				a := &Meta{Name: "a"}
+				b := &Meta{Name: "b"}
+				typ := &Func{Params: []Type{a, a}, Result: b}
+				return typ, []*Meta{a, b}
+			},
+		},
+		{
+			name: "occurrence order",
+			make: func() (Type, []*Meta) {
+				a := &Meta{Name: "a"}
+				b := &Meta{Name: "b"}
+				typ := &Func{Params: []Type{b}, Result: a}
+				return typ, []*Meta{b, a}
+			},
+		},
+		{
+			name: "follow a solved meta",
+			make: func() (Type, []*Meta) {
+				a := &Meta{Name: "a"}
+				c := &Meta{Name: "c", Solution: a}
+				typ := &Func{Params: []Type{c}, Result: Int}
+				return typ, []*Meta{a}
+			},
+		},
+		{
+			name: "meta solved to Int",
+			make: func() (Type, []*Meta) {
+				c := &Meta{Name: "c", Solution: Int}
+				return c, nil
+			},
+		},
+		{
+			name: "pair of meta and option",
+			make: func() (Type, []*Meta) {
+				a := &Meta{Name: "a"}
+				b := &Meta{Name: "b"}
+				pair := &Data{Name: "Pair"}
+				opt := &Data{Name: "Option"}
+				typ := &Named{
+					Data: pair,
+					Args: []Type{a, &Named{Data: opt, Args: []Type{b}}},
+				}
+				return typ, []*Meta{a, b}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			typ, want := tt.make()
+			got := Metas(typ)
+			if len(got) != len(want) {
+				t.Fatalf("Metas() = %v, want %v", got, want)
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Errorf("Metas()[%d] = %p, want %p", i, got[i], want[i])
+				}
+			}
+		})
+	}
+}
