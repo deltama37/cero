@@ -804,6 +804,150 @@ fn main() -> Int {
 				"(main 2)",
 			),
 		},
+		{
+			name: "two representations of identity",
+			src: `fn identity[T](x: T) -> T { x }
+fn main() -> Int { if identity(true) { identity(1) } else { 0 } }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call 1 true) (return.call 2 1) 0))",
+				"(func 1 identity[Bool] (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "generic functions take no number",
+			src: `fn identity[T](x: T) -> T { x }
+fn main() -> Int { helper(2) }
+fn helper(n: Int) -> Int { identity(n) }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (return.call 1 2))",
+				"(func 1 helper (sig (Int) Int) (locals Int) (return.call 2 (local 0)))",
+				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "same representation shares a specialization",
+			src: `type Box[T] = Box(T)
+fn identity[T](x: T) -> T { x }
+fn main() -> Int {
+    let a = identity(Box(1))
+    let b = identity(Box(true))
+    7
+}
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals Ptr Ptr) (block (let 0 (call 1 (construct 0 1))) (let 1 (call 1 (construct 0 true))) 7))",
+				"(func 1 identity[Ptr] (sig (Ptr) Ptr) (locals Ptr) (local 0))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "generic function passed as a value",
+			src: `fn identity[T](x: T) -> T { x }
+fn apply(f: Int -> Int, x: Int) -> Int { f(x) }
+fn main() -> Int { apply(identity, 7) }
+`,
+			want: lines(
+				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 7))",
+				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "lambda inside a generic function is lifted per specialization",
+			src: `fn twiceApply[T](x: T) -> T {
+    let f = fn(v: T) -> T { v }
+    f(f(x))
+}
+fn main() -> Int { if twiceApply(true) { twiceApply(1) } else { 0 } }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call 1 true) (return.call 2 1) 0))",
+				"(func 1 twiceApply[Bool] (sig (Bool) Bool) (locals Bool FuncRef) (block (let 1 (func.ref 3)) (return.call.indirect (sig (Bool) Bool) (local 1) (call.indirect (sig (Bool) Bool) (local 1) (local 0)))))",
+				"(func 2 twiceApply[Int] (sig (Int) Int) (locals Int FuncRef) (block (let 1 (func.ref 4)) (return.call.indirect (sig (Int) Int) (local 1) (call.indirect (sig (Int) Int) (local 1) (local 0)))))",
+				"(func 3 lambda$0 (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 4 lambda$1 (sig (Int) Int) (locals Int) (local 0))",
+				"(table 3 4)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "polymorphic recursion shares the Ptr specialization",
+			src: `type List[T] = | Nil | Cons(T, List[T])
+fn depth[T](x: T, n: Int) -> Int {
+    if n == 0 { 0 } else { 1 + depth(Cons(x, Nil), n - 1) }
+}
+fn main() -> Int { depth(7, 3) }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (return.call 1 7 3))",
+				"(func 1 depth[Int] (sig (Int Int) Int) (locals Int Int) (if (eq (local 1) 0) 0 (add 1 (call 2 (construct 1 (local 0) (construct 0)) (sub (local 1) 1)))))",
+				"(func 2 depth[Ptr] (sig (Ptr Int) Int) (locals Ptr Int) (if (eq (local 1) 0) 0 (add 1 (call 2 (construct 1 (local 0) (construct 0)) (sub (local 1) 1)))))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "pattern variable type follows the specialization",
+			src: `type Option[T] = | None | Some(T)
+fn get[T](o: Option[T], d: T) -> T { match o { None => d, Some(x) => x } }
+fn main() -> Int { if get(Some(true), false) { get(Some(5), 0) } else { 0 } }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call 1 (construct 1 true) false) (return.call 2 (construct 1 5) 0) 0))",
+				"(func 1 get[Bool] (sig (Ptr Bool) Bool) (locals Ptr Bool Ptr Bool) (block (let 2 (local 0)) (switch.tag 2 (case 0 (local 1)) (case 1 (block (let 3 (field 2 0)) (local 3))))))",
+				"(func 2 get[Int] (sig (Ptr Int) Int) (locals Ptr Int Ptr Int) (block (let 2 (local 0)) (switch.tag 2 (case 0 (local 1)) (case 1 (block (let 3 (field 2 0)) (local 3))))))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "unused generic function is omitted",
+			src: `fn unused[T](x: T) -> T { x }
+fn main() -> Int { 1 }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) 1)",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "generic function calls another with an outer type parameter",
+			src: `fn identity[T](x: T) -> T { x }
+fn twice[T](x: T) -> T { identity(identity(x)) }
+fn main() -> Int { twice(3) + identity(4) }
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (add (call 1 3) (call 2 4)))",
+				"(func 1 twice[Int] (sig (Int) Int) (locals Int) (return.call 2 (call 2 (local 0))))",
+				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "non-generic match on a generic data type",
+			src: `type Option[T] = | None | Some(T)
+fn f(o: Option[Bool]) -> Bool { match o { Some(b) => b, None => false } }
+fn main() -> Int { if f(None) { 1 } else { 0 } }
+`,
+			want: lines(
+				"(func 0 f (sig (Ptr) Bool) (locals Ptr Ptr Bool) (block (let 1 (local 0)) (switch.tag 1 (case 1 (block (let 2 (field 1 0)) (local 2))) (case 0 false))))",
+				"(func 1 main (sig () Int) (locals) (if (call 0 (construct 0)) 1 0))",
+				"(table)",
+				"(main 1)",
+			),
+		},
 	}
 
 	for _, tt := range tests {

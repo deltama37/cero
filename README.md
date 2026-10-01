@@ -35,9 +35,21 @@ wasmtime run --invoke main examples/fib.wasm # prints 55
 make check
 ```
 
-The v0.1 pipeline (`lexer → parser → type checker → IR → WebAssembly`) is
-described in [`docs/adr/0002-v0.1-syntax-and-wasm-abi.md`](docs/adr/0002-v0.1-syntax-and-wasm-abi.md)
-and [`docs/design/`](docs/design/). `ceroc fmt` is not implemented yet.
+The compiler pipeline is `lexer → parser → type checker → IR → WebAssembly`.
+The language grows one version at a time; each step is recorded as an ADR,
+with design documents in [`docs/design/`](docs/design/):
+
+* v0.1: `Int` / `Bool`, first-class functions and recursion
+  ([ADR-0002](docs/adr/0002-v0.1-syntax-and-wasm-abi.md);
+  `examples/fib.cero`, `examples/higher_order.cero`)
+* v0.2: algebraic data types and pattern matching
+  ([ADR-0003](docs/adr/0003-v0.2-algebraic-data-types-and-pattern-matching.md);
+  `examples/list.cero`)
+* v0.3: parametric polymorphism such as `fn map[T, U]` and `type Option[T]`
+  ([ADR-0004](docs/adr/0004-v0.3-parametric-polymorphism.md);
+  `examples/option.cero`, `examples/generic_list.cero`)
+
+`ceroc fmt` is not implemented yet.
 
 ## License
 
