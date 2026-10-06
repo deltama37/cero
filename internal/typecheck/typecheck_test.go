@@ -800,23 +800,23 @@ fn main() -> Int { if id == id { 1 } else { 0 } }
 		},
 		{
 			name: "unknown param type",
-			src:  "fn f(x: String) -> Int { 1 }",
-			want: "1:9: unknown type 'String'",
+			src:  "fn f(x: Text) -> Int { 1 }",
+			want: "1:9: unknown type 'Text'",
 		},
 		{
 			name: "unknown result type",
-			src:  "fn f() -> String { 1 }",
-			want: "1:11: unknown type 'String'",
+			src:  "fn f() -> Text { 1 }",
+			want: "1:11: unknown type 'Text'",
 		},
 		{
 			name: "unknown let type",
-			src:  "fn main() -> Int { let x: String = 1 x }",
-			want: "1:27: unknown type 'String'",
+			src:  "fn main() -> Int { let x: Text = 1 x }",
+			want: "1:27: unknown type 'Text'",
 		},
 		{
 			name: "unknown type inside function type",
-			src:  "fn f(g: Int -> String) -> Int { 1 }",
-			want: "1:16: unknown type 'String'",
+			src:  "fn f(g: Int -> Text) -> Int { 1 }",
+			want: "1:16: unknown type 'Text'",
 		},
 		{
 			name: "duplicate function",
@@ -899,10 +899,10 @@ fn main() -> Int { 1 }
 		},
 		{
 			name: "signature error before body error",
-			src: `fn f(x: String) -> Int { 1 }
+			src: `fn f(x: Text) -> Int { 1 }
 fn g() -> Int { true }
 `,
-			want: "1:9: unknown type 'String'",
+			want: "1:9: unknown type 'Text'",
 		},
 	}
 
@@ -2953,6 +2953,378 @@ fn main() -> Int { 0 }
 	}
 }
 
+func TestCheckStringSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "literal type",
+			src: `fn main() -> Int {
+    let s = "hi"
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				if got := info.Defs[letStmt].Type.String(); got != "String" {
+					t.Errorf("let s type = %s, want String", got)
+				}
+				wantType(t, info, letStmt.Value, "String")
+			},
+		},
+		{
+			name: "concat",
+			src: `fn main() -> Int {
+    let s = "a" ++ "b" ++ "c"
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				wantType(t, info, letStmt.Value, "String")
+			},
+		},
+		{
+			name: "equality",
+			src: `fn main() -> Int {
+    if "a" == "b" { 1 } else if "a" != "b" { 2 } else { 0 }
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				ifExpr := funcByName(t, file, "main").Body.Result.(*ast.IfExpr)
+				wantType(t, info, ifExpr.Cond, "Bool")
+				wantType(t, info, ifExpr.Else.(*ast.IfExpr).Cond, "Bool")
+			},
+		},
+		{
+			name: "equality infers string",
+			src: `fn eq(s) { s == "a" }
+fn ne(s) { s != "b" }
+fn main() -> Int { 0 }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "eq"), "String -> Bool")
+				wantFuncScheme(t, info, funcByName(t, file, "ne"), "String -> Bool")
+			},
+		},
+		{
+			name: "built-in calls",
+			src: `fn main() -> Int {
+    let n = stringLength("abc")
+    let b = stringByteAt("abc", 0)
+    let s = stringSlice("abc", 0, 1)
+    let c = stringFromByte(65)
+    let d = stringCompare("a", "b")
+    let t = intToString(1)
+    n + b
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				want := []struct {
+					typ string
+					b   Builtin
+				}{
+					{"Int", BuiltinStringLength},
+					{"Int", BuiltinStringByteAt},
+					{"String", BuiltinStringSlice},
+					{"String", BuiltinStringFromByte},
+					{"Int", BuiltinStringCompare},
+					{"String", BuiltinIntToString},
+				}
+				if len(lets) != len(want) {
+					t.Fatalf("lets = %d, want %d", len(lets), len(want))
+				}
+				for i, w := range want {
+					wantType(t, info, lets[i].Value, w.typ)
+					call := lets[i].Value.(*ast.CallExpr)
+					sym := info.Uses[call.Fn.(*ast.Ident)]
+					if sym == nil || sym.Kind != SymBuiltin || sym.Builtin != w.b {
+						t.Errorf("call %d symbol = %+v, want built-in %d", i, sym, w.b)
+					}
+				}
+			},
+		},
+		{
+			name: "built-in as a value",
+			src: `fn apply(f: String -> Int, s: String) -> Int { f(s) }
+fn main() -> Int { apply(stringLength, "abc") }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				id := call.Args[0].(*ast.Ident)
+				sym := info.Uses[id]
+				if sym == nil || sym.Kind != SymBuiltin || sym.Builtin != BuiltinStringLength {
+					t.Fatalf("stringLength symbol = %+v", sym)
+				}
+				if sym.Type.String() != "String -> Int" {
+					t.Errorf("stringLength type = %s, want String -> Int", sym.Type)
+				}
+				wantType(t, info, id, "String -> Int")
+			},
+		},
+		{
+			name: "built-in call infers the argument",
+			src: `fn lenOf(s) { stringLength(s) }
+fn main() -> Int { 0 }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "lenOf"), "String -> Int")
+			},
+		},
+		{
+			name: "local shadows a built-in",
+			src: `fn main() -> Int {
+    let stringLength = 1
+    stringLength
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				body := funcByName(t, file, "main").Body
+				sym := info.Uses[body.Result.(*ast.Ident)]
+				if sym == nil || sym.Kind != SymLocal || sym != info.Defs[body.Lets[0]] {
+					t.Fatalf("use = %+v, want the let", sym)
+				}
+				if sym.Type.String() != "Int" {
+					t.Errorf("type = %s, want Int", sym.Type)
+				}
+			},
+		},
+		{
+			name: "parameter shadows a built-in",
+			src: `fn f(stringLength: Int) -> Int { stringLength }
+fn main() -> Int { f(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				fn := funcByName(t, file, "f")
+				sym := info.Uses[fn.Body.Result.(*ast.Ident)]
+				if sym == nil || sym.Kind != SymParam || sym != info.Params[fn.Params[0]] {
+					t.Fatalf("use = %+v, want the parameter", sym)
+				}
+			},
+		},
+		{
+			name: "string pattern",
+			src: `fn main() -> Int {
+    match "fn" {
+        "fn" => 1,
+        _ => 0,
+    }
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				wantType(t, info, m.Scrutinee, "String")
+			},
+		},
+		{
+			name: "string pattern infers the scrutinee",
+			src: `fn g(s) {
+    match s {
+        "a" => 1,
+        _ => 0,
+    }
+}
+fn main() -> Int { 0 }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "g"), "String -> Int")
+			},
+		},
+		{
+			name: "nested string pattern",
+			src: `type Box = Box(String)
+fn main() -> Int {
+    match Box("hi") {
+        Box("hi") => 1,
+        _ => 0,
+    }
+}
+`,
+		},
+		{
+			name: "concat infers the argument",
+			src: `fn f(s) { s ++ "x" }
+fn main() -> Int { 0 }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "f"), "String -> String")
+			},
+		},
+		{
+			name: "annotated let",
+			src: `fn main() -> Int {
+    let s: String = "x"
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				if got := info.Defs[letStmt].Type.String(); got != "String" {
+					t.Errorf("let s type = %s, want String", got)
+				}
+				wantType(t, info, letStmt.Value, "String")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckStringError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "concat string and int",
+			src:  `fn main() -> Int { "a" ++ 1 }`,
+			want: "1:27: expected String, found Int",
+		},
+		{
+			name: "concat ints",
+			src:  `fn main() -> Int { 1 ++ 2 }`,
+			want: "1:20: expected String, found Int",
+		},
+		{
+			name: "compare string and int",
+			src:  `fn main() -> Int { "a" == 1 }`,
+			want: "1:27: expected String, found Int",
+		},
+		{
+			name: "add strings",
+			src:  `fn main() -> Int { "a" + "b" }`,
+			want: "1:20: expected Int, found String",
+		},
+		{
+			name: "stringLength wrong type",
+			src:  `fn main() -> Int { stringLength(1) }`,
+			want: "1:33: expected String, found Int",
+		},
+		{
+			name: "stringLength wrong arity",
+			src:  `fn main() -> Int { stringLength() }`,
+			want: "1:32: wrong number of arguments: expected 1, found 0",
+		},
+		{
+			name: "stringByteAt wrong arity",
+			src:  `fn main() -> Int { stringByteAt("a") }`,
+			want: "1:32: wrong number of arguments: expected 2, found 1",
+		},
+		{
+			name: "stringSlice wrong arity",
+			src:  `fn main() -> Int { stringSlice("a", 0) }`,
+			want: "1:31: wrong number of arguments: expected 3, found 2",
+		},
+		{
+			name: "stringFromByte wrong type",
+			src:  `fn main() -> Int { stringFromByte("a") }`,
+			want: "1:35: expected Int, found String",
+		},
+		{
+			name: "function conflicts with built-in",
+			src: `fn stringLength(s: String) -> Int { 0 }
+fn main() -> Int { 1 }
+`,
+			want: "1:4: function 'stringLength' conflicts with built-in function 'stringLength'",
+		},
+		{
+			name: "redefine String",
+			src:  "type String = S\n",
+			want: "1:6: cannot redefine built-in type 'String'",
+		},
+		{
+			name: "type parameter String",
+			src:  "fn f[String](x: String) -> String { x }\n",
+			want: "1:6: type parameter 'String' conflicts with type 'String'",
+		},
+		{
+			name: "type argument on String",
+			src:  "fn f(x: String[Int]) -> Int { 0 }\n",
+			want: "1:9: wrong number of type arguments for 'String': expected 0, found 1",
+		},
+		{
+			name: "non-exhaustive string match",
+			src: `fn main() -> Int {
+    match "a" {
+        "a" => 1,
+    }
+}
+`,
+			want: "2:5: non-exhaustive match: missing _",
+		},
+		{
+			name: "unreachable string arm",
+			src: `fn main() -> Int {
+    match "a" {
+        "a" => 1,
+        "a" => 2,
+        _ => 0,
+    }
+}
+`,
+			want: "4:9: unreachable match arm",
+		},
+		{
+			name: "string pattern on int",
+			src: `fn main() -> Int {
+    match 1 {
+        "a" => 0,
+        _ => 1,
+    }
+}
+`,
+			want: "3:9: expected Int, found String",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+
+	t.Run("constructor conflicts with built-in", func(t *testing.T) {
+		t.Parallel()
+
+		file := &ast.File{
+			Types: []*ast.TypeDecl{{
+				Name:    "Box",
+				NamePos: diag.Pos{Line: 1, Col: 6},
+				Ctors: []*ast.CtorDecl{{
+					Pos:  diag.Pos{Line: 1, Col: 12},
+					Name: "intToString",
+				}},
+			}},
+		}
+		info, err := Check(file)
+		if info != nil {
+			t.Fatal("Check() info != nil, want nil")
+		}
+		const want = "1:12: constructor 'intToString' conflicts with built-in function 'intToString'"
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	})
+}
+
 // wantFuncScheme checks that d's symbol has type want and type parameters
 // named names, in order. names is empty for a monomorphic function.
 func wantFuncScheme(
@@ -3354,7 +3726,7 @@ func walkExpr(
 	*exprs++
 
 	switch e := e.(type) {
-	case *ast.IntLit, *ast.BoolLit:
+	case *ast.IntLit, *ast.BoolLit, *ast.StringLit:
 	case *ast.Ident:
 		*idents++
 		sym := info.Uses[e]
@@ -3451,7 +3823,7 @@ func walkPattern(
 	t.Helper()
 
 	switch p := p.(type) {
-	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat:
+	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat, *ast.StrPat:
 	case *ast.VarPat:
 		sym := info.PatVars[p]
 		if sym == nil {

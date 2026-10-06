@@ -16,21 +16,35 @@ import (
 type SymbolKind int
 
 const (
-	SymFunc  SymbolKind = iota // top-level function
-	SymParam                   // parameter of a FuncDecl or FuncLit
-	SymLocal                   // let binding or variable pattern
-	SymCtor                    // constructor
+	SymFunc    SymbolKind = iota // top-level function
+	SymParam                     // parameter of a FuncDecl or FuncLit
+	SymLocal                     // let binding or variable pattern
+	SymCtor                      // constructor
+	SymBuiltin                   // built-in function
+)
+
+// Builtin identifies a built-in function (ADR-0010).
+type Builtin int
+
+const (
+	BuiltinStringLength Builtin = iota
+	BuiltinStringByteAt
+	BuiltinStringSlice
+	BuiltinStringFromByte
+	BuiltinStringCompare
+	BuiltinIntToString
 )
 
 // Symbol is one declared name. Each declaration (every let, even when
 // shadowing) gets its own *Symbol.
 type Symbol struct {
-	Kind SymbolKind
-	Name string
-	Type types.Type
-	Pos  diag.Pos      // position of the declaring name
-	Decl *ast.FuncDecl // set only for SymFunc
-	Ctor *types.Ctor   // set only for SymCtor
+	Kind    SymbolKind
+	Name    string
+	Type    types.Type
+	Pos     diag.Pos      // position of the declaring name
+	Decl    *ast.FuncDecl // set only for SymFunc
+	Ctor    *types.Ctor   // set only for SymCtor
+	Builtin Builtin       // set only for SymBuiltin
 	// TypeParams are the type parameters Type is generic over: the function's
 	// own for a generic SymFunc, Ctor.Data.Params for a SymCtor, the ones
 	// created by generalization for a generalized let (SymLocal), and nil
@@ -74,11 +88,12 @@ func Check(file *ast.File) (*Info, error) {
 		datas:   make(map[string]*types.Data),
 		ctors:   make(map[string]*types.Ctor),
 	}
+	c.registerBuiltins()
 
 	// Type names are registered before constructors so a field type can refer
 	// to any declared type, including this one and ones declared later.
 	for _, d := range file.Types {
-		if d.Name == "Int" || d.Name == "Bool" {
+		if d.Name == "Int" || d.Name == "Bool" || d.Name == "String" {
 			return nil, diag.Errorf(d.NamePos, "cannot redefine built-in type '%s'", d.Name)
 		}
 		if _, ok := c.datas[d.Name]; ok {
@@ -101,6 +116,9 @@ func Check(file *ast.File) (*Info, error) {
 		data := c.datas[d.Name]
 		c.tparams = scopeOf(data.Params)
 		for i, cd := range d.Ctors {
+			if sym := c.globals[cd.Name]; sym != nil && sym.Kind == SymBuiltin {
+				return nil, diag.Errorf(cd.Pos, "constructor '%s' conflicts with built-in function '%s'", cd.Name, cd.Name)
+			}
 			if _, ok := c.ctors[cd.Name]; ok {
 				return nil, diag.Errorf(cd.Pos, "duplicate constructor '%s'", cd.Name)
 			}
@@ -133,6 +151,9 @@ func Check(file *ast.File) (*Info, error) {
 	}
 
 	for _, d := range file.Funcs {
+		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymBuiltin {
+			return nil, diag.Errorf(d.NamePos, "function '%s' conflicts with built-in function '%s'", d.Name, d.Name)
+		}
 		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymCtor {
 			return nil, diag.Errorf(d.NamePos, "function '%s' conflicts with constructor '%s'", d.Name, d.Name)
 		}
@@ -470,6 +491,30 @@ func scopeOf(ps []*types.TypeParam) map[string]*types.TypeParam {
 	return m
 }
 
+// registerBuiltins adds the built-in functions (ADR-0010) to globals.
+func (c *checker) registerBuiltins() {
+	specs := []struct {
+		name string
+		b    Builtin
+		sig  types.Type
+	}{
+		{"stringLength", BuiltinStringLength, &types.Func{Params: []types.Type{types.String}, Result: types.Int}},
+		{"stringByteAt", BuiltinStringByteAt, &types.Func{Params: []types.Type{types.String, types.Int}, Result: types.Int}},
+		{"stringSlice", BuiltinStringSlice, &types.Func{Params: []types.Type{types.String, types.Int, types.Int}, Result: types.String}},
+		{"stringFromByte", BuiltinStringFromByte, &types.Func{Params: []types.Type{types.Int}, Result: types.String}},
+		{"stringCompare", BuiltinStringCompare, &types.Func{Params: []types.Type{types.String, types.String}, Result: types.Int}},
+		{"intToString", BuiltinIntToString, &types.Func{Params: []types.Type{types.Int}, Result: types.String}},
+	}
+	for _, spec := range specs {
+		c.globals[spec.name] = &Symbol{
+			Kind:    SymBuiltin,
+			Name:    spec.name,
+			Type:    spec.sig,
+			Builtin: spec.b,
+		}
+	}
+}
+
 func (c *checker) declareTypeParams(ps []*ast.TypeParam) ([]*types.TypeParam, *diag.Error) {
 	if len(ps) == 0 {
 		return nil, nil
@@ -477,7 +522,7 @@ func (c *checker) declareTypeParams(ps []*ast.TypeParam) ([]*types.TypeParam, *d
 	seen := make(map[string]bool, len(ps))
 	out := make([]*types.TypeParam, 0, len(ps))
 	for _, p := range ps {
-		if p.Name == "Int" || p.Name == "Bool" || c.datas[p.Name] != nil {
+		if p.Name == "Int" || p.Name == "Bool" || p.Name == "String" || c.datas[p.Name] != nil {
 			return nil, diag.Errorf(p.Pos, "type parameter '%s' conflicts with type '%s'", p.Name, p.Name)
 		}
 		if seen[p.Name] {
@@ -528,14 +573,18 @@ func (c *checker) resolveType(t ast.TypeExpr) (types.Type, *diag.Error) {
 			}
 			return tp, nil
 		}
-		if t.Name == "Int" || t.Name == "Bool" {
+		if t.Name == "Int" || t.Name == "Bool" || t.Name == "String" {
 			if m != 0 {
 				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for '%s': expected 0, found %d", t.Name, m)
 			}
-			if t.Name == "Int" {
+			switch t.Name {
+			case "Int":
 				return types.Int, nil
+			case "Bool":
+				return types.Bool, nil
+			default:
+				return types.String, nil
 			}
-			return types.Bool, nil
 		}
 		if data, ok := c.datas[t.Name]; ok {
 			n := len(data.Params)
@@ -669,6 +718,8 @@ func (c *checker) inferExpr(ctx *funcCtx, e ast.Expr) (types.Type, *diag.Error) 
 	switch e := e.(type) {
 	case *ast.IntLit:
 		return types.Int, nil
+	case *ast.StringLit:
+		return types.String, nil
 	case *ast.BoolLit:
 		return types.Bool, nil
 	case *ast.Ident:
@@ -768,6 +819,14 @@ func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *dia
 			return nil, err
 		}
 		return types.Int, nil
+	case token.PlusPlus:
+		if err := c.expect(ctx, e.X, types.String); err != nil {
+			return nil, err
+		}
+		if err := c.expect(ctx, e.Y, types.String); err != nil {
+			return nil, err
+		}
+		return types.String, nil
 	case token.Lt, token.LtEq, token.Gt, token.GtEq:
 		if err := c.expect(ctx, e.X, types.Int); err != nil {
 			return nil, err
@@ -785,12 +844,12 @@ func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *dia
 			if err := c.expect(ctx, e.Y, t); err != nil {
 				return nil, err
 			}
-			if !types.Equal(t, types.Int) && !types.Equal(t, types.Bool) {
+			if !comparable(t) {
 				return nil, diag.Errorf(resultPos(e.X), "cannot compare values of type %s", t)
 			}
 			return types.Bool, nil
 		}
-		if !types.Equal(t, types.Int) && !types.Equal(t, types.Bool) {
+		if !comparable(t) {
 			return nil, diag.Errorf(resultPos(e.X), "cannot compare values of type %s", t)
 		}
 		if err := c.expect(ctx, e.Y, t); err != nil {
@@ -808,6 +867,10 @@ func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *dia
 	default:
 		return nil, diag.Errorf(e.OpPos, "unhandled binary operator %s", e.Op)
 	}
+}
+
+func comparable(t types.Type) bool {
+	return types.Equal(t, types.Int) || types.Equal(t, types.Bool) || types.Equal(t, types.String)
 }
 
 func (c *checker) inferCall(ctx *funcCtx, e *ast.CallExpr) (types.Type, *diag.Error) {
@@ -1078,19 +1141,19 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 }
 
 // inferScrutinee solves mv, the unsolved type of a matched value, from the
-// first arm whose pattern is a constructor, integer or boolean pattern. It
-// leaves mv unsolved when every pattern is '_' or a variable.
+// first arm whose pattern is a constructor, integer, boolean or string
+// pattern. It leaves mv unsolved when every pattern is '_' or a variable.
 func (c *checker) inferScrutinee(mv *types.Meta, arms []*ast.MatchArm) *diag.Error {
 	for _, arm := range arms {
 		switch arm.Pattern.(type) {
-		case *ast.CtorPat, *ast.IntPat, *ast.BoolPat:
+		case *ast.CtorPat, *ast.IntPat, *ast.BoolPat, *ast.StrPat:
 			return c.solveMeta(mv, arm.Pattern)
 		}
 	}
 	return nil
 }
 
-// solveMeta solves mv from a constructor, integer or boolean pattern.
+// solveMeta solves mv from a constructor, integer, boolean or string pattern.
 func (c *checker) solveMeta(mv *types.Meta, p ast.Pattern) *diag.Error {
 	switch p := p.(type) {
 	case *ast.CtorPat:
@@ -1110,6 +1173,9 @@ func (c *checker) solveMeta(mv *types.Meta, p ast.Pattern) *diag.Error {
 		return nil
 	case *ast.BoolPat:
 		mv.Solution = types.Bool
+		return nil
+	case *ast.StrPat:
+		mv.Solution = types.String
 		return nil
 	default:
 		return nil
@@ -1133,7 +1199,7 @@ func (c *checker) checkPattern(
 	st = types.Prune(st)
 	if mv, ok := st.(*types.Meta); ok {
 		switch p.(type) {
-		case *ast.CtorPat, *ast.IntPat, *ast.BoolPat:
+		case *ast.CtorPat, *ast.IntPat, *ast.BoolPat, *ast.StrPat:
 			if err := c.solveMeta(mv, p); err != nil {
 				return err
 			}
@@ -1156,6 +1222,11 @@ func (c *checker) checkPattern(
 	case *ast.IntPat:
 		if !unify(st, types.Int) {
 			return diag.Errorf(p.Pos, "expected %s, found Int", st)
+		}
+		return nil
+	case *ast.StrPat:
+		if !unify(st, types.String) {
+			return diag.Errorf(p.Pos, "expected %s, found String", st)
 		}
 		return nil
 	case *ast.BoolPat:

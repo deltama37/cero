@@ -87,6 +87,24 @@ func TestUseful(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "strings are never complete",
+			rows: col(spat{kind: spStr, sval: "a"}, spat{kind: spStr, sval: "b"}),
+			q:    []spat{w},
+			want: true,
+		},
+		{
+			name: "same string",
+			rows: col(spat{kind: spStr, sval: "a"}),
+			q:    []spat{{kind: spStr, sval: "a"}},
+			want: false,
+		},
+		{
+			name: "different string",
+			rows: col(spat{kind: spStr, sval: "a"}),
+			q:    []spat{{kind: spStr, sval: "b"}},
+			want: true,
+		},
+		{
 			name: "one pair of booleans left",
 			rows: col(pairTT, pairTF, pairFT),
 			q:    []spat{pairFF},
@@ -148,6 +166,19 @@ func TestMissingMessage(t *testing.T) {
 			name: "integer",
 			rows: col(spat{kind: spInt, ival: 0}),
 			want: "_",
+		},
+		{
+			name: "string",
+			rows: col(spat{kind: spStr, sval: "a"}),
+			want: "_",
+		},
+		{
+			name: "nested string",
+			rows: col(
+				spat{kind: spCtor, ctor: some, args: []spat{{kind: spStr, sval: "a"}}},
+				spat{kind: spCtor, ctor: none},
+			),
+			want: "Some(_)",
 		},
 		{
 			name: "nested constructor",
@@ -220,6 +251,7 @@ func TestFormatSpat(t *testing.T) {
 	}{
 		{name: "wildcard", p: spat{kind: spWild}, want: "_"},
 		{name: "int", p: spat{kind: spInt, ival: 42}, want: "42"},
+		{name: "string", p: spat{kind: spStr, sval: "a\n"}, want: `"a\n"`},
 		{name: "true", p: spat{kind: spBool, bval: true}, want: "true"},
 		{name: "nil", p: spat{kind: spCtor, ctor: nilC}, want: "Nil"},
 		{

@@ -51,7 +51,7 @@ func funcRefs(
 
 	walkPat = func(p ast.Pattern) {
 		switch p := p.(type) {
-		case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat:
+		case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat, *ast.StrPat:
 		case *ast.VarPat:
 			bind(p.Name)
 		case *ast.CtorPat:
@@ -65,7 +65,7 @@ func funcRefs(
 
 	walkExpr = func(e ast.Expr) {
 		switch e := e.(type) {
-		case *ast.IntLit, *ast.BoolLit:
+		case *ast.IntLit, *ast.BoolLit, *ast.StringLit:
 		case *ast.Ident:
 			if !inScope(e.Name) && isFunc(e.Name) {
 				add(e.Name)

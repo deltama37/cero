@@ -31,6 +31,9 @@ func unify(a, b types.Type) bool {
 	case types.BoolType:
 		_, ok := b.(types.BoolType)
 		return ok
+	case types.StringType:
+		_, ok := b.(types.StringType)
+		return ok
 	case *types.TypeParam:
 		tb, ok := b.(*types.TypeParam)
 		return ok && a == tb

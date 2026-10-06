@@ -16,6 +16,7 @@ const (
 	spCtor
 	spInt
 	spBool
+	spStr
 )
 
 // spat is a pattern reduced to what usefulness needs.
@@ -25,6 +26,7 @@ type spat struct {
 	args []spat      // spCtor: one per field
 	ival int64       // spInt
 	bval bool        // spBool
+	sval string      // spStr
 }
 
 // headSet is the set of non-wildcard heads in one column.
@@ -45,6 +47,8 @@ func toSpat(p ast.Pattern, ctors map[*ast.CtorPat]*types.Ctor) spat {
 		return spat{kind: spWild}
 	case *ast.IntPat:
 		return spat{kind: spInt, ival: p.Value}
+	case *ast.StrPat:
+		return spat{kind: spStr, sval: p.Value}
 	case *ast.BoolPat:
 		return spat{kind: spBool, bval: p.Value}
 	case *ast.CtorPat:
@@ -138,6 +142,8 @@ func formatSpat(p spat) string {
 		return "_"
 	case spInt:
 		return strconv.FormatInt(p.ival, 10)
+	case spStr:
+		return strconv.Quote(p.sval)
 	case spBool:
 		if p.bval {
 			return "true"
@@ -186,7 +192,7 @@ func columnHeads(rows [][]spat) headSet {
 			} else {
 				s.falseSeen = true
 			}
-		case spInt:
+		case spInt, spStr:
 		default:
 			panic(fmt.Sprintf("typecheck: unhandled pattern head %d", h.kind))
 		}
@@ -235,7 +241,7 @@ func arity(h spat) int {
 	switch h.kind {
 	case spCtor:
 		return len(h.ctor.Fields)
-	case spInt, spBool:
+	case spInt, spBool, spStr:
 		return 0
 	default:
 		panic(fmt.Sprintf("typecheck: arity of pattern kind %d", h.kind))
@@ -258,7 +264,7 @@ func missingHead(s headSet) spat {
 			return spat{kind: spBool, bval: true}
 		}
 		return spat{kind: spBool, bval: false}
-	case spInt:
+	case spInt, spStr:
 		return spat{kind: spWild}
 	default:
 		panic(fmt.Sprintf("typecheck: unhandled pattern head %d", s.kind))
@@ -293,7 +299,7 @@ func formatMissing(s headSet) string {
 			parts = append(parts, "false")
 		}
 		return strings.Join(parts, ", ")
-	case spInt:
+	case spInt, spStr:
 		return "_"
 	default:
 		panic(fmt.Sprintf("typecheck: cannot format missing patterns of kind %d", s.kind))
@@ -360,6 +366,8 @@ func sameHead(a, b spat) bool {
 		return a.ctor == b.ctor
 	case spInt:
 		return a.ival == b.ival
+	case spStr:
+		return a.sval == b.sval
 	case spBool:
 		return a.bval == b.bval
 	default:
