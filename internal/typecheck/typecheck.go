@@ -1049,11 +1049,10 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 	}
 	st = types.Prune(st)
 
-	cov := newCoverage(st)
 	var result types.Type
 	for _, arm := range m.Arms {
 		c.pushScope(ctx)
-		t, err := c.inferMatchArm(ctx, arm, st, cov)
+		t, err := c.inferMatchArm(ctx, arm, st)
 		c.popScope(ctx)
 		if err != nil {
 			return nil, err
@@ -1064,8 +1063,16 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 			return nil, diag.Errorf(resultPos(arm.Body), "match arms have different types: %s and %s", result, t)
 		}
 	}
-	if missing := cov.missing(); missing != "" {
-		return nil, diag.Errorf(m.Pos, "non-exhaustive match: %s", missing)
+	rows := make([][]spat, 0, len(m.Arms))
+	for _, arm := range m.Arms {
+		q := []spat{toSpat(arm.Pattern, c.info.CtorPats)}
+		if !useful(rows, q) {
+			return nil, diag.Errorf(arm.Pattern.Position(), "unreachable match arm")
+		}
+		rows = append(rows, q)
+	}
+	if msg := missingMessage(rows); msg != "" {
+		return nil, diag.Errorf(m.Pos, "non-exhaustive match: missing %s", msg)
 	}
 	return result, nil
 }
@@ -1075,63 +1082,84 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 // leaves mv unsolved when every pattern is '_' or a variable.
 func (c *checker) inferScrutinee(mv *types.Meta, arms []*ast.MatchArm) *diag.Error {
 	for _, arm := range arms {
-		switch p := arm.Pattern.(type) {
-		case *ast.CtorPat:
-			ctor := c.ctors[p.Name]
-			if ctor == nil {
-				return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
-			}
-			var args []types.Type
-			for _, tp := range ctor.Data.Params {
-				msg := fmt.Sprintf("cannot infer type argument '%s' of '%s'; add a type annotation", tp.Name, ctor.Name)
-				args = append(args, c.newMeta(tp.Name, p.Pos, msg))
-			}
-			mv.Solution = &types.Named{Data: ctor.Data, Args: args}
-			return nil
-		case *ast.IntPat:
-			mv.Solution = types.Int
-			return nil
-		case *ast.BoolPat:
-			mv.Solution = types.Bool
-			return nil
+		switch arm.Pattern.(type) {
+		case *ast.CtorPat, *ast.IntPat, *ast.BoolPat:
+			return c.solveMeta(mv, arm.Pattern)
 		}
 	}
 	return nil
 }
 
-func (c *checker) inferMatchArm(
-	ctx *funcCtx,
-	arm *ast.MatchArm,
-	st types.Type,
-	cov *coverage,
-) (types.Type, *diag.Error) {
-	if err := c.checkPattern(ctx, arm.Pattern, st); err != nil {
+// solveMeta solves mv from a constructor, integer or boolean pattern.
+func (c *checker) solveMeta(mv *types.Meta, p ast.Pattern) *diag.Error {
+	switch p := p.(type) {
+	case *ast.CtorPat:
+		ctor := c.ctors[p.Name]
+		if ctor == nil {
+			return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
+		}
+		var args []types.Type
+		for _, tp := range ctor.Data.Params {
+			msg := fmt.Sprintf("cannot infer type argument '%s' of '%s'; add a type annotation", tp.Name, ctor.Name)
+			args = append(args, c.newMeta(tp.Name, p.Pos, msg))
+		}
+		mv.Solution = &types.Named{Data: ctor.Data, Args: args}
+		return nil
+	case *ast.IntPat:
+		mv.Solution = types.Int
+		return nil
+	case *ast.BoolPat:
+		mv.Solution = types.Bool
+		return nil
+	default:
+		return nil
+	}
+}
+
+func (c *checker) inferMatchArm(ctx *funcCtx, arm *ast.MatchArm, st types.Type) (types.Type, *diag.Error) {
+	seen := make(map[string]bool)
+	if err := c.checkPattern(ctx, arm.Pattern, st, seen); err != nil {
 		return nil, err
 	}
-	if cov.covers(arm.Pattern, c.ctors) {
-		return nil, diag.Errorf(arm.Pattern.Position(), "unreachable match arm")
-	}
-	cov.add(arm.Pattern, c.ctors)
 	return c.infer(ctx, arm.Body)
 }
 
-func (c *checker) checkPattern(ctx *funcCtx, p ast.Pattern, st types.Type) *diag.Error {
+func (c *checker) checkPattern(
+	ctx *funcCtx,
+	p ast.Pattern,
+	st types.Type,
+	seen map[string]bool,
+) *diag.Error {
+	st = types.Prune(st)
+	if mv, ok := st.(*types.Meta); ok {
+		switch p.(type) {
+		case *ast.CtorPat, *ast.IntPat, *ast.BoolPat:
+			if err := c.solveMeta(mv, p); err != nil {
+				return err
+			}
+			st = types.Prune(st)
+		}
+	}
 	switch p := p.(type) {
 	case *ast.WildcardPat:
 		return nil
 	case *ast.VarPat:
+		if seen[p.Name] {
+			return diag.Errorf(p.Pos, "duplicate variable '%s' in pattern", p.Name)
+		}
+		seen[p.Name] = true
 		if err := c.checkBindable(p.Name, p.Pos); err != nil {
 			return err
 		}
 		c.bindPatVar(ctx, p, st)
 		return nil
 	case *ast.IntPat:
-		if !types.Equal(st, types.Int) {
+		if !unify(st, types.Int) {
 			return diag.Errorf(p.Pos, "expected %s, found Int", st)
 		}
 		return nil
 	case *ast.BoolPat:
-		if !types.Equal(st, types.Bool) {
+		if !unify(st, types.Bool) {
 			return diag.Errorf(p.Pos, "expected %s, found Bool", st)
 		}
 		return nil
@@ -1147,21 +1175,11 @@ func (c *checker) checkPattern(ctx *funcCtx, p ast.Pattern, st types.Type) *diag
 		if len(p.Args) != len(ctor.Fields) {
 			return diag.Errorf(p.Pos, "wrong number of fields in pattern '%s': expected %d, found %d", p.Name, len(ctor.Fields), len(p.Args))
 		}
-		seen := make(map[string]bool)
 		for i, arg := range p.Args {
-			vp, ok := arg.(*ast.VarPat)
-			if !ok {
-				continue
-			}
-			if seen[vp.Name] {
-				return diag.Errorf(vp.Pos, "duplicate variable '%s' in pattern", vp.Name)
-			}
-			seen[vp.Name] = true
-			if err := c.checkBindable(vp.Name, vp.Pos); err != nil {
+			field := types.Subst(ctor.Fields[i], ctor.Data.Params, named.Args)
+			if err := c.checkPattern(ctx, arg, field, seen); err != nil {
 				return err
 			}
-			field := types.Subst(ctor.Fields[i], ctor.Data.Params, named.Args)
-			c.bindPatVar(ctx, vp, field)
 		}
 		c.info.CtorPats[p] = ctor
 		return nil
@@ -1179,104 +1197,6 @@ func (c *checker) bindPatVar(ctx *funcCtx, p *ast.VarPat, typ types.Type) {
 	}
 	c.info.PatVars[p] = sym
 	ctx.scope.names[p.Name] = sym
-}
-
-// coverage records which values the arms of one match have already handled.
-// Constructor-pattern arguments are only variables or '_', so a constructor
-// pattern covers every value built with that constructor.
-type coverage struct {
-	scrutinee types.Type
-	all       bool           // a catch-all arm has been seen
-	ctors     map[int]bool   // constructor indices seen
-	ints      map[int64]bool // integer literals seen
-	bools     map[bool]bool  // boolean literals seen
-}
-
-func newCoverage(st types.Type) *coverage {
-	return &coverage{
-		scrutinee: st,
-		ctors:     make(map[int]bool),
-		ints:      make(map[int64]bool),
-		bools:     make(map[bool]bool),
-	}
-}
-
-// covers reports whether earlier arms already match every value p matches.
-func (cov *coverage) covers(p ast.Pattern, ctors map[string]*types.Ctor) bool {
-	if cov.all {
-		return true
-	}
-	switch p := p.(type) {
-	case *ast.WildcardPat, *ast.VarPat:
-		return cov.catchAllCovered()
-	case *ast.CtorPat:
-		return cov.ctors[ctors[p.Name].Index]
-	case *ast.IntPat:
-		return cov.ints[p.Value]
-	case *ast.BoolPat:
-		return cov.bools[p.Value]
-	default:
-		return false
-	}
-}
-
-func (cov *coverage) catchAllCovered() bool {
-	switch st := cov.scrutinee.(type) {
-	case types.BoolType:
-		return cov.bools[true] && cov.bools[false]
-	case *types.Named:
-		for _, ctor := range st.Data.Ctors {
-			if !cov.ctors[ctor.Index] {
-				return false
-			}
-		}
-		return true
-	default:
-		return false
-	}
-}
-
-func (cov *coverage) add(p ast.Pattern, ctors map[string]*types.Ctor) {
-	switch p := p.(type) {
-	case *ast.WildcardPat, *ast.VarPat:
-		cov.all = true
-	case *ast.CtorPat:
-		cov.ctors[ctors[p.Name].Index] = true
-	case *ast.IntPat:
-		cov.ints[p.Value] = true
-	case *ast.BoolPat:
-		cov.bools[p.Value] = true
-	}
-}
-
-// missing describes values not yet covered. It is empty when the match is exhaustive.
-func (cov *coverage) missing() string {
-	if cov.all {
-		return ""
-	}
-	switch st := cov.scrutinee.(type) {
-	case *types.Named:
-		var names []string
-		for _, ctor := range st.Data.Ctors {
-			if !cov.ctors[ctor.Index] {
-				names = append(names, ctor.Name)
-			}
-		}
-		return strings.Join(names, ", ")
-	case types.BoolType:
-		var names []string
-		if !cov.bools[true] {
-			names = append(names, "true")
-		}
-		if !cov.bools[false] {
-			names = append(names, "false")
-		}
-		return strings.Join(names, ", ")
-	case types.IntType:
-		return "Int values need a '_' or variable pattern"
-	default:
-		return ""
-	}
 }
 
 func (c *checker) checkSolved() *diag.Error {
