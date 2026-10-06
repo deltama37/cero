@@ -1,0 +1,19 @@
+// expected output: 42
+
+fn classify(word: String) -> Int {
+    match word {
+        "answer" => 42,
+        "zero" => 0,
+        _ => 1,
+    }
+}
+
+fn main() -> Int {
+    let word = "ans" ++ "wer"
+    let shown = intToString(0)
+    if shown == "0" {
+        classify(word)
+    } else {
+        stringLength(shown)
+    }
+}

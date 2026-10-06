@@ -61,6 +61,11 @@ with design documents in [`docs/design/`](docs/design/):
 * v0.7: nested patterns, such as `Cons(_, Cons(y, _))`
   ([ADR-0009](docs/adr/0009-v0.7-nested-patterns.md);
   `examples/nested_patterns.cero`)
+* v0.8: the built-in `String` type, string literals, `++`, and functions such
+  as `stringLength` and `intToString`. `List` remains a type the program
+  declares
+  ([ADR-0010](docs/adr/0010-v0.8-string-list-and-memory.md);
+  `examples/strings.cero`)
 
 `ceroc fmt` is not implemented yet.
 
