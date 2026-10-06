@@ -101,6 +101,27 @@ func TestFormat(t *testing.T) {
 			want: "Option[(-> (Int) Int)]",
 		},
 		{
+			name: "function of Unit",
+			got: FormatFunc(&FuncDecl{
+				Name:   "id",
+				Params: []*Param{{Name: "u", Type: &NamedType{Name: "Unit"}}},
+				Result: &NamedType{Name: "Unit"},
+				Body:   block(ident("u")),
+			}),
+			want: "(fn id ((u Unit)) Unit (block u))",
+		},
+		{
+			name: "IO of List of Int",
+			got: FormatType(&NamedType{
+				Name: "IO",
+				Args: []TypeExpr{&NamedType{
+					Name: "List",
+					Args: []TypeExpr{intType},
+				}},
+			}),
+			want: "IO[List[Int]]",
+		},
+		{
 			name: "function type of applied type",
 			got: FormatType(&FuncType{
 				Params: []TypeExpr{&NamedType{Name: "Option", Args: []TypeExpr{intType}}},
@@ -138,6 +159,16 @@ func TestFormat(t *testing.T) {
 			name: "bool false",
 			got:  FormatExpr(&BoolLit{Value: false}),
 			want: "false",
+		},
+		{
+			name: "unit literal",
+			got:  FormatExpr(&UnitLit{}),
+			want: "()",
+		},
+		{
+			name: "call with unit",
+			got:  FormatExpr(&CallExpr{Fn: ident("f"), Args: []Expr{&UnitLit{}}}),
+			want: "(call f ())",
 		},
 		{
 			name: "string literal",

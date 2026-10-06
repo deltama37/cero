@@ -546,7 +546,12 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		p.advance()
 		return &ast.Ident{Pos: tok.Pos, Name: tok.Text}, nil
 	case token.LParen:
+		pos := p.cur().Pos
 		p.advance()
+		if p.cur().Kind == token.RParen {
+			p.advance()
+			return &ast.UnitLit{Pos: pos}, nil
+		}
 		expr, err := p.parseExpr()
 		if err != nil {
 			return nil, err
