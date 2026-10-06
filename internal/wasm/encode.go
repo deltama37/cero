@@ -958,6 +958,8 @@ func (e *encoder) primFunc(op ir.PrimOp) int {
 		idx = e.ioFn.argAt
 	case ir.IOExit:
 		idx = e.ioFn.exit
+	case ir.IOReadStdinChunk:
+		idx = e.ioFn.readChunk
 	default:
 		panic(fmt.Sprintf("wasm: unknown prim %d", int(op)))
 	}

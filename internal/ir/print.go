@@ -197,6 +197,8 @@ func primName(op PrimOp) string {
 		return "int.shr_s"
 	case ShiftRightUnsigned:
 		return "int.shr_u"
+	case IOReadStdinChunk:
+		return "io.read_stdin_chunk"
 	default:
 		panic(fmt.Sprintf("ir.FormatExpr: unknown prim %d", int(op)))
 	}

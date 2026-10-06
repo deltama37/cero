@@ -1992,6 +1992,34 @@ fn main() {
 			wantStdout:  "42:2:a",
 		},
 		{
+			name: "readStdinChunk copies stdin",
+			src: `fn copy() -> IO[Unit] {
+    let! s = readStdinChunk(4)
+    if s == "" {
+        pure(())
+    } else {
+        let! _ = print("[" ++ s ++ "]")
+        copy()
+    }
+}
+
+fn main() {
+    copy()
+}
+`,
+			stdin:       "hello!",
+			checkStdout: true,
+			wantStdout:  "[hell][o!]",
+		},
+		{
+			name: "readStdinChunk zero",
+			src: `fn main() {
+    bind(readStdinChunk(0), fn(s: String) -> IO[Unit] { print(s) })
+}
+`,
+			wantExit: -1,
+		},
+		{
 			name: "building IO does not run it",
 			src: `fn main() -> Int {
     let ignored = print("no")

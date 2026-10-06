@@ -51,6 +51,7 @@ const (
 	BuiltinShiftLeft
 	BuiltinShiftRight
 	BuiltinShiftRightUnsigned
+	BuiltinReadStdinChunk
 )
 
 // Symbol is one declared name. Each declaration (every let, even when
@@ -684,7 +685,7 @@ func newChecker(info *Info) *checker {
 	return c
 }
 
-// registerBuiltins adds the built-in functions (ADR-0010, ADR-0012, ADR-0013).
+// registerBuiltins adds the built-in functions (ADR-0010, ADR-0012, ADR-0013, ADR-0017).
 func (c *checker) registerBuiltins() {
 	tParam := &types.TypeParam{Name: "T"}
 	aParam := &types.TypeParam{Name: "A"}
@@ -726,6 +727,7 @@ func (c *checker) registerBuiltins() {
 		{"shiftLeft", BuiltinShiftLeft, intBin, nil},
 		{"shiftRight", BuiltinShiftRight, intBin, nil},
 		{"shiftRightUnsigned", BuiltinShiftRightUnsigned, intBin, nil},
+		{"readStdinChunk", BuiltinReadStdinChunk, &types.Func{Params: []types.Type{types.Int}, Result: types.IOOf(types.String)}, nil},
 	}
 	for _, spec := range specs {
 		c.builtins[spec.name] = &Symbol{

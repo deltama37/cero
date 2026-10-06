@@ -81,7 +81,8 @@ with design documents in [`docs/design/`](docs/design/):
   `examples/modules/main.cero`, `examples/stdlib.cero`)
 * v0.10: the `IO[T]` type and the value `()`. `pure` and `bind` build
   actions; `print`, `eprint`, `readStdin`, `readFile`, `fileExists`,
-  `writeFile`, `argCount`, `argAt` and `exit` are the built-in actions.
+  `writeFile`, `argCount`, `argAt`, `exit` and `readStdinChunk` are the
+  built-in actions.
   A value of `IO[T]` does nothing until it is run, and the only way to run
   one is for `main` to return it. `main: () -> IO[Unit]` is a WASI command:
   the module imports `wasi_snapshot_preview1` and exports `_start` and

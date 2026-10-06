@@ -597,7 +597,7 @@ fn waPrimIdx(ctx: WaCtx, op: PrimOp) -> Int {
     match ctx {
         WaCtx(_, _, _, _, _, strFn, _, ioFn) => match strFn {
             WaStrFn(_, byteAt, slice, fromByte, compare, intToStr, concat, eq) => match ioFn {
-                WaIoFn(_, print, eprint, _, readStdin, _, readFile, fileExists, writeFile, argCount, argAt, exit, _) => match op {
+                WaIoFn(_, print, eprint, _, readStdin, _, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, _) => match op {
                     IrStrByteAt => byteAt,
                     IrStrSlice => slice,
                     IrStrFromByte => fromByte,
@@ -614,6 +614,7 @@ fn waPrimIdx(ctx: WaCtx, op: PrimOp) -> Int {
                     IrIOArgCount => argCount,
                     IrIOArgAt => argAt,
                     IrIOExit => exit,
+                    IrIOReadStdinChunk => readChunk,
                     _ => 0,
                 },
             },
@@ -870,7 +871,7 @@ fn waCode(ctx: WaCtx, funcs: List[IrFunc], main: Int, mem: Bool, news: List[List
 
 fn waReadWrite(io: WaIoUse) -> Pair[Bool, Bool] {
     match io {
-        WaIoUse(_, _, _, readFile, _, writeFile, _, _, _) => Pair(readFile, writeFile),
+        WaIoUse(_, _, _, readFile, _, writeFile, _, _, _, _) => Pair(readFile, writeFile),
     }
 }
 
@@ -990,7 +991,7 @@ pub fn encodeModule(m: IrModule) -> String {
                             out4
                         }
                         let startIdx = match ioFn {
-                            WaIoFn(_, _, _, _, _, _, _, _, _, _, _, _, start) => start,
+                            WaIoFn(_, _, _, _, _, _, _, _, _, _, _, _, _, start) => start,
                         }
                         let out6 = if command {
                             waCat(out5, waEncodeCommandExport(startIdx))

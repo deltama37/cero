@@ -1092,7 +1092,7 @@ func isIOBuiltin(b typecheck.Builtin) bool {
 	case typecheck.BuiltinPure, typecheck.BuiltinBind, typecheck.BuiltinPrint,
 		typecheck.BuiltinEPrint, typecheck.BuiltinReadStdin, typecheck.BuiltinReadFile,
 		typecheck.BuiltinFileExists, typecheck.BuiltinWriteFile, typecheck.BuiltinArgCount,
-		typecheck.BuiltinArgAt, typecheck.BuiltinExit:
+		typecheck.BuiltinArgAt, typecheck.BuiltinExit, typecheck.BuiltinReadStdinChunk:
 		return true
 	default:
 		return false
@@ -1131,6 +1131,8 @@ func ioBuiltinName(b typecheck.Builtin) string {
 		return "arg_at"
 	case typecheck.BuiltinExit:
 		return "exit"
+	case typecheck.BuiltinReadStdinChunk:
+		return "read_stdin_chunk"
 	default:
 		panic(fmt.Sprintf("lower: not an IO built-in %d", int(b)))
 	}
@@ -1150,7 +1152,7 @@ func ioResultType(b typecheck.Builtin, reps []ir.ValType) ir.ValType {
 		return reps[1]
 	case typecheck.BuiltinPrint, typecheck.BuiltinEPrint, typecheck.BuiltinWriteFile, typecheck.BuiltinExit, typecheck.BuiltinFileExists:
 		return ir.Bool
-	case typecheck.BuiltinReadStdin, typecheck.BuiltinReadFile, typecheck.BuiltinArgAt:
+	case typecheck.BuiltinReadStdin, typecheck.BuiltinReadFile, typecheck.BuiltinArgAt, typecheck.BuiltinReadStdinChunk:
 		return ir.Ptr
 	case typecheck.BuiltinArgCount:
 		return ir.Int
@@ -1211,6 +1213,8 @@ func ioBody(b typecheck.Builtin, reps []ir.ValType) ir.Expr {
 		return &ir.Prim{Op: ir.IOArgAt, Args: []ir.Expr{f(0, ir.Int)}}
 	case typecheck.BuiltinExit:
 		return &ir.Prim{Op: ir.IOExit, Args: []ir.Expr{f(0, ir.Int)}}
+	case typecheck.BuiltinReadStdinChunk:
+		return &ir.Prim{Op: ir.IOReadStdinChunk, Args: []ir.Expr{f(0, ir.Int)}}
 	default:
 		panic(fmt.Sprintf("lower: not an IO built-in %d", int(b)))
 	}
