@@ -1,0 +1,36 @@
+pub type Pos = | Pos(Int, Int)
+
+pub type Error = | Error(String, Pos, String)
+
+pub type Result[T] =
+    | Ok(T)
+    | Err(Error)
+
+pub fn errorf(pos: Pos, msg: String) -> Error {
+    Error("", pos, msg)
+}
+
+pub fn errorWithFile(e: Error, file: String) -> Error {
+    match e {
+        Error(_, pos, msg) => Error(file, pos, msg),
+    }
+}
+
+fn formatPos(pos: Pos) -> String {
+    match pos {
+        Pos(line, col) => intToString(line) ++ ":" ++ intToString(col),
+    }
+}
+
+pub fn formatError(e: Error) -> String {
+    match e {
+        Error(file, pos, msg) => {
+            let p = formatPos(pos)
+            if file == "" {
+                p ++ ": " ++ msg
+            } else {
+                file ++ ":" ++ p ++ ": " ++ msg
+            }
+        },
+    }
+}

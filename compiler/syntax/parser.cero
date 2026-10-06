@@ -1,0 +1,941 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/ast"
+import "syntax/diag"
+import "syntax/k"
+import "syntax/lexer"
+import "util/quote"
+
+type PState = | PState(List[Tok], Int)
+
+type PResult[A] =
+    | POk(A, PState)
+    | PErr(Error)
+
+type P[A] = | P(PState -> PResult[A])
+
+type TypeHead = | TypeHead(Option[TypeExpr], List[TypeExpr], Bool, Pos)
+
+fn bind[A, B](m: P[A], f: A -> P[B]) -> P[B] {
+    P(fn(s: PState) -> PResult[B] {
+        match m {
+            P(run) => match run(s) {
+                PErr(e) => PErr(e),
+                POk(x, s2) => match f(x) {
+                    P(run2) => run2(s2),
+                },
+            },
+        }
+    })
+}
+
+fn pure[A](x: A) -> P[A] {
+    P(fn(s: PState) -> PResult[A] { POk(x, s) })
+}
+
+fn fail[A](e: Error) -> P[A] {
+    P(fn(_: PState) -> PResult[A] { PErr(e) })
+}
+
+fn runP[A](m: P[A], s: PState) -> PResult[A] {
+    match m {
+        P(f) => f(s),
+    }
+}
+
+fn cur() -> P[Tok] {
+    P(fn(s: PState) -> PResult[Tok] {
+        match s {
+            PState(toks, _) => match toks {
+                Nil => PErr(errorf(Pos(1, 1), "expected token")),
+                Cons(t, _) => POk(t, s),
+            },
+        }
+    })
+}
+
+fn advance() -> P[Unit] {
+    P(fn(s: PState) -> PResult[Unit] {
+        match s {
+            PState(toks, n) => match toks {
+                Nil => POk((), s),
+                Cons(t, rest) => match t {
+                    Tok(tag, _, _) => if tag == kEOF() {
+                        POk((), s)
+                    } else {
+                        POk((), PState(rest, n))
+                    },
+                },
+            },
+        }
+    })
+}
+
+fn fresh() -> P[Int] {
+    P(fn(s: PState) -> PResult[Int] {
+        match s {
+            PState(toks, n) => POk(n, PState(toks, n + 1)),
+        }
+    })
+}
+
+fn describe(tok: Tok) -> String {
+    match tok {
+        Tok(tag, text, _) => if tag == kIdent() {
+            "identifier " ++ quoteString(text)
+        } else if tag == kInt() {
+            "integer literal " ++ text
+        } else {
+            kDescribeKind(tag)
+        },
+    }
+}
+
+fn expected(tok: Tok, want: String) -> Error {
+    match tok {
+        Tok(_, _, pos) => errorf(pos, "expected " ++ want ++ ", found " ++ describe(tok)),
+    }
+}
+
+fn expect(tag: Int) -> P[Unit] {
+    let! tok = cur()
+    let Tok(got, _, pos) = tok
+    if got == tag {
+        advance()
+    } else if tag == kRBrace() && got == kAssign() {
+        fail(errorf(pos, "cannot assign: values are immutable"))
+    } else {
+        fail(expected(tok, kDescribeKind(tag)))
+    }
+}
+
+fn isUpperName(name: String) -> Bool {
+    stringLength(name) > 0 && stringByteAt(name, 0) >= 'A' && stringByteAt(name, 0) <= 'Z'
+}
+
+fn isVarName(name: String) -> Bool {
+    !isUpperName(name)
+}
+
+fn parseIntAt(s: String, i: Int, acc: Int) -> Option[Int] {
+    if i >= stringLength(s) {
+        Some(acc)
+    } else {
+        let d = stringByteAt(s, i) - '0'
+        if acc > 922337203685477580 {
+            None
+        } else if acc == 922337203685477580 && d > 7 {
+            None
+        } else {
+            parseIntAt(s, i + 1, acc * 10 + d)
+        }
+    }
+}
+
+fn parseImports(acc: List[Import]) -> P[List[Import]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kImport() {
+        let! imp = parseImport()
+        parseImports(Cons(imp, acc))
+    } else {
+        pure(acc)
+    }
+}
+
+fn parseImport() -> P[Import] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = advance()
+    let! pathTok = cur()
+    let Tok(tag, text, pathPos) = pathTok
+    if tag == kString() {
+        let! _ = advance()
+        pure(Import(pos, text, pathPos))
+    } else {
+        fail(errorf(pathPos, "expected string literal, found " ++ describe(pathTok)))
+    }
+}
+
+fn parseDecls(tys: List[TypeDecl], fns: List[FuncDecl]) -> P[Pair[List[TypeDecl], List[FuncDecl]]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kEOF() {
+        pure(Pair(tys, fns))
+    } else {
+        let! isPub = parsePub()
+        let! tok2 = cur()
+        let Tok(tag2, _, pos2) = tok2
+        if tag2 == kFn() {
+            let! decl = parseFuncDecl()
+            let FuncDecl(id, p, _, name, namePos, tps, params, res, body) = decl
+            parseDecls(tys, Cons(FuncDecl(id, p, isPub, name, namePos, tps, params, res, body), fns))
+        } else if tag2 == kType() {
+            let! decl = parseTypeDecl()
+            let TypeDecl(id, p, _, name, namePos, tps, ctors) = decl
+            parseDecls(Cons(TypeDecl(id, p, isPub, name, namePos, tps, ctors), tys), fns)
+        } else if tag2 == kImport() {
+            fail(errorf(pos2, "imports must come before declarations"))
+        } else if isPub {
+            fail(errorf(pos2, "expected 'fn' or 'type' after 'pub', found " ++ describe(tok2)))
+        } else {
+            fail(expected(tok2, kDescribeKind(kFn()) ++ " or " ++ kDescribeKind(kType())))
+        }
+    }
+}
+
+fn parsePub() -> P[Bool] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kPub() {
+        let! _ = advance()
+        pure(true)
+    } else {
+        pure(false)
+    }
+}
+
+fn parseFileP() -> P[File] {
+    let! imps = parseImports(Nil)
+    let! both = parseDecls(Nil, Nil)
+    let Pair(tys, fns) = both
+    pure(File(reverse(imps), reverse(tys), reverse(fns)))
+}
+
+pub fn parseFile(src: String, firstId: Int) -> Result[Pair[File, Int]] {
+    match lex(src) {
+        Err(e) => Err(e),
+        Ok(toks) => match runP(parseFileP(), PState(toksOf(toks), firstId)) {
+            PErr(e) => Err(e),
+            POk(file, st) => match st {
+                PState(_, n) => Ok(Pair(file, n)),
+            },
+        },
+    }
+}
+
+fn parseFuncDecl() -> P[FuncDecl] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = expect(kFn())
+    let! nameTok = cur()
+    let Tok(tag, name, namePos) = nameTok
+    if tag != kIdent() {
+        fail(expected(nameTok, kDescribeKind(kIdent())))
+    } else {
+        let! _ = advance()
+        let! tps = parseOptTypeParams()
+        let! params = parseParamList(true)
+        let! result = parseOptResult()
+        let! body = parseBlock()
+        let! id = fresh()
+        pure(FuncDecl(id, pos, false, name, namePos, tps, params, result, body))
+    }
+}
+
+fn parseFuncLit() -> P[Expr] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = expect(kFn())
+    let! params = parseParamList(true)
+    let! result = parseOptResult()
+    let! body = parseBlock()
+    let! id = fresh()
+    pure(FuncLit(id, pos, params, result, body))
+}
+
+fn parseOptTypeParams() -> P[List[TypeParam]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kLBracket() {
+        parseTypeParams()
+    } else {
+        pure(Nil)
+    }
+}
+
+fn parseTypeParams() -> P[List[TypeParam]] {
+    let! _ = expect(kLBracket())
+    let! ps = parseTypeParamList(Nil)
+    let! _ = expect(kRBracket())
+    pure(ps)
+}
+
+fn parseTypeParamList(acc: List[TypeParam]) -> P[List[TypeParam]] {
+    let! tok = cur()
+    let Tok(tag, name, pos) = tok
+    if tag != kIdent() {
+        fail(expected(tok, kDescribeKind(kIdent())))
+    } else {
+        let! _ = advance()
+        if isUpperName(name) {
+            let p = TypeParam(pos, name)
+            let! tok2 = cur()
+            let Tok(tag2, _, _) = tok2
+            if tag2 == kComma() {
+                let! _ = advance()
+                parseTypeParamList(Cons(p, acc))
+            } else {
+                pure(reverse(Cons(p, acc)))
+            }
+        } else {
+            fail(errorf(pos, "type parameter name '" ++ name ++ "' must start with an uppercase letter"))
+        }
+    }
+}
+
+fn parseOptResult() -> P[Option[TypeExpr]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kArrow() {
+        let! _ = advance()
+        let! t = parseType()
+        pure(Some(t))
+    } else {
+        pure(None)
+    }
+}
+
+fn parseParamList(allowUntyped: Bool) -> P[List[Param]] {
+    let! _ = expect(kLParen())
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kRParen() {
+        let! _ = advance()
+        pure(Nil)
+    } else if tag != kIdent() && tag != kUnderscore() {
+        fail(expected(tok, kDescribeKind(kRParen())))
+    } else {
+        let! params = parseParams(allowUntyped, Nil)
+        let! _ = expect(kRParen())
+        pure(params)
+    }
+}
+
+fn parseParams(allowUntyped: Bool, acc: List[Param]) -> P[List[Param]] {
+    let! p = parseParam(allowUntyped)
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kComma() {
+        let! _ = advance()
+        parseParams(allowUntyped, Cons(p, acc))
+    } else {
+        pure(reverse(Cons(p, acc)))
+    }
+}
+
+fn parseParam(allowUntyped: Bool) -> P[Param] {
+    let! tok = cur()
+    let Tok(tag, text, pos) = tok
+    if tag != kIdent() && tag != kUnderscore() {
+        fail(expected(tok, kDescribeKind(kIdent())))
+    } else {
+        let! _ = advance()
+        let! next = cur()
+        let Tok(tag2, _, _) = next
+        if allowUntyped && tag2 != kColon() {
+            let! id = fresh()
+            pure(Param(id, pos, text, None))
+        } else {
+            let! _ = expect(kColon())
+            let! typ = parseType()
+            let! id = fresh()
+            pure(Param(id, pos, text, Some(typ)))
+        }
+    }
+}
+
+fn parseOptAnn() -> P[Option[TypeExpr]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kColon() {
+        let! _ = advance()
+        let! t = parseType()
+        pure(Some(t))
+    } else {
+        pure(None)
+    }
+}
+
+fn parseType() -> P[TypeExpr] {
+    let! head = parseTypeHead()
+    let TypeHead(atom, list, hasList, start) = head
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kArrow() {
+        let! _ = advance()
+        let! result = parseType()
+        let params = if hasList {
+            list
+        } else {
+            match atom {
+                Some(a) => Cons(a, Nil),
+                None => Nil,
+            }
+        }
+        pure(FuncType(start, params, result))
+    } else {
+        match atom {
+            Some(a) => pure(a),
+            None => fail(expected(tok, kDescribeKind(kArrow()))),
+        }
+    }
+}
+
+fn parseTypeHead() -> P[TypeHead] {
+    let! tok = cur()
+    let Tok(tag, _, start) = tok
+    if tag == kIdent() {
+        parseNamedType(start)
+    } else if tag == kLParen() {
+        parseParenType(start)
+    } else {
+        fail(errorf(start, "expected type, found " ++ describe(tok)))
+    }
+}
+
+fn parseNamedType(start: Pos) -> P[TypeHead] {
+    let! tok = cur()
+    let Tok(_, name, pos) = tok
+    let! _ = advance()
+    let! args = parseTypeArgsOpt()
+    pure(TypeHead(Some(NamedType(pos, name, args)), Nil, false, start))
+}
+
+fn parseTypeArgsOpt() -> P[List[TypeExpr]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kLBracket() {
+        let! _ = advance()
+        let! xs = parseTypeSeq()
+        let! _ = expect(kRBracket())
+        pure(xs)
+    } else {
+        pure(Nil)
+    }
+}
+
+fn parseTypeSeq() -> P[List[TypeExpr]] {
+    let! first = parseType()
+    parseMoreTypes(Cons(first, Nil))
+}
+
+fn parseMoreTypes(acc: List[TypeExpr]) -> P[List[TypeExpr]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kComma() {
+        let! _ = advance()
+        let! t = parseType()
+        parseMoreTypes(Cons(t, acc))
+    } else {
+        pure(reverse(acc))
+    }
+}
+
+fn parseParenType(start: Pos) -> P[TypeHead] {
+    let! _ = advance()
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kRParen() {
+        let! _ = advance()
+        pure(TypeHead(None, Nil, true, start))
+    } else {
+        let! first = parseType()
+        let! tok2 = cur()
+        let Tok(tag2, _, _) = tok2
+        if tag2 == kComma() {
+            let! rest = parseMoreTypes(Cons(first, Nil))
+            let! _ = expect(kRParen())
+            pure(TypeHead(None, rest, true, start))
+        } else {
+            let! _ = expect(kRParen())
+            pure(TypeHead(Some(first), Cons(first, Nil), true, start))
+        }
+    }
+}
+
+fn parseBlock() -> P[Block] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = expect(kLBrace())
+    let! rest = parseBlockRest(Nil)
+    let! _ = expect(kRBrace())
+    let Pair(lets, result) = rest
+    let! id = fresh()
+    pure(Block(id, pos, lets, result))
+}
+
+fn parseBlockExpr() -> P[Expr] {
+    let! b = parseBlock()
+    pure(BlockE(b))
+}
+
+fn parseBlockRest(lets: List[LetStmt]) -> P[Pair[List[LetStmt], Expr]] {
+    let! tok = cur()
+    let Tok(tag, _, pos) = tok
+    if tag == kLet() {
+        let! _ = advance()
+        let! next = cur()
+        let Tok(tag2, text, _) = next
+        if tag2 == kBang() {
+            let! _ = advance()
+            let! e = parseLetBang(pos)
+            pure(Pair(reverse(lets), e))
+        } else if tag2 == kIdent() && isVarName(text) {
+            let! stmt = parseLet(pos)
+            parseBlockRest(Cons(stmt, lets))
+        } else {
+            let! e = parseLetPattern(pos)
+            pure(Pair(reverse(lets), e))
+        }
+    } else {
+        let! e = parseExpr()
+        pure(Pair(reverse(lets), e))
+    }
+}
+
+fn parseLetBang(letPos: Pos) -> P[Expr] {
+    let! tok = cur()
+    let Tok(tag, text, namePos) = tok
+    if tag == kIdent() && isUpperName(text) {
+        fail(errorf(namePos, "patterns are not supported in 'let!'"))
+    } else if tag == kUnderscore() || (tag == kIdent() && isVarName(text)) {
+        let! _ = advance()
+        let! typ = parseOptAnn()
+        let! _ = expect(kAssign())
+        let! value = parseExpr()
+        let! rest = parseBlockRest(Nil)
+        let Pair(lets, result) = rest
+        let! bodyId = fresh()
+        let! paramId = fresh()
+        let! litId = fresh()
+        let! bindId = fresh()
+        let! callId = fresh()
+        let body = Block(bodyId, letPos, lets, result)
+        let param = Param(paramId, namePos, text, typ)
+        let lit = FuncLit(litId, letPos, Cons(param, Nil), None, body)
+        let ident = Ident(bindId, letPos, "bind")
+        pure(Call(callId, letPos, ident, letPos, Cons(value, Cons(lit, Nil))))
+    } else {
+        fail(expected(tok, kDescribeKind(kIdent())))
+    }
+}
+
+fn parseLetPattern(letPos: Pos) -> P[Expr] {
+    let! pat = parsePattern()
+    let! _ = expect(kAssign())
+    let! value = parseExpr()
+    let! rest = parseBlockRest(Nil)
+    let Pair(lets, result) = rest
+    let! body = letBody(letPos, lets, result)
+    let! id = fresh()
+    pure(Match(id, letPos, value, Cons(Arm(pat, body), Nil), true))
+}
+
+fn letBody(pos: Pos, lets: List[LetStmt], result: Expr) -> P[Expr] {
+    if length(lets) == 0 {
+        pure(result)
+    } else {
+        let! id = fresh()
+        pure(BlockE(Block(id, pos, lets, result)))
+    }
+}
+
+fn parseLet(letPos: Pos) -> P[LetStmt] {
+    let! tok = cur()
+    let Tok(tag, text, namePos) = tok
+    if tag != kIdent() {
+        fail(expected(tok, kDescribeKind(kIdent())))
+    } else {
+        let! _ = advance()
+        let! typ = parseOptAnn()
+        let! _ = expect(kAssign())
+        let! value = parseExpr()
+        let! id = fresh()
+        pure(LetStmt(id, letPos, text, namePos, typ, value))
+    }
+}
+
+fn parseExpr() -> P[Expr] {
+    parseOr()
+}
+
+fn parseOr() -> P[Expr] {
+    parseLeft(parseAnd, 1)
+}
+
+fn parseAnd() -> P[Expr] {
+    parseLeft(parseEq, 2)
+}
+
+fn parseEq() -> P[Expr] {
+    parseLeft(parseRel, 3)
+}
+
+fn parseRel() -> P[Expr] {
+    parseLeft(parseAdd, 4)
+}
+
+fn parseAdd() -> P[Expr] {
+    parseLeft(parseMul, 5)
+}
+
+fn parseMul() -> P[Expr] {
+    parseLeft(parseUnary, 6)
+}
+
+fn levelHas(level: Int, tag: Int) -> Bool {
+    if level == 1 {
+        tag == kOrOr()
+    } else if level == 2 {
+        tag == kAndAnd()
+    } else if level == 3 {
+        tag == kEq() || tag == kNotEq()
+    } else if level == 4 {
+        tag == kLt() || tag == kLtEq() || tag == kGt() || tag == kGtEq()
+    } else if level == 5 {
+        tag == kPlus() || tag == kMinus() || tag == kPlusPlus()
+    } else {
+        tag == kStar() || tag == kSlash() || tag == kPercent()
+    }
+}
+
+fn parseLeft(next: () -> P[Expr], level: Int) -> P[Expr] {
+    let! left = next()
+    parseLeftLoop(left, next, level)
+}
+
+fn parseLeftLoop(left: Expr, next: () -> P[Expr], level: Int) -> P[Expr] {
+    let! tok = cur()
+    let Tok(tag, _, pos) = tok
+    if levelHas(level, tag) {
+        let! _ = advance()
+        let! right = next()
+        let! id = fresh()
+        parseLeftLoop(Binary(id, exprPos(left), pos, intAsKind(tag), left, right), next, level)
+    } else {
+        pure(left)
+    }
+}
+
+fn parseUnary() -> P[Expr] {
+    let! tok = cur()
+    let Tok(tag, _, pos) = tok
+    if tag == kMinus() || tag == kBang() {
+        let! _ = advance()
+        let! x = parseUnary()
+        let! id = fresh()
+        pure(Unary(id, pos, intAsKind(tag), x))
+    } else {
+        parsePostfix()
+    }
+}
+
+fn parsePostfix() -> P[Expr] {
+    let! expr = parsePrimary()
+    parsePostfixLoop(expr)
+}
+
+fn parsePostfixLoop(expr: Expr) -> P[Expr] {
+    let! tok = cur()
+    let Tok(tag, _, lparen) = tok
+    if tag == kLParen() {
+        let! _ = advance()
+        let! args = parseArgs()
+        let! _ = expect(kRParen())
+        let! id = fresh()
+        parsePostfixLoop(Call(id, exprPos(expr), expr, lparen, args))
+    } else if tag == kLBracket() {
+        fail(errorf(lparen, "explicit type arguments are not supported in v0.3"))
+    } else {
+        pure(expr)
+    }
+}
+
+fn parseArgs() -> P[List[Expr]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kRParen() {
+        pure(Nil)
+    } else {
+        parseArgList(Nil)
+    }
+}
+
+fn parseArgList(acc: List[Expr]) -> P[List[Expr]] {
+    let! e = parseExpr()
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kComma() {
+        let! _ = advance()
+        parseArgList(Cons(e, acc))
+    } else {
+        pure(reverse(Cons(e, acc)))
+    }
+}
+
+fn parsePrimary() -> P[Expr] {
+    let! tok = cur()
+    let Tok(tag, text, pos) = tok
+    if tag == kInt() {
+        let! _ = advance()
+        match parseIntAt(text, 0, 0) {
+            None => fail(errorf(pos, "integer literal out of range: " ++ text)),
+            Some(v) => {
+                let! id = fresh()
+                pure(IntLit(id, pos, v))
+            },
+        }
+    } else if tag == kChar() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(IntLit(id, pos, stringByteAt(text, 0)))
+    } else if tag == kString() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(StringLit(id, pos, text))
+    } else if tag == kTrue() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(BoolLit(id, pos, true))
+    } else if tag == kFalse() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(BoolLit(id, pos, false))
+    } else if tag == kIdent() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(Ident(id, pos, text))
+    } else if tag == kLParen() {
+        parseParenExpr(pos)
+    } else if tag == kIf() {
+        parseIf()
+    } else if tag == kLBrace() {
+        parseBlockExpr()
+    } else if tag == kFn() {
+        parseFuncLit()
+    } else if tag == kMatch() {
+        parseMatch()
+    } else {
+        fail(errorf(pos, "expected expression, found " ++ describe(tok)))
+    }
+}
+
+fn parseParenExpr(pos: Pos) -> P[Expr] {
+    let! _ = advance()
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kRParen() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(UnitLit(id, pos))
+    } else {
+        let! e = parseExpr()
+        let! _ = expect(kRParen())
+        pure(e)
+    }
+}
+
+fn parseIf() -> P[Expr] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = expect(kIf())
+    let! cond = parseExpr()
+    let! thenB = parseBlock()
+    let! _ = expect(kElse())
+    let! elseE = parseElse()
+    let! id = fresh()
+    pure(If(id, pos, cond, thenB, elseE))
+}
+
+fn parseElse() -> P[Expr] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kIf() {
+        parseIf()
+    } else if tag == kLBrace() {
+        parseBlockExpr()
+    } else {
+        fail(expected(tok, kDescribeKind(kLBrace())))
+    }
+}
+
+fn parseTypeDecl() -> P[TypeDecl] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = expect(kType())
+    let! nameTok = cur()
+    let Tok(tag, name, namePos) = nameTok
+    if tag != kIdent() {
+        fail(expected(nameTok, kDescribeKind(kIdent())))
+    } else {
+        let! _ = advance()
+        if isUpperName(name) {
+            let! tps = parseOptTypeParams()
+            let! _ = expect(kAssign())
+            let! bar = cur()
+            let Tok(tagb, _, _) = bar
+            let! _ = if tagb == kBar() { advance() } else { pure(()) }
+            let! ctor = parseCtorDecl()
+            let! ctors = parseMoreCtors(Cons(ctor, Nil))
+            let! id = fresh()
+            pure(TypeDecl(id, pos, false, name, namePos, tps, ctors))
+        } else {
+            fail(errorf(namePos, "type name '" ++ name ++ "' must start with an uppercase letter"))
+        }
+    }
+}
+
+fn parseMoreCtors(acc: List[CtorDecl]) -> P[List[CtorDecl]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kBar() {
+        let! _ = advance()
+        let! c = parseCtorDecl()
+        parseMoreCtors(Cons(c, acc))
+    } else {
+        pure(reverse(acc))
+    }
+}
+
+fn parseCtorDecl() -> P[CtorDecl] {
+    let! tok = cur()
+    let Tok(tag, name, pos) = tok
+    if tag != kIdent() {
+        fail(expected(tok, kDescribeKind(kIdent())))
+    } else {
+        let! _ = advance()
+        if isUpperName(name) {
+            let! fields = parseCtorFields()
+            pure(CtorDecl(pos, name, fields))
+        } else {
+            fail(errorf(pos, "constructor name '" ++ name ++ "' must start with an uppercase letter"))
+        }
+    }
+}
+
+fn parseCtorFields() -> P[List[TypeExpr]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kLParen() {
+        let! _ = advance()
+        let! xs = parseTypeSeq()
+        let! _ = expect(kRParen())
+        pure(xs)
+    } else {
+        pure(Nil)
+    }
+}
+
+fn parseMatch() -> P[Expr] {
+    let! tok = cur()
+    let Tok(_, _, pos) = tok
+    let! _ = expect(kMatch())
+    let! scrut = parseExpr()
+    let! _ = expect(kLBrace())
+    let! arms = parseArms(Nil)
+    let! _ = expect(kRBrace())
+    let! id = fresh()
+    pure(Match(id, pos, scrut, arms, false))
+}
+
+fn parseArms(acc: List[Arm]) -> P[List[Arm]] {
+    let! arm = parseArm()
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kComma() {
+        let! _ = advance()
+        let! tok2 = cur()
+        let Tok(tag2, _, _) = tok2
+        if tag2 == kRBrace() {
+            pure(reverse(Cons(arm, acc)))
+        } else {
+            parseArms(Cons(arm, acc))
+        }
+    } else if tag == kRBrace() {
+        pure(reverse(Cons(arm, acc)))
+    } else {
+        fail(expected(tok, kDescribeKind(kComma()) ++ " or " ++ kDescribeKind(kRBrace())))
+    }
+}
+
+fn parseArm() -> P[Arm] {
+    let! pat = parsePattern()
+    let! _ = expect(kFatArrow())
+    let! body = parseExpr()
+    pure(Arm(pat, body))
+}
+
+fn parsePattern() -> P[Pattern] {
+    let! tok = cur()
+    let Tok(tag, text, pos) = tok
+    if tag == kUnderscore() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(WildP(id, pos))
+    } else if tag == kInt() {
+        let! _ = advance()
+        match parseIntAt(text, 0, 0) {
+            None => fail(errorf(pos, "integer literal out of range: " ++ text)),
+            Some(v) => {
+                let! id = fresh()
+                pure(IntP(id, pos, v))
+            },
+        }
+    } else if tag == kChar() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(IntP(id, pos, stringByteAt(text, 0)))
+    } else if tag == kString() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(StrP(id, pos, text))
+    } else if tag == kTrue() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(BoolP(id, pos, true))
+    } else if tag == kFalse() {
+        let! _ = advance()
+        let! id = fresh()
+        pure(BoolP(id, pos, false))
+    } else if tag == kIdent() {
+        let! _ = advance()
+        if isUpperName(text) {
+            let! args = parsePatternArgs()
+            let! id = fresh()
+            pure(CtorP(id, pos, text, args))
+        } else {
+            let! id = fresh()
+            pure(VarP(id, pos, text))
+        }
+    } else {
+        fail(errorf(pos, "expected pattern, found " ++ describe(tok)))
+    }
+}
+
+fn parsePatternArgs() -> P[List[Pattern]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kLParen() {
+        let! _ = advance()
+        let! first = parsePattern()
+        let! rest = parseMorePatterns(Cons(first, Nil))
+        let! _ = expect(kRParen())
+        pure(rest)
+    } else {
+        pure(Nil)
+    }
+}
+
+fn parseMorePatterns(acc: List[Pattern]) -> P[List[Pattern]] {
+    let! tok = cur()
+    let Tok(tag, _, _) = tok
+    if tag == kComma() {
+        let! _ = advance()
+        let! p = parsePattern()
+        parseMorePatterns(Cons(p, acc))
+    } else {
+        pure(reverse(acc))
+    }
+}

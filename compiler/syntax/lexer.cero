@@ -1,0 +1,497 @@
+import "std/list"
+import "std/option"
+import "syntax/diag"
+import "syntax/token"
+import "util/quote"
+
+type Cur = | Cur(Int, Int, Int)
+
+type Scanned = | Scanned(Token, Int, Int, Int)
+
+type LexDone = | LexDone(List[Token], Int, Int)
+
+type Esc =
+    | EscOk(Int, Int, Int, Int)
+    | EscErr(Error)
+
+type Hex =
+    | HexOk(Int, Int, Int, Int)
+    | HexNone
+
+fn contByte(b: Int) -> Bool {
+    b >= 128 && b <= 191
+}
+
+fn utf8At(s: String, i: Int) -> Bool {
+    let n = stringLength(s)
+    if i >= n {
+        true
+    } else {
+        let b = stringByteAt(s, i)
+        if b < 128 {
+            utf8At(s, i + 1)
+        } else if b < 194 || b > 244 {
+            false
+        } else if b < 224 {
+            if i + 1 < n && contByte(stringByteAt(s, i + 1)) {
+                utf8At(s, i + 2)
+            } else {
+                false
+            }
+        } else if b < 240 {
+            if i + 2 >= n {
+                false
+            } else {
+                let b2 = stringByteAt(s, i + 1)
+                let ok2 = if b == 224 {
+                    b2 >= 160 && b2 <= 191
+                } else if b == 237 {
+                    b2 >= 128 && b2 <= 159
+                } else {
+                    contByte(b2)
+                }
+                if ok2 && contByte(stringByteAt(s, i + 2)) {
+                    utf8At(s, i + 3)
+                } else {
+                    false
+                }
+            }
+        } else {
+            if i + 3 >= n {
+                false
+            } else {
+                let b2 = stringByteAt(s, i + 1)
+                let ok2 = if b == 240 {
+                    b2 >= 144 && b2 <= 191
+                } else if b == 244 {
+                    b2 >= 128 && b2 <= 143
+                } else {
+                    contByte(b2)
+                }
+                if ok2 && contByte(stringByteAt(s, i + 2)) && contByte(stringByteAt(s, i + 3)) {
+                    utf8At(s, i + 4)
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn utf8Valid(s: String) -> Bool {
+    utf8At(s, 0)
+}
+
+fn charWidth(src: String, i: Int) -> Int {
+    let b = stringByteAt(src, i)
+    if b < 224 {
+        2
+    } else if b < 240 {
+        3
+    } else {
+        4
+    }
+}
+
+fn runeSlice(src: String, i: Int) -> String {
+    let b = stringByteAt(src, i)
+    if b < 128 {
+        stringFromByte(b)
+    } else {
+        let w = charWidth(src, i)
+        stringSlice(src, i, i + w)
+    }
+}
+
+fn isDigit(b: Int) -> Bool {
+    b >= '0' && b <= '9'
+}
+
+fn isIdentStart(b: Int) -> Bool {
+    b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+fn isIdentPart(b: Int) -> Bool {
+    isIdentStart(b) || isDigit(b)
+}
+
+fn skipComment(src: String, i: Int, line: Int, col: Int) -> Cur {
+    let n = stringLength(src)
+    if i >= n {
+        Cur(i, line, col)
+    } else {
+        let b = stringByteAt(src, i)
+        if b == '\n' {
+            skip(src, i, line, col)
+        } else if b < 128 {
+            skipComment(src, i + 1, line, col + 1)
+        } else {
+            skipComment(src, i + charWidth(src, i), line, col + 1)
+        }
+    }
+}
+
+fn skip(src: String, i: Int, line: Int, col: Int) -> Cur {
+    let n = stringLength(src)
+    if i >= n {
+        Cur(i, line, col)
+    } else {
+        let b = stringByteAt(src, i)
+        if b == ' ' || b == '\t' || b == '\r' {
+            skip(src, i + 1, line, col + 1)
+        } else if b == '\n' {
+            skip(src, i + 1, line + 1, 1)
+        } else if b == '/' && i + 1 < n && stringByteAt(src, i + 1) == '/' {
+            skipComment(src, i + 2, line, col + 2)
+        } else {
+            Cur(i, line, col)
+        }
+    }
+}
+
+fn identEnd(src: String, i: Int) -> Int {
+    let n = stringLength(src)
+    if i >= n {
+        i
+    } else if isIdentPart(stringByteAt(src, i)) {
+        identEnd(src, i + 1)
+    } else {
+        i
+    }
+}
+
+fn digitEnd(src: String, i: Int) -> Int {
+    let n = stringLength(src)
+    if i >= n {
+        i
+    } else if isDigit(stringByteAt(src, i)) {
+        digitEnd(src, i + 1)
+    } else {
+        i
+    }
+}
+
+fn keyword(text: String) -> Kind {
+    if text == "fn" {
+        Fn
+    } else if text == "let" {
+        Let
+    } else if text == "if" {
+        If
+    } else if text == "else" {
+        Else
+    } else if text == "true" {
+        True
+    } else if text == "false" {
+        False
+    } else if text == "type" {
+        Type
+    } else if text == "match" {
+        Match
+    } else if text == "_" {
+        Underscore
+    } else if text == "import" {
+        Import
+    } else if text == "pub" {
+        Pub
+    } else {
+        Ident
+    }
+}
+
+fn parseIntAt(s: String, i: Int, acc: Int) -> Option[Int] {
+    if i >= stringLength(s) {
+        Some(acc)
+    } else {
+        let d = stringByteAt(s, i) - '0'
+        if acc > 922337203685477580 {
+            None
+        } else if acc == 922337203685477580 && d > 7 {
+            None
+        } else {
+            parseIntAt(s, i + 1, acc * 10 + d)
+        }
+    }
+}
+
+fn scanIdent(src: String, i: Int, line: Int, col: Int, pos: Pos) -> Result[Scanned] {
+    let end = identEnd(src, i + 1)
+    let text = stringSlice(src, i, end)
+    Ok(Scanned(Token(keyword(text), text, pos), end, line, col + end - i))
+}
+
+fn scanNumber(src: String, i: Int, line: Int, col: Int, pos: Pos) -> Result[Scanned] {
+    let endDigits = digitEnd(src, i)
+    let n = stringLength(src)
+    if endDigits < n && isIdentPart(stringByteAt(src, endDigits)) {
+        let end = identEnd(src, endDigits)
+        let text = stringSlice(src, i, end)
+        Err(errorf(pos, "invalid integer literal " ++ quoteString(text)))
+    } else {
+        let text = stringSlice(src, i, endDigits)
+        match parseIntAt(text, 0, 0) {
+            None => Err(errorf(pos, "integer literal out of range: " ++ text)),
+            Some(_) => Ok(Scanned(Token(Int, text, pos), endDigits, line, col + endDigits - i)),
+        }
+    }
+}
+
+fn hexValue(b: Int) -> Int {
+    if b >= '0' && b <= '9' {
+        b - '0'
+    } else if b >= 'a' && b <= 'f' {
+        b - 'a' + 10
+    } else if b >= 'A' && b <= 'F' {
+        b - 'A' + 10
+    } else {
+        -1
+    }
+}
+
+fn readHex(src: String, i: Int, line: Int, col: Int) -> Hex {
+    if i >= stringLength(src) {
+        HexNone
+    } else {
+        let v = hexValue(stringByteAt(src, i))
+        if v < 0 {
+            HexNone
+        } else {
+            HexOk(v, i + 1, line, col + 1)
+        }
+    }
+}
+
+fn readHexEscape(src: String, i: Int, line: Int, col: Int, escPos: Pos) -> Esc {
+    match readHex(src, i, line, col) {
+        HexNone => EscErr(errorf(escPos, "invalid escape sequence '\\x'")),
+        HexOk(hi, i2, line2, col2) => match readHex(src, i2, line2, col2) {
+            HexNone => EscErr(errorf(escPos, "invalid escape sequence '\\x'")),
+            HexOk(lo, i3, line3, col3) => EscOk(hi * 16 + lo, i3, line3, col3),
+        },
+    }
+}
+
+fn readEscape(src: String, i: Int, line: Int, col: Int, escPos: Pos) -> Esc {
+    let b = stringByteAt(src, i)
+    if b == 'n' {
+        EscOk(10, i + 1, line, col + 1)
+    } else if b == 't' {
+        EscOk(9, i + 1, line, col + 1)
+    } else if b == 'r' {
+        EscOk(13, i + 1, line, col + 1)
+    } else if b == '\\' {
+        EscOk(92, i + 1, line, col + 1)
+    } else if b == '"' {
+        EscOk(34, i + 1, line, col + 1)
+    } else if b == '\'' {
+        EscOk(39, i + 1, line, col + 1)
+    } else if b == '0' {
+        EscOk(0, i + 1, line, col + 1)
+    } else if b == 'x' {
+        readHexEscape(src, i + 1, line, col + 1, escPos)
+    } else {
+        EscErr(errorf(escPos, "invalid escape sequence '\\" ++ runeSlice(src, i) ++ "'"))
+    }
+}
+
+fn plainStringEnd(src: String, i: Int) -> Int {
+    let n = stringLength(src)
+    if i >= n {
+        i
+    } else {
+        let b = stringByteAt(src, i)
+        if b == '"' || b == '\\' || b == '\n' || b >= 128 {
+            i
+        } else {
+            plainStringEnd(src, i + 1)
+        }
+    }
+}
+
+fn scanString(src: String, i: Int, line: Int, col: Int, start: Pos, acc: List[String]) -> Result[Scanned] {
+    let n = stringLength(src)
+    if i >= n {
+        Err(errorf(start, "unterminated string literal"))
+    } else {
+        let b = stringByteAt(src, i)
+        if b == '"' {
+            let text = concatBalanced(reverse(acc))
+            Ok(Scanned(Token(String, text, start), i + 1, line, col + 1))
+        } else if b == '\n' {
+            Err(errorf(start, "newline in string literal"))
+        } else if b == '\\' {
+            let escPos = Pos(line, col)
+            if i + 1 >= n {
+                Err(errorf(start, "unterminated string literal"))
+            } else if stringByteAt(src, i + 1) == '\n' {
+                Err(errorf(start, "newline in string literal"))
+            } else {
+                match readEscape(src, i + 1, line, col + 1, escPos) {
+                    EscErr(e) => Err(e),
+                    EscOk(byte, j, line2, col2) => scanString(src, j, line2, col2, start, Cons(stringFromByte(byte), acc)),
+                }
+            }
+        } else if b < 128 {
+            let j = plainStringEnd(src, i)
+            scanString(src, j, line, col + j - i, start, Cons(stringSlice(src, i, j), acc))
+        } else {
+            let w = charWidth(src, i)
+            scanString(src, i + w, line, col + 1, start, Cons(stringSlice(src, i, i + w), acc))
+        }
+    }
+}
+
+fn scanChar(src: String, i: Int, line: Int, col: Int, start: Pos, acc: List[String], nbytes: Int) -> Result[Scanned] {
+    let n = stringLength(src)
+    if i >= n || stringByteAt(src, i) == '\n' {
+        Err(errorf(start, "unterminated character literal"))
+    } else {
+        let b = stringByteAt(src, i)
+        if b == '\'' {
+            if nbytes == 0 {
+                Err(errorf(start, "empty character literal"))
+            } else if nbytes == 1 {
+                Ok(Scanned(Token(Char, concatBalanced(reverse(acc)), start), i + 1, line, col + 1))
+            } else {
+                Err(errorf(start, "character literal must be a single byte"))
+            }
+        } else if b == '\\' {
+            let escPos = Pos(line, col)
+            if i + 1 >= n || stringByteAt(src, i + 1) == '\n' {
+                Err(errorf(start, "unterminated character literal"))
+            } else {
+                match readEscape(src, i + 1, line, col + 1, escPos) {
+                    EscErr(e) => Err(e),
+                    EscOk(byte, j, line2, col2) => scanChar(src, j, line2, col2, start, Cons(stringFromByte(byte), acc), nbytes + 1),
+                }
+            }
+        } else if b < 128 {
+            scanChar(src, i + 1, line, col + 1, start, Cons(stringFromByte(b), acc), nbytes + 1)
+        } else {
+            let w = charWidth(src, i)
+            scanChar(src, i + w, line, col + 1, start, Cons(stringSlice(src, i, i + w), acc), nbytes + w)
+        }
+    }
+}
+
+fn twoKind(b: Int, next: Int) -> Option[Kind] {
+    if b == '-' && next == '>' {
+        Some(Arrow)
+    } else if b == '=' && next == '=' {
+        Some(Eq)
+    } else if b == '=' && next == '>' {
+        Some(FatArrow)
+    } else if b == '!' && next == '=' {
+        Some(NotEq)
+    } else if b == '<' && next == '=' {
+        Some(LtEq)
+    } else if b == '>' && next == '=' {
+        Some(GtEq)
+    } else if b == '&' && next == '&' {
+        Some(AndAnd)
+    } else if b == '|' && next == '|' {
+        Some(OrOr)
+    } else if b == '+' && next == '+' {
+        Some(PlusPlus)
+    } else {
+        None
+    }
+}
+
+fn oneKind(b: Int) -> Option[Kind] {
+    if b == '(' {
+        Some(LParen)
+    } else if b == ')' {
+        Some(RParen)
+    } else if b == '{' {
+        Some(LBrace)
+    } else if b == '}' {
+        Some(RBrace)
+    } else if b == '[' {
+        Some(LBracket)
+    } else if b == ']' {
+        Some(RBracket)
+    } else if b == ',' {
+        Some(Comma)
+    } else if b == ':' {
+        Some(Colon)
+    } else if b == '=' {
+        Some(Assign)
+    } else if b == '|' {
+        Some(Bar)
+    } else if b == '+' {
+        Some(Plus)
+    } else if b == '-' {
+        Some(Minus)
+    } else if b == '*' {
+        Some(Star)
+    } else if b == '/' {
+        Some(Slash)
+    } else if b == '%' {
+        Some(Percent)
+    } else if b == '<' {
+        Some(Lt)
+    } else if b == '>' {
+        Some(Gt)
+    } else if b == '!' {
+        Some(Bang)
+    } else {
+        None
+    }
+}
+
+fn scanSymbol(src: String, i: Int, line: Int, col: Int, pos: Pos) -> Result[Scanned] {
+    let b = stringByteAt(src, i)
+    let n = stringLength(src)
+    let next = if i + 1 < n { stringByteAt(src, i + 1) } else { 0 }
+    match twoKind(b, next) {
+        Some(k) => Ok(Scanned(Token(k, stringSlice(src, i, i + 2), pos), i + 2, line, col + 2)),
+        None => match oneKind(b) {
+            Some(k) => Ok(Scanned(Token(k, stringFromByte(b), pos), i + 1, line, col + 1)),
+            None => Err(errorf(pos, "unexpected character " ++ quoteRune(runeSlice(src, i)))),
+        },
+    }
+}
+
+fn scan(src: String, i: Int, line: Int, col: Int) -> Result[Scanned] {
+    let b = stringByteAt(src, i)
+    let pos = Pos(line, col)
+    if isIdentStart(b) {
+        scanIdent(src, i, line, col, pos)
+    } else if isDigit(b) {
+        scanNumber(src, i, line, col, pos)
+    } else if b == '"' {
+        scanString(src, i + 1, line, col + 1, pos, Nil)
+    } else if b == '\'' {
+        scanChar(src, i + 1, line, col + 1, pos, Nil, 0)
+    } else {
+        scanSymbol(src, i, line, col, pos)
+    }
+}
+
+fn lexAll(src: String, i: Int, line: Int, col: Int, acc: List[Token]) -> Result[LexDone] {
+    let Cur(j, line2, col2) = skip(src, i, line, col)
+    if j >= stringLength(src) {
+        Ok(LexDone(acc, line2, col2))
+    } else {
+        match scan(src, j, line2, col2) {
+            Err(e) => Err(e),
+            Ok(sc) => match sc {
+                Scanned(tok, j2, line3, col3) => lexAll(src, j2, line3, col3, Cons(tok, acc)),
+            },
+        }
+    }
+}
+
+pub fn lex(src: String) -> Result[List[Token]] {
+    if utf8Valid(src) {
+        match lexAll(src, 0, 1, 1, Nil) {
+            Err(e) => Err(e),
+            Ok(done) => match done {
+                LexDone(rev, line, col) => Ok(reverse(Cons(Token(EOF, "", Pos(line, col)), rev))),
+            },
+        }
+    } else {
+        Err(errorf(Pos(1, 1), "invalid UTF-8 encoding"))
+    }
+}

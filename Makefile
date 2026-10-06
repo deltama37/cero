@@ -38,3 +38,6 @@ clean:
 
 run: build
 	$(CEROC) $(ARGS)
+
+selfhost-build: build
+	./bin/ceroc build compiler/main.cero -o bin/ceroc-cero.wasm

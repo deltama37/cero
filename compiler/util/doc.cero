@@ -1,0 +1,74 @@
+import "std/list"
+
+pub type Doc =
+    | DEmpty
+    | DText(String)
+    | DCat(Doc, Doc)
+
+pub fn docText(s: String) -> Doc {
+    DText(s)
+}
+
+pub fn docCat(a: Doc, b: Doc) -> Doc {
+    DCat(a, b)
+}
+
+fn docConcatAcc(ds: List[Doc], acc: Doc) -> Doc {
+    match ds {
+        Nil => acc,
+        Cons(d, rest) => docConcatAcc(rest, DCat(acc, d)),
+    }
+}
+
+pub fn docConcat(ds: List[Doc]) -> Doc {
+    docConcatAcc(ds, DEmpty)
+}
+
+fn docJoinAcc(ds: List[Doc], sep: String, acc: Doc) -> Doc {
+    match ds {
+        Nil => acc,
+        Cons(d, rest) => docJoinAcc(rest, sep, DCat(acc, DCat(DText(sep), d))),
+    }
+}
+
+pub fn docJoin(ds: List[Doc], sep: String) -> Doc {
+    match ds {
+        Nil => DEmpty,
+        Cons(d, rest) => docJoinAcc(rest, sep, d),
+    }
+}
+
+fn docLeaves(stack: List[Doc], acc: List[String]) -> List[String] {
+    match stack {
+        Nil => acc,
+        Cons(d, rest) => match d {
+            DEmpty => docLeaves(rest, acc),
+            DText(s) => if s == "" {
+                docLeaves(rest, acc)
+            } else {
+                docLeaves(rest, Cons(s, acc))
+            },
+            DCat(a, b) => docLeaves(Cons(a, Cons(b, rest)), acc),
+        },
+    }
+}
+
+fn pairUp(xs: List[String], acc: List[String]) -> List[String] {
+    match xs {
+        Nil => reverse(acc),
+        Cons(x, Nil) => reverse(Cons(x, acc)),
+        Cons(x, Cons(y, rest)) => pairUp(rest, Cons(x ++ y, acc)),
+    }
+}
+
+fn concatBalanced(xs: List[String]) -> String {
+    match xs {
+        Nil => "",
+        Cons(x, Nil) => x,
+        _ => concatBalanced(pairUp(xs, Nil)),
+    }
+}
+
+pub fn docToString(d: Doc) -> String {
+    concatBalanced(reverse(docLeaves(Cons(d, Nil), Nil)))
+}

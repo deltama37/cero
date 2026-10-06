@@ -1,0 +1,103 @@
+import "std/io"
+import "std/list"
+import "syntax/diag"
+import "syntax/print"
+import "driver/load"
+
+fn usage() -> String {
+    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT]\n"
+}
+
+fn die(code: Int, msg: String) -> IO[Unit] {
+    let! _ = eprint(msg)
+    exit(code)
+}
+
+type Parsed =
+    | Usage
+    | Cmd(String, String, String, String)
+
+fn splitStd(xs: List[String], stdDir: String, acc: List[String]) -> Parsed {
+    match xs {
+        Nil => parseCmd(stdDir, reverse(acc)),
+        Cons(a, rest) => if a == "--std" {
+            match rest {
+                Nil => Usage,
+                Cons(dir, rest2) => splitStd(rest2, dir, acc),
+            }
+        } else {
+            splitStd(rest, stdDir, Cons(a, acc))
+        },
+    }
+}
+
+fn parseCmd(stdDir: String, xs: List[String]) -> Parsed {
+    match xs {
+        Cons(cmd, rest) => if cmd == "parse" || cmd == "check" || cmd == "ir" {
+            match rest {
+                Cons(file, Nil) => Cmd(stdDir, cmd, file, ""),
+                _ => Usage,
+            }
+        } else if cmd == "build" {
+            parseBuild(stdDir, rest, "", "")
+        } else {
+            Usage
+        },
+        Nil => Usage,
+    }
+}
+
+fn parseBuild(stdDir: String, xs: List[String], file: String, out: String) -> Parsed {
+    match xs {
+        Nil => if file == "" { Usage } else { Cmd(stdDir, "build", file, out) },
+        Cons(a, rest) => if a == "-o" {
+            match rest {
+                Nil => Usage,
+                Cons(o, rest2) => parseBuild(stdDir, rest2, file, o),
+            }
+        } else if stringLength(a) > 0 && stringByteAt(a, 0) == '-' {
+            Usage
+        } else if file != "" {
+            Usage
+        } else {
+            parseBuild(stdDir, rest, a, out)
+        },
+    }
+}
+
+fn writeMods(ms: List[Module]) -> IO[Unit] {
+    match ms {
+        Nil => pure(()),
+        Cons(m, rest) => match m {
+            Module(_, file, ast, _) => {
+                let! _ = print("== " ++ file ++ "\n" ++ astFormatFile(ast) ++ "\n")
+                writeMods(rest)
+            },
+        },
+    }
+}
+
+fn dispatch(stdDir: String, cmd: String, file: String) -> IO[Unit] {
+    if cmd == "check" || cmd == "ir" || cmd == "build" {
+        die(3, "ceroc: " ++ cmd ++ ": not yet implemented\n")
+    } else {
+        let! ok = fileExists(file)
+        if ok {
+            let! result = loadProgram(file, stdDir)
+            match result {
+                LoadFailed(e) => die(1, formatError(e) ++ "\n"),
+                Loaded(mods, _) => writeMods(mods),
+            }
+        } else {
+            die(1, "ceroc: cannot read " ++ file ++ "\n")
+        }
+    }
+}
+
+fn main() -> IO[Unit] {
+    let! argv = args()
+    match splitStd(argv, "std", Nil) {
+        Usage => die(2, usage()),
+        Cmd(stdDir, cmd, file, _) => dispatch(stdDir, cmd, file),
+    }
+}

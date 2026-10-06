@@ -1,0 +1,2 @@
+import ""
+fn main() -> Int { 0 }

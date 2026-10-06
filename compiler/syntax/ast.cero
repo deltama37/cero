@@ -1,0 +1,117 @@
+import "std/list"
+import "std/option"
+import "syntax/diag"
+import "syntax/token"
+
+pub type TypeExpr =
+    | NamedType(Pos, String, List[TypeExpr])
+    | FuncType(Pos, List[TypeExpr], TypeExpr)
+
+pub type Expr =
+    | IntLit(Int, Pos, Int)
+    | StringLit(Int, Pos, String)
+    | BoolLit(Int, Pos, Bool)
+    | UnitLit(Int, Pos)
+    | Ident(Int, Pos, String)
+    | Unary(Int, Pos, Kind, Expr)
+    | Binary(Int, Pos, Pos, Kind, Expr, Expr)
+    | Call(Int, Pos, Expr, Pos, List[Expr])
+    | If(Int, Pos, Expr, Block, Expr)
+    | BlockE(Block)
+    | FuncLit(Int, Pos, List[Param], Option[TypeExpr], Block)
+    | Match(Int, Pos, Expr, List[Arm], Bool)
+
+pub type Block = | Block(Int, Pos, List[LetStmt], Expr)
+
+pub type LetStmt = | LetStmt(Int, Pos, String, Pos, Option[TypeExpr], Expr)
+
+pub type Param = | Param(Int, Pos, String, Option[TypeExpr])
+
+pub type Arm = | Arm(Pattern, Expr)
+
+pub type Pattern =
+    | WildP(Int, Pos)
+    | VarP(Int, Pos, String)
+    | CtorP(Int, Pos, String, List[Pattern])
+    | IntP(Int, Pos, Int)
+    | StrP(Int, Pos, String)
+    | BoolP(Int, Pos, Bool)
+
+pub type TypeParam = | TypeParam(Pos, String)
+
+pub type CtorDecl = | CtorDecl(Pos, String, List[TypeExpr])
+
+pub type TypeDecl = | TypeDecl(Int, Pos, Bool, String, Pos, List[TypeParam], List[CtorDecl])
+
+pub type FuncDecl = | FuncDecl(Int, Pos, Bool, String, Pos, List[TypeParam], List[Param], Option[TypeExpr], Block)
+
+pub type Import = | Import(Pos, String, Pos)
+
+pub type File = | File(List[Import], List[TypeDecl], List[FuncDecl])
+
+pub fn exprId(e: Expr) -> Int {
+    match e {
+        IntLit(id, _, _) => id,
+        StringLit(id, _, _) => id,
+        BoolLit(id, _, _) => id,
+        UnitLit(id, _) => id,
+        Ident(id, _, _) => id,
+        Unary(id, _, _, _) => id,
+        Binary(id, _, _, _, _, _) => id,
+        Call(id, _, _, _, _) => id,
+        If(id, _, _, _, _) => id,
+        BlockE(b) => match b {
+            Block(id, _, _, _) => id,
+        },
+        FuncLit(id, _, _, _, _) => id,
+        Match(id, _, _, _, _) => id,
+    }
+}
+
+pub fn exprPos(e: Expr) -> Pos {
+    match e {
+        IntLit(_, p, _) => p,
+        StringLit(_, p, _) => p,
+        BoolLit(_, p, _) => p,
+        UnitLit(_, p) => p,
+        Ident(_, p, _) => p,
+        Unary(_, p, _, _) => p,
+        Binary(_, p, _, _, _, _) => p,
+        Call(_, p, _, _, _) => p,
+        If(_, p, _, _, _) => p,
+        BlockE(b) => match b {
+            Block(_, p, _, _) => p,
+        },
+        FuncLit(_, p, _, _, _) => p,
+        Match(_, p, _, _, _) => p,
+    }
+}
+
+pub fn patternId(p: Pattern) -> Int {
+    match p {
+        WildP(id, _) => id,
+        VarP(id, _, _) => id,
+        CtorP(id, _, _, _) => id,
+        IntP(id, _, _) => id,
+        StrP(id, _, _) => id,
+        BoolP(id, _, _) => id,
+    }
+}
+
+pub fn patternPos(p: Pattern) -> Pos {
+    match p {
+        WildP(_, pos) => pos,
+        VarP(_, pos, _) => pos,
+        CtorP(_, pos, _, _) => pos,
+        IntP(_, pos, _) => pos,
+        StrP(_, pos, _) => pos,
+        BoolP(_, pos, _) => pos,
+    }
+}
+
+pub fn typeExprPos(t: TypeExpr) -> Pos {
+    match t {
+        NamedType(p, _, _) => p,
+        FuncType(p, _, _) => p,
+    }
+}

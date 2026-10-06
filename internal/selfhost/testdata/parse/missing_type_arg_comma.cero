@@ -1,0 +1,1 @@
+fn f(x: Pair[Int Bool]) -> Int { 1 }

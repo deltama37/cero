@@ -70,6 +70,17 @@ func CompileProgram(
 	}, nil
 }
 
+// Load loads the program whose entry module is filename with source src.
+// read loads non-standard modules by file name. Modules are returned in
+// dependency order, with the entry module last.
+func Load(
+	filename string,
+	src []byte,
+	read func(name string) ([]byte, error),
+) ([]*typecheck.Module, error) {
+	return load(filename, src, read)
+}
+
 func load(
 	filename string,
 	src []byte,
