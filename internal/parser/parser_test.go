@@ -533,6 +533,50 @@ fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
 			types: 2,
 			funcs: 1,
 		},
+		{
+			name: "imports",
+			src: `import "std/list"
+import "shapes"
+
+fn main() -> Int { 1 }
+`,
+			want: `(import "std/list")
+(import "shapes")
+(fn main () Int (block 1))`,
+			funcs: 1,
+		},
+		{
+			name:  "pub fn",
+			src:   "pub fn inc(n: Int) -> Int { n + 1 }",
+			want:  "(pub fn inc ((n Int)) Int (block (+ n 1)))",
+			funcs: 1,
+		},
+		{
+			name:  "pub fn with type parameters",
+			src:   "pub fn id[T](x: T) -> T { x }",
+			want:  "(pub fn id[T] ((x T)) T (block x))",
+			funcs: 1,
+		},
+		{
+			name:  "pub type",
+			src:   "pub type Shape = | Circle(Int) | Rect(Int, Int)",
+			want:  "(pub type Shape (Circle Int) (Rect Int Int))",
+			types: 1,
+		},
+		{
+			name: "imports, pub type, and pub fn",
+			src: `import "std/list"
+pub type Option[T] = | None | Some(T)
+pub fn len() -> Int { 0 }
+fn main() -> Int { len() }
+`,
+			want: `(import "std/list")
+(pub type Option[T] (None) (Some T))
+(pub fn len () Int (block 0))
+(fn main () Int (block (call len)))`,
+			types: 1,
+			funcs: 2,
+		},
 	}
 
 	for _, tt := range tests {
@@ -790,6 +834,43 @@ func TestParseError(t *testing.T) {
 			name: "func lit param followed by a type",
 			src:  "fn f() -> Int { fn(x Int) { x } }",
 			want: `1:22: expected ')', found identifier "Int"`,
+		},
+		{
+			name: "import after a declaration",
+			src: `fn main() -> Int { 1 }
+import "std/list"
+`,
+			want: "2:1: imports must come before declarations",
+		},
+		{
+			name: "import followed by a keyword",
+			src:  "import fn",
+			want: "1:8: expected string literal, found 'fn'",
+		},
+		{
+			name: "import followed by an integer",
+			src:  "import 1",
+			want: "1:8: expected string literal, found integer literal 1",
+		},
+		{
+			name: "import at end of file",
+			src:  "import",
+			want: "1:7: expected string literal, found end of file",
+		},
+		{
+			name: "pub followed by let",
+			src:  "pub let",
+			want: "1:5: expected 'fn' or 'type' after 'pub', found 'let'",
+		},
+		{
+			name: "pub at end of file",
+			src:  "pub",
+			want: "1:4: expected 'fn' or 'type' after 'pub', found end of file",
+		},
+		{
+			name: "pub followed by an integer",
+			src:  "pub 1",
+			want: "1:5: expected 'fn' or 'type' after 'pub', found integer literal 1",
 		},
 	}
 

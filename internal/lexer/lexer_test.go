@@ -41,6 +41,17 @@ func TestTokenize(t *testing.T) {
 			},
 		},
 		{
+			name: "import and pub keywords",
+			src:  "import pub imported public",
+			want: []token.Token{
+				tok(token.Import, "import", 1, 1),
+				tok(token.Pub, "pub", 1, 8),
+				tok(token.Ident, "imported", 1, 12),
+				tok(token.Ident, "public", 1, 21),
+				eof(1, 27),
+			},
+		},
+		{
 			name: "integers",
 			src:  "0 42 007 9223372036854775807",
 			want: []token.Token{

@@ -26,6 +26,8 @@ const (
 	Type       // type
 	Match      // match
 	Underscore // _
+	Import     // import
+	Pub        // pub
 
 	// Punctuation
 	LParen   // (
@@ -92,6 +94,10 @@ func (k Kind) String() string {
 		return "'match'"
 	case Underscore:
 		return "'_'"
+	case Import:
+		return "'import'"
+	case Pub:
+		return "'pub'"
 	case LParen:
 		return "'('"
 	case RParen:
@@ -151,15 +157,17 @@ func (k Kind) String() string {
 
 // Keywords maps keyword spellings to their kinds ("fn" -> Fn, ...).
 var Keywords = map[string]Kind{
-	"fn":    Fn,
-	"let":   Let,
-	"if":    If,
-	"else":  Else,
-	"true":  True,
-	"false": False,
-	"type":  Type,
-	"match": Match,
-	"_":     Underscore,
+	"fn":     Fn,
+	"let":    Let,
+	"if":     If,
+	"else":   Else,
+	"true":   True,
+	"false":  False,
+	"type":   Type,
+	"match":  Match,
+	"_":      Underscore,
+	"import": Import,
+	"pub":    Pub,
 }
 
 // Token is a lexical token. Text is the source spelling, empty for EOF.

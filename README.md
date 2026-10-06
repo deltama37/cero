@@ -66,6 +66,18 @@ with design documents in [`docs/design/`](docs/design/):
   declares
   ([ADR-0010](docs/adr/0010-v0.8-string-list-and-memory.md);
   `examples/strings.cero`)
+* v0.9: modules. `import "std/list"` brings a module's public names in
+  unqualified, and `pub fn` / `pub type` are what an importer can see. A
+  module's own declarations hide imported names. Two imports that export
+  the same name are an error, and imports are not transitive. The standard
+  library, written in Cero, is `std/list` (`List`, `length`, `reverse`,
+  `map`, `filter`, `foldl`, `foldr`, `append`, `concat`, `any`, `all`,
+  `range`, `sum`, `take`, `drop`), `std/option` (`Option`, `withDefault`,
+  `mapOption`, `andThen`, `isSome`, `isNone`), `std/pair` (`Pair`, `fst`,
+  `snd`), and `std/string` (`join`, `startsWith`, `endsWith`, `isDigit`,
+  `isAlpha`, `isSpace`)
+  ([ADR-0011](docs/adr/0011-v0.9-modules.md);
+  `examples/modules/main.cero`, `examples/stdlib.cero`)
 
 `ceroc fmt` is not implemented yet.
 

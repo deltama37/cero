@@ -1,0 +1,38 @@
+pub type Option[T] =
+    | None
+    | Some(T)
+
+pub fn withDefault[T](o: Option[T], d: T) -> T {
+    match o {
+        None => d,
+        Some(x) => x,
+    }
+}
+
+pub fn mapOption[T, U](o: Option[T], f: T -> U) -> Option[U] {
+    match o {
+        None => None,
+        Some(x) => Some(f(x)),
+    }
+}
+
+pub fn andThen[T, U](o: Option[T], f: T -> Option[U]) -> Option[U] {
+    match o {
+        None => None,
+        Some(x) => f(x),
+    }
+}
+
+pub fn isSome[T](o: Option[T]) -> Bool {
+    match o {
+        None => false,
+        Some(_) => true,
+    }
+}
+
+pub fn isNone[T](o: Option[T]) -> Bool {
+    match o {
+        None => true,
+        Some(_) => false,
+    }
+}

@@ -15,18 +15,34 @@ import (
 // Lower converts a type-checked file into an IR module.
 // It panics if info is inconsistent with file (a type checker bug).
 func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
+	return LowerProgram([]*typecheck.Module{{Path: "main", Ast: file}}, info)
+}
+
+// LowerProgram converts a type-checked program into an IR module. mods is
+// the same slice passed to typecheck.CheckProgram.
+// It panics if info is inconsistent with mods (a type checker bug).
+func LowerProgram(mods []*typecheck.Module, info *typecheck.Info) *ir.Module {
+	if len(mods) == 0 {
+		panic("lower: no modules")
+	}
+	entry := mods[len(mods)-1]
 	polyLets := make(map[*typecheck.Symbol]*ast.LetStmt)
 	for stmt, sym := range info.Defs {
 		if len(sym.TypeParams) > 0 {
 			polyLets[sym] = stmt
 		}
 	}
+	entryDecls := make(map[*ast.FuncDecl]bool, len(entry.Ast.Funcs))
+	for _, d := range entry.Ast.Funcs {
+		entryDecls[d] = true
+	}
 	l := &lowerer{
-		info:      info,
-		module:    &ir.Module{Funcs: make([]*ir.Func, 0, len(file.Funcs))},
-		declID:    make(map[*ast.FuncDecl]ir.FuncID, len(file.Funcs)),
-		instances: make(map[*ast.FuncDecl]map[string]ir.FuncID),
-		polyLets:  polyLets,
+		info:       info,
+		module:     &ir.Module{Funcs: make([]*ir.Func, 0, len(entry.Ast.Funcs))},
+		entryDecls: entryDecls,
+		declID:     make(map[*ast.FuncDecl]ir.FuncID, len(entry.Ast.Funcs)),
+		instances:  make(map[*ast.FuncDecl]map[string]ir.FuncID),
+		polyLets:   polyLets,
 		captures: &captureSet{
 			info:     info,
 			polyLets: polyLets,
@@ -36,8 +52,7 @@ func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 		builtinRefs: make(map[typecheck.Builtin]ir.FuncID),
 	}
 
-	foundMain := false
-	for _, d := range file.Funcs {
+	for _, d := range entry.Ast.Funcs {
 		sym := info.Funcs[d]
 		if sym == nil {
 			panic(fmt.Sprintf("lower: missing symbol for function '%s'", d.Name))
@@ -51,16 +66,17 @@ func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 			Sig:  l.sigOf(sym.Type),
 		})
 		l.declID[d] = id
-		if d.Name == "main" {
-			l.module.Main = id
-			foundMain = true
-		}
 	}
-	if !foundMain {
+	if info.Main == nil || info.Main.Decl == nil {
 		panic("lower: missing function 'main'")
 	}
+	mainID, ok := l.declID[info.Main.Decl]
+	if !ok {
+		panic("lower: missing function 'main'")
+	}
+	l.module.Main = mainID
 
-	for _, d := range file.Funcs {
+	for _, d := range entry.Ast.Funcs {
 		id, ok := l.declID[d]
 		if !ok {
 			continue
@@ -80,13 +96,14 @@ func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 }
 
 type lowerer struct {
-	info      *typecheck.Info
-	module    *ir.Module
-	declID    map[*ast.FuncDecl]ir.FuncID            // functions without type parameters
-	instances map[*ast.FuncDecl]map[string]ir.FuncID // specializations of generic functions, keyed by repKey
-	queue     []*instance                            // specializations whose bodies are not lowered yet, in creation order
-	env       map[*types.TypeParam]ir.ValType        // representation of each type parameter of the function being lowered; nil when it has none
-	lambdas   int
+	info       *typecheck.Info
+	module     *ir.Module
+	entryDecls map[*ast.FuncDecl]bool                 // functions declared by the entry module
+	declID     map[*ast.FuncDecl]ir.FuncID            // monomorphic functions created so far
+	instances  map[*ast.FuncDecl]map[string]ir.FuncID // specializations of generic functions, keyed by repKey
+	queue      []*instance                            // functions whose bodies are not lowered yet, in creation order
+	env        map[*types.TypeParam]ir.ValType        // representation of each type parameter of the function being lowered; nil when it has none
+	lambdas    int
 	// polyLets maps the symbol of every generalized let to its statement.
 	polyLets map[*typecheck.Symbol]*ast.LetStmt
 	captures *captureSet
@@ -991,15 +1008,45 @@ func (l *lowerer) mustType(e ast.Expr) types.Type {
 	return t
 }
 
+// deferFunc returns the IR function for a monomorphic function outside the
+// entry module, creating it and queueing its body the first time it is used.
+func (l *lowerer) deferFunc(sym *typecheck.Symbol) ir.FuncID {
+	id := ir.FuncID(len(l.module.Funcs))
+	l.module.Funcs = append(l.module.Funcs, &ir.Func{
+		Name: l.funcName(sym.Decl, sym.Decl.Name),
+		Sig:  sigIn(nil, sym.Type),
+	})
+	l.declID[sym.Decl] = id
+	l.queue = append(l.queue, &instance{decl: sym.Decl, id: id, env: nil})
+	return id
+}
+
+// funcName is the IR name of decl. name is the declared name plus any
+// specialization suffix. Entry-module functions keep name; every other
+// module's functions are prefixed with "<module path>.".
+func (l *lowerer) funcName(decl *ast.FuncDecl, name string) string {
+	if l.entryDecls[decl] {
+		return name
+	}
+	mod := l.info.FuncModule[decl]
+	if mod == nil {
+		panic(fmt.Sprintf("lower: missing module for function '%s'", decl.Name))
+	}
+	return mod.Path + "." + name
+}
+
 // funcID returns the IR function for a use at id of the SymFunc sym,
-// creating a specialization when sym has type parameters.
+// creating a specialization when sym has type parameters. A monomorphic
+// function outside the entry module is created the first time it is used.
 func (l *lowerer) funcID(id *ast.Ident, sym *typecheck.Symbol) ir.FuncID {
 	if len(sym.TypeParams) == 0 {
-		fid, ok := l.declID[sym.Decl]
-		if !ok {
+		if fid, ok := l.declID[sym.Decl]; ok {
+			return fid
+		}
+		if l.entryDecls[sym.Decl] {
 			panic(fmt.Sprintf("lower: no function id for '%s' at %s", id.Name, id.Pos))
 		}
-		return fid
+		return l.deferFunc(sym)
 	}
 	args := l.info.TypeArgs[id]
 	if len(args) != len(sym.TypeParams) {
@@ -1027,7 +1074,7 @@ func (l *lowerer) instance(sym *typecheck.Symbol, reps []ir.ValType) ir.FuncID {
 	}
 	id := ir.FuncID(len(l.module.Funcs))
 	l.module.Funcs = append(l.module.Funcs, &ir.Func{
-		Name: sym.Decl.Name + "[" + key + "]",
+		Name: l.funcName(sym.Decl, sym.Decl.Name+"["+key+"]"),
 		Sig:  sigIn(env, sym.Type),
 	})
 	if l.instances[sym.Decl] == nil {

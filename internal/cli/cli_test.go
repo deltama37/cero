@@ -181,6 +181,19 @@ fn main() -> Int {
 			wantStdout:    "55\n",
 		},
 		{
+			name: "run import",
+			args: []string{"run", "$DIR/main.cero"},
+			files: map[string]string{
+				"main.cero": "import \"lib\"\nfn main() -> Int { answer() }\n",
+				"lib.cero":  "pub fn answer() -> Int { 42 }\n",
+			},
+			getenv:        func(string) string { return "" },
+			needsWasmtime: true,
+			wantExit:      exitOK,
+			checkStdout:   true,
+			wantStdout:    "42\n",
+		},
+		{
 			name:          "run division by zero",
 			args:          []string{"run", "$DIR/div.cero"},
 			files:         map[string]string{"div.cero": "fn main() -> Int { 1 / 0 }\n"},

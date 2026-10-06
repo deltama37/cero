@@ -1293,3 +1293,198 @@ fn main() -> Int {
 func lines(parts ...string) string {
 	return strings.Join(parts, "\n")
 }
+
+func TestLowerProgram(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mods []programMod
+		want string
+	}{
+		{
+			name: "unused non-entry function is omitted",
+			mods: []programMod{
+				{
+					path: "std/list",
+					src: `pub fn used(n: Int) -> Int { n + 1 }
+pub fn unused(n: Int) -> Int { n }
+pub fn unusedPoly[T](x: T) -> T { x }
+`,
+				},
+				{
+					path: "app",
+					src: `import "std/list"
+fn main() -> Int { used(41) }
+`,
+				},
+			},
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (return.call 1 41))",
+				"(func 1 std/list.used (sig (Int) Int) (locals Int) (add (local 0) 1))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "non-entry polymorphic function is specialized",
+			mods: []programMod{
+				{
+					path: "lib",
+					src:  "pub fn id[T](x: T) -> T { x }\n",
+				},
+				{
+					path: "app",
+					src: `import "lib"
+fn main() -> Int {
+    if id(true) { id(1) } else { 0 }
+}
+`,
+				},
+			},
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (if (call 1 true) (return.call 2 1) 0))",
+				"(func 1 lib.id[Bool] (sig (Bool) Bool) (locals Bool) (local 0))",
+				"(func 2 lib.id[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "call through another module",
+			mods: []programMod{
+				{
+					path: "c",
+					src: `pub fn inc(n: Int) -> Int { n + 1 }
+pub fn unused(n: Int) -> Int { n }
+`,
+				},
+				{
+					path: "b",
+					src: `import "c"
+pub fn twice(n: Int) -> Int { inc(inc(n)) }
+`,
+				},
+				{
+					path: "a",
+					src: `import "b"
+fn main() -> Int { twice(1) }
+`,
+				},
+			},
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (return.call 1 1))",
+				"(func 1 b.twice (sig (Int) Int) (locals Int) (return.call 2 (call 2 (local 0))))",
+				"(func 2 c.inc (sig (Int) Int) (locals Int) (add (local 0) 1))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mods, info := checkProgram(t, tt.mods)
+			got := ir.Format(LowerProgram(mods, info))
+			if got != tt.want {
+				t.Errorf("IR mismatch\ngot:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLowerProgramMatchesLower(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "constant",
+			src:  "fn main() -> Int { 42 }\n",
+		},
+		{
+			name: "generic function used as a value",
+			src: `fn apply(f: Int -> Int, x: Int) -> Int { f(x) }
+fn id[T](x: T) -> T { x }
+fn main() -> Int { apply(id, 1) }
+`,
+		},
+		{
+			name: "string and nested pattern",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn f(o: Option[String]) -> Int {
+    match o {
+        Some("hi") => 10,
+        _ => 0,
+    }
+}
+
+fn main() -> Int { f(Some("hi")) }
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := parser.ParseFile([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			info, err := typecheck.Check(file)
+			if err != nil {
+				t.Fatalf("typecheck: %v", err)
+			}
+			got := ir.Format(Lower(file, info))
+			want := ir.Format(LowerProgram([]*typecheck.Module{{Path: "main", Ast: file}}, info))
+			if got != want {
+				t.Errorf("Lower and LowerProgram differ\nLower:\n%s\nLowerProgram:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// programMod is one module of a test program. Modules are listed in
+// dependency order, and the last one is the entry module.
+type programMod struct {
+	path string
+	src  string
+}
+
+func checkProgram(t *testing.T, specs []programMod) ([]*typecheck.Module, *typecheck.Info) {
+	t.Helper()
+
+	mods := make([]*typecheck.Module, len(specs))
+	byPath := make(map[string]*typecheck.Module, len(specs))
+	for i, spec := range specs {
+		file, err := parser.ParseFile([]byte(spec.src))
+		if err != nil {
+			t.Fatalf("parse %s: %v", spec.path, err)
+		}
+		m := &typecheck.Module{Path: spec.path, File: spec.path + ".cero", Ast: file}
+		mods[i] = m
+		byPath[spec.path] = m
+	}
+	for _, m := range mods {
+		for _, imp := range m.Ast.Imports {
+			dep, ok := byPath[imp.Path]
+			if !ok {
+				t.Fatalf("module %s imports %q, which is not in the program", m.Path, imp.Path)
+			}
+			m.Imports = append(m.Imports, dep)
+		}
+	}
+	info, err := typecheck.CheckProgram(mods)
+	if err != nil {
+		t.Fatalf("CheckProgram: %v", err)
+	}
+	return mods, info
+}

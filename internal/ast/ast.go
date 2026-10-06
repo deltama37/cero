@@ -6,10 +6,18 @@ import (
 	"github.com/deltama37/cero/internal/token"
 )
 
-// File is a Cero source file. Types and Funcs each keep source order.
+// File is a Cero source file. Imports, Types, and Funcs each keep source order.
 type File struct {
-	Types []*TypeDecl
-	Funcs []*FuncDecl
+	Imports []*Import
+	Types   []*TypeDecl
+	Funcs   []*FuncDecl
+}
+
+// Import is `import "path"`.
+type Import struct {
+	Pos     diag.Pos // 'import'
+	Path    string
+	PathPos diag.Pos // the string literal
 }
 
 // TypeParam declares one type parameter in "[T, U]". Name starts with an
@@ -22,6 +30,7 @@ type TypeParam struct {
 // TypeDecl is a top-level algebraic data type declaration.
 type TypeDecl struct {
 	Pos        diag.Pos // 'type'
+	Pub        bool     // declared with 'pub'
 	Name       string
 	NamePos    diag.Pos
 	TypeParams []*TypeParam // nil when written without brackets
@@ -39,6 +48,7 @@ type CtorDecl struct {
 // FuncDecl is a top-level function declaration.
 type FuncDecl struct {
 	Pos        diag.Pos // 'fn'
+	Pub        bool     // declared with 'pub'
 	Name       string
 	NamePos    diag.Pos
 	TypeParams []*TypeParam // nil when written without brackets
