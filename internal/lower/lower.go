@@ -3,6 +3,7 @@ package lower
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/deltama37/cero/internal/ast"
@@ -37,8 +38,11 @@ func LowerProgram(mods []*typecheck.Module, info *typecheck.Info) *ir.Module {
 		entryDecls[d] = true
 	}
 	l := &lowerer{
-		info:       info,
-		module:     &ir.Module{Funcs: make([]*ir.Func, 0, len(entry.Ast.Funcs))},
+		info: info,
+		module: &ir.Module{
+			Funcs:   make([]*ir.Func, 0, len(entry.Ast.Funcs)),
+			Command: info.MainIO,
+		},
 		entryDecls: entryDecls,
 		declID:     make(map[*ast.FuncDecl]ir.FuncID, len(entry.Ast.Funcs)),
 		instances:  make(map[*ast.FuncDecl]map[string]ir.FuncID),
@@ -50,6 +54,8 @@ func LowerProgram(mods []*typecheck.Module, info *typecheck.Info) *ir.Module {
 		},
 		refs:        make(map[ir.FuncID]ir.FuncID),
 		builtinRefs: make(map[typecheck.Builtin]ir.FuncID),
+		ioActions:   make(map[string]ir.FuncID),
+		ioRefs:      make(map[string]ir.FuncID),
 	}
 
 	for _, d := range entry.Ast.Funcs {
@@ -111,6 +117,10 @@ type lowerer struct {
 	refs map[ir.FuncID]ir.FuncID
 	// builtinRefs maps a built-in function used as a value to its $ref wrapper.
 	builtinRefs map[typecheck.Builtin]ir.FuncID
+	// ioActions maps (builtin, repKey) to the IO action function.
+	ioActions map[string]ir.FuncID
+	// ioRefs maps (builtin, repKey) to the $ref wrapper of an IO built-in.
+	ioRefs map[string]ir.FuncID
 }
 
 // instance is one specialization of a generic function.
@@ -194,6 +204,8 @@ func (l *lowerer) convert(
 		return &ir.BoolConst{Value: e.Value}
 	case *ast.StringLit:
 		return &ir.StrConst{Value: e.Value}
+	case *ast.UnitLit:
+		return &ir.BoolConst{Value: false}
 	case *ast.Ident:
 		return l.lowerIdent(fn, e, locals)
 	case *ast.UnaryExpr:
@@ -240,6 +252,11 @@ func (l *lowerer) lowerIdent(
 		l.addTable(w)
 		return &ir.FuncValue{Func: w}
 	case typecheck.SymBuiltin:
+		if isIOBuiltin(sym.Builtin) {
+			w := l.ioBuiltinRef(sym, l.repsOf(e))
+			l.addTable(w)
+			return &ir.FuncValue{Func: w}
+		}
 		w := l.builtinRef(sym)
 		l.addTable(w)
 		return &ir.FuncValue{Func: w}
@@ -332,6 +349,9 @@ func (l *lowerer) lowerCall(
 			}
 		}
 		if sym.Kind == typecheck.SymBuiltin {
+			if isIOBuiltin(sym.Builtin) {
+				return l.lowerIOCall(sym.Builtin, l.repsOf(id), l.lowerArgs(fn, locals, e.Args))
+			}
 			return &ir.Prim{
 				Op:   primOf(sym.Builtin),
 				Args: l.lowerArgs(fn, locals, e.Args),
@@ -957,6 +977,245 @@ func (l *lowerer) builtinRef(sym *typecheck.Symbol) ir.FuncID {
 	return wid
 }
 
+// ioAction returns the lifted function that performs builtin b with the
+// representations reps of its type arguments (nil for the monomorphic
+// ones), creating it on first use. Its signature is (env Ptr) -> result,
+// where result is the representation of T in IO[T].
+func (l *lowerer) ioAction(b typecheck.Builtin, reps []ir.ValType) ir.FuncID {
+	key := ioKey(b, reps)
+	if id, ok := l.ioActions[key]; ok {
+		return id
+	}
+	result := ioResultType(b, reps)
+	body := ioBody(b, reps)
+	if body.Type() != result {
+		panic(fmt.Sprintf("lower: io action %s yields %s, want %s", ioActionName(b, reps), body.Type(), result))
+	}
+	markTailCalls(body)
+	fn := &ir.Func{
+		Name:   ioActionName(b, reps),
+		Sig:    ir.Sig{Params: []ir.ValType{ir.Ptr}, Result: result},
+		Locals: ioLocals(b, reps),
+		Body:   body,
+	}
+	id := ir.FuncID(len(l.module.Funcs))
+	l.module.Funcs = append(l.module.Funcs, fn)
+	l.ioActions[key] = id
+	l.addTable(id)
+	return id
+}
+
+// lowerIOCall returns the FuncRef value of the IO action for b applied to
+// args: a FuncValue of ioAction(b, reps), whose environment holds args in
+// order (no environment when args is empty).
+func (l *lowerer) lowerIOCall(b typecheck.Builtin, reps []ir.ValType, args []ir.Expr) ir.Expr {
+	id := l.ioAction(b, reps)
+	if len(args) == 0 {
+		return &ir.FuncValue{Func: id}
+	}
+	return &ir.FuncValue{
+		Func: id,
+		Env:  &ir.Construct{Tag: 0, Fields: args},
+	}
+}
+
+// ioBuiltinRef returns the $ref wrapper for an IO built-in specialized at
+// reps. The wrapper ignores its environment and returns the IO action.
+// One wrapper is shared by every use of that (builtin, reps) pair.
+func (l *lowerer) ioBuiltinRef(sym *typecheck.Symbol, reps []ir.ValType) ir.FuncID {
+	key := ioKey(sym.Builtin, reps)
+	if id, ok := l.ioRefs[key]; ok {
+		return id
+	}
+	base := sigIn(builtinRepEnv(sym, reps), sym.Type)
+	params := make([]ir.ValType, len(base.Params)+1)
+	copy(params, base.Params)
+	params[len(base.Params)] = ir.Ptr
+	sig := ir.Sig{Params: params, Result: base.Result}
+	wlocals := make([]ir.ValType, len(sig.Params))
+	copy(wlocals, sig.Params)
+	args := make([]ir.Expr, len(base.Params))
+	for i, t := range base.Params {
+		args[i] = &ir.LocalGet{Local: ir.LocalID(i), T: t}
+	}
+	body := l.lowerIOCall(sym.Builtin, reps, args)
+	if body.Type() != base.Result {
+		panic(fmt.Sprintf("lower: built-in %s yields %s, signature result is %s", sym.Name, body.Type(), base.Result))
+	}
+	name := sym.Name + "$ref"
+	if len(reps) > 0 {
+		name = sym.Name + "[" + repKey(reps) + "]$ref"
+	}
+	wid := ir.FuncID(len(l.module.Funcs))
+	l.module.Funcs = append(l.module.Funcs, &ir.Func{
+		Name:   name,
+		Sig:    sig,
+		Locals: wlocals,
+		Body:   body,
+	})
+	l.ioRefs[key] = wid
+	return wid
+}
+
+func (l *lowerer) repsOf(id *ast.Ident) []ir.ValType {
+	args := l.info.TypeArgs[id]
+	if len(args) == 0 {
+		return nil
+	}
+	reps := make([]ir.ValType, len(args))
+	for i, a := range args {
+		reps[i] = l.valType(a)
+	}
+	return reps
+}
+
+func builtinRepEnv(sym *typecheck.Symbol, reps []ir.ValType) map[*types.TypeParam]ir.ValType {
+	if len(sym.TypeParams) == 0 {
+		return nil
+	}
+	if len(reps) != len(sym.TypeParams) {
+		panic(fmt.Sprintf("lower: built-in %s has %d type arguments, want %d", sym.Name, len(reps), len(sym.TypeParams)))
+	}
+	env := make(map[*types.TypeParam]ir.ValType, len(reps))
+	for i, tp := range sym.TypeParams {
+		env[tp] = reps[i]
+	}
+	return env
+}
+
+func ioKey(b typecheck.Builtin, reps []ir.ValType) string {
+	return strconv.Itoa(int(b)) + ":" + repKey(reps)
+}
+
+func isIOBuiltin(b typecheck.Builtin) bool {
+	switch b {
+	case typecheck.BuiltinPure, typecheck.BuiltinBind, typecheck.BuiltinPrint,
+		typecheck.BuiltinEPrint, typecheck.BuiltinReadStdin, typecheck.BuiltinReadFile,
+		typecheck.BuiltinFileExists, typecheck.BuiltinWriteFile, typecheck.BuiltinArgCount,
+		typecheck.BuiltinArgAt, typecheck.BuiltinExit:
+		return true
+	default:
+		return false
+	}
+}
+
+func ioActionName(b typecheck.Builtin, reps []ir.ValType) string {
+	name := "io." + ioBuiltinName(b)
+	if len(reps) > 0 {
+		name += "[" + repKey(reps) + "]"
+	}
+	return name
+}
+
+func ioBuiltinName(b typecheck.Builtin) string {
+	switch b {
+	case typecheck.BuiltinPure:
+		return "pure"
+	case typecheck.BuiltinBind:
+		return "bind"
+	case typecheck.BuiltinPrint:
+		return "print"
+	case typecheck.BuiltinEPrint:
+		return "eprint"
+	case typecheck.BuiltinReadStdin:
+		return "read_stdin"
+	case typecheck.BuiltinReadFile:
+		return "read_file"
+	case typecheck.BuiltinFileExists:
+		return "file_exists"
+	case typecheck.BuiltinWriteFile:
+		return "write_file"
+	case typecheck.BuiltinArgCount:
+		return "arg_count"
+	case typecheck.BuiltinArgAt:
+		return "arg_at"
+	case typecheck.BuiltinExit:
+		return "exit"
+	default:
+		panic(fmt.Sprintf("lower: not an IO built-in %d", int(b)))
+	}
+}
+
+func ioResultType(b typecheck.Builtin, reps []ir.ValType) ir.ValType {
+	switch b {
+	case typecheck.BuiltinPure:
+		if len(reps) != 1 {
+			panic(fmt.Sprintf("lower: pure has %d type arguments", len(reps)))
+		}
+		return reps[0]
+	case typecheck.BuiltinBind:
+		if len(reps) != 2 {
+			panic(fmt.Sprintf("lower: bind has %d type arguments", len(reps)))
+		}
+		return reps[1]
+	case typecheck.BuiltinPrint, typecheck.BuiltinEPrint, typecheck.BuiltinWriteFile, typecheck.BuiltinExit, typecheck.BuiltinFileExists:
+		return ir.Bool
+	case typecheck.BuiltinReadStdin, typecheck.BuiltinReadFile, typecheck.BuiltinArgAt:
+		return ir.Ptr
+	case typecheck.BuiltinArgCount:
+		return ir.Int
+	default:
+		panic(fmt.Sprintf("lower: not an IO built-in %d", int(b)))
+	}
+}
+
+func ioLocals(b typecheck.Builtin, reps []ir.ValType) []ir.ValType {
+	if b == typecheck.BuiltinBind {
+		return []ir.ValType{ir.Ptr, reps[0]}
+	}
+	return []ir.ValType{ir.Ptr}
+}
+
+func ioBody(b typecheck.Builtin, reps []ir.ValType) ir.Expr {
+	f := func(index int, t ir.ValType) ir.Expr {
+		return &ir.Field{Local: 0, Index: index, T: t}
+	}
+	switch b {
+	case typecheck.BuiltinPure:
+		return f(0, reps[0])
+	case typecheck.BuiltinBind:
+		a, result := reps[0], reps[1]
+		return &ir.Block{
+			Lets: []*ir.Let{{
+				Local: 1,
+				Value: &ir.CallIndirect{
+					Callee: f(0, ir.FuncRef),
+					Sig:    ir.Sig{Result: a},
+				},
+			}},
+			Result: &ir.CallIndirect{
+				Callee: &ir.CallIndirect{
+					Callee: f(1, ir.FuncRef),
+					Sig:    ir.Sig{Params: []ir.ValType{a}, Result: ir.FuncRef},
+					Args:   []ir.Expr{&ir.LocalGet{Local: 1, T: a}},
+				},
+				Sig:  ir.Sig{Result: result},
+				Tail: true,
+			},
+		}
+	case typecheck.BuiltinPrint:
+		return &ir.Prim{Op: ir.IOPrint, Args: []ir.Expr{f(0, ir.Ptr)}}
+	case typecheck.BuiltinEPrint:
+		return &ir.Prim{Op: ir.IOEPrint, Args: []ir.Expr{f(0, ir.Ptr)}}
+	case typecheck.BuiltinReadStdin:
+		return &ir.Prim{Op: ir.IOReadStdin}
+	case typecheck.BuiltinReadFile:
+		return &ir.Prim{Op: ir.IOReadFile, Args: []ir.Expr{f(0, ir.Ptr)}}
+	case typecheck.BuiltinFileExists:
+		return &ir.Prim{Op: ir.IOFileExists, Args: []ir.Expr{f(0, ir.Ptr)}}
+	case typecheck.BuiltinWriteFile:
+		return &ir.Prim{Op: ir.IOWriteFile, Args: []ir.Expr{f(0, ir.Ptr), f(1, ir.Ptr)}}
+	case typecheck.BuiltinArgCount:
+		return &ir.Prim{Op: ir.IOArgCount}
+	case typecheck.BuiltinArgAt:
+		return &ir.Prim{Op: ir.IOArgAt, Args: []ir.Expr{f(0, ir.Int)}}
+	case typecheck.BuiltinExit:
+		return &ir.Prim{Op: ir.IOExit, Args: []ir.Expr{f(0, ir.Int)}}
+	default:
+		panic(fmt.Sprintf("lower: not an IO built-in %d", int(b)))
+	}
+}
+
 func primOf(b typecheck.Builtin) ir.PrimOp {
 	switch b {
 	case typecheck.BuiltinStringLength:
@@ -1108,9 +1367,14 @@ func valTypeIn(env map[*types.TypeParam]ir.ValType, t types.Type) ir.ValType {
 		return ir.Bool
 	case types.StringType:
 		return ir.Ptr
+	case types.UnitType:
+		return ir.Bool
 	case *types.Func:
 		return ir.FuncRef
 	case *types.Named:
+		if t.Data == types.IO {
+			return ir.FuncRef
+		}
 		return ir.Ptr
 	case *types.TypeParam:
 		vt, ok := env[t]
