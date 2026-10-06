@@ -1,0 +1,968 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "ir/ir"
+import "util/strmap"
+import "wasm/bytes"
+import "wasm/leb128"
+import "wasm/strfunc"
+import "wasm/iofunc"
+
+type WaGrp = | WaGrp(Int, Int)
+
+type TyAcc = | TyAcc(List[Sig], StrMap[Int], Int)
+
+type NewsAcc = | NewsAcc(List[List[ValType]], StrMap[Int])
+
+type WaCtx = | WaCtx(List[Int], StrMap[Int], Int, StrMap[Int], StrMap[Int], WaStrFn, Int, WaIoFn)
+
+fn waValType(t: ValType) -> Int {
+    match t {
+        VtInt => 126,
+        VtFuncRef => 126,
+        VtBool => 127,
+        VtPtr => 127,
+    }
+}
+
+fn waAsIR(t: ValType) -> ValType {
+    if waValType(t) == 126 {
+        VtInt
+    } else {
+        VtPtr
+    }
+}
+
+fn waSigKeyGo(ps: List[ValType], acc: String) -> String {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => waSigKeyGo(rest, acc ++ stringFromByte(waValType(p))),
+    }
+}
+
+fn waSigKey(s: Sig) -> String {
+    match s {
+        IrSig(params, result) => waSigKeyGo(params, "") ++ stringFromByte(waValType(result)),
+    }
+}
+
+fn waFieldKey(fields: List[ValType], acc: String) -> String {
+    match fields {
+        Nil => acc,
+        Cons(t, rest) => waFieldKey(rest, acc ++ stringFromByte(waValType(t))),
+    }
+}
+
+fn waLookup(m: StrMap[Int], k: String) -> Int {
+    match smLookup(m, k) {
+        Some(v) => v,
+        None => 0,
+    }
+}
+
+fn waIndirectSig(s: Sig) -> Sig {
+    match s {
+        IrSig(params, result) => IrSig(append(params, Cons(VtPtr, Nil)), result),
+    }
+}
+
+fn waKids(e: IrExpr, stack: List[IrExpr]) -> List[IrExpr] {
+    match e {
+        IrIntConst(_) => stack,
+        IrBoolConst(_) => stack,
+        IrStrConst(_) => stack,
+        IrLocalGet(_, _) => stack,
+        IrField(_, _, _) => stack,
+        IrFuncValue(_, env) => match env {
+            None => stack,
+            Some(x) => Cons(x, stack),
+        },
+        IrUnary(_, x) => Cons(x, stack),
+        IrBinary(_, x, y) => Cons(x, Cons(y, stack)),
+        IrIf(c, t, el, _) => Cons(c, Cons(t, Cons(el, stack))),
+        IrBlock(lets, result) => append(waLetVals(lets, Nil), Cons(result, stack)),
+        IrCall(_, args, _, _) => append(args, stack),
+        IrCallIndirect(callee, _, args, _) => Cons(callee, append(args, stack)),
+        IrConstruct(_, fields) => append(fields, stack),
+        IrSwitchTag(_, cases, def, _) => append(waCaseVals(cases, Nil), waPushDef(def, stack)),
+        IrPrim(_, args) => append(args, stack),
+    }
+}
+
+fn waLetVals(lets: List[IrLet], acc: List[IrExpr]) -> List[IrExpr] {
+    match lets {
+        Nil => reverse(acc),
+        Cons(one, rest) => match one {
+            IrLet(_, v) => waLetVals(rest, Cons(v, acc)),
+        },
+    }
+}
+
+fn waCaseVals(cases: List[IrTagCase], acc: List[IrExpr]) -> List[IrExpr] {
+    match cases {
+        Nil => reverse(acc),
+        Cons(c, rest) => match c {
+            IrTagCase(_, body) => waCaseVals(rest, Cons(body, acc)),
+        },
+    }
+}
+
+fn waPushDef(def: Option[IrExpr], stack: List[IrExpr]) -> List[IrExpr] {
+    match def {
+        None => stack,
+        Some(e) => Cons(e, stack),
+    }
+}
+
+fn waWalk[S](stack: List[IrExpr], s: S, f: (S, IrExpr) -> S) -> S {
+    match stack {
+        Nil => s,
+        Cons(e, rest) => waWalk(waKids(e, rest), f(s, e), f),
+    }
+}
+
+fn waWalkFuncs[S](fs: List[IrFunc], s: S, f: (S, IrExpr) -> S) -> S {
+    match fs {
+        Nil => s,
+        Cons(func, rest) => match func {
+            IrFunc(_, _, _, body) => waWalkFuncs(rest, waWalk(Cons(body, Nil), s, f), f),
+        },
+    }
+}
+
+fn waIsBit(op: PrimOp) -> Bool {
+    match op {
+        IrBitAnd => true,
+        IrBitOr => true,
+        IrBitXor => true,
+        IrShiftLeft => true,
+        IrShiftRight => true,
+        IrShiftRightUnsigned => true,
+        _ => false,
+    }
+}
+
+fn waMemVisit(found: Bool, e: IrExpr) -> Bool {
+    if found {
+        true
+    } else {
+        match e {
+            IrConstruct(_, _) => true,
+            IrField(_, _, _) => true,
+            IrSwitchTag(_, _, _, _) => true,
+            IrStrConst(_) => true,
+            IrPrim(op, _) => !waIsBit(op),
+            _ => false,
+        }
+    }
+}
+
+fn waMemFuncs(fs: List[IrFunc]) -> Bool {
+    match fs {
+        Nil => false,
+        Cons(func, rest) => match func {
+            IrFunc(_, _, _, body) => if waWalk(Cons(body, Nil), false, waMemVisit) {
+                true
+            } else {
+                waMemFuncs(rest)
+            },
+        },
+    }
+}
+
+fn waUsesMemory(m: IrModule) -> Bool {
+    match m {
+        IrModule(funcs, _, _, command) => if command {
+            true
+        } else {
+            waMemFuncs(funcs)
+        },
+    }
+}
+
+fn waIoVisit(u: WaIoUse, e: IrExpr) -> WaIoUse {
+    match e {
+        IrPrim(op, _) => waIoNote(u, op),
+        _ => u,
+    }
+}
+
+fn waStrVisit(u: WaStrUse, e: IrExpr) -> WaStrUse {
+    match e {
+        IrPrim(op, _) => waStrNote(u, op),
+        _ => u,
+    }
+}
+
+fn waLayVisit(lay: WaLay, e: IrExpr) -> WaLay {
+    match e {
+        IrStrConst(s) => waLayAdd(lay, s),
+        _ => lay,
+    }
+}
+
+fn waExprTypes(xs: List[IrExpr], acc: List[ValType]) -> List[ValType] {
+    match xs {
+        Nil => reverse(acc),
+        Cons(e, rest) => waExprTypes(rest, Cons(irExprType(e), acc)),
+    }
+}
+
+fn waNewsVisit(acc: NewsAcc, e: IrExpr) -> NewsAcc {
+    match acc {
+        NewsAcc(rev, seen) => match e {
+            IrConstruct(_, fields) => {
+                let ts = waExprTypes(fields, Nil)
+                let key = waFieldKey(ts, "")
+                match smLookup(seen, key) {
+                    Some(_) => acc,
+                    None => NewsAcc(Cons(ts, rev), smInsert(seen, key, 1)),
+                }
+            },
+            _ => acc,
+        },
+    }
+}
+
+fn waTyAdd(acc: TyAcc, s: Sig) -> TyAcc {
+    match acc {
+        TyAcc(rev, m, n) => {
+            let key = waSigKey(s)
+            match smLookup(m, key) {
+                Some(_) => acc,
+                None => TyAcc(Cons(s, rev), smInsert(m, key, n), n + 1),
+            }
+        },
+    }
+}
+
+fn waCIVisit(acc: TyAcc, e: IrExpr) -> TyAcc {
+    match e {
+        IrCallIndirect(_, sig, _, _) => waTyAdd(acc, waIndirectSig(sig)),
+        _ => acc,
+    }
+}
+
+fn waFuncSigs(fs: List[IrFunc], acc: TyAcc) -> TyAcc {
+    match fs {
+        Nil => acc,
+        Cons(func, rest) => match func {
+            IrFunc(_, sig, _, _) => waFuncSigs(rest, waTyAdd(acc, sig)),
+        },
+    }
+}
+
+fn waAddSigs(xs: List[Sig], acc: TyAcc) -> TyAcc {
+    match xs {
+        Nil => acc,
+        Cons(s, rest) => waAddSigs(rest, waTyAdd(acc, s)),
+    }
+}
+
+fn waAsParams(fields: List[ValType], acc: List[ValType]) -> List[ValType] {
+    match fields {
+        Nil => reverse(acc),
+        Cons(t, rest) => waAsParams(rest, Cons(waAsIR(t), acc)),
+    }
+}
+
+fn waNewSig(fields: List[ValType]) -> Sig {
+    IrSig(Cons(VtPtr, waAsParams(fields, Nil)), VtPtr)
+}
+
+fn waNewsSigs(news: List[List[ValType]], acc: List[Sig]) -> List[Sig] {
+    match news {
+        Nil => reverse(acc),
+        Cons(fields, rest) => waNewsSigs(rest, Cons(waNewSig(fields), acc)),
+    }
+}
+
+fn waAuxSigs(news: List[List[ValType]], strs: WaStrUse) -> List[Sig] {
+    append(Cons(IrSig(Cons(VtPtr, Nil), VtPtr), waNewsSigs(news, Nil)), waStrSigs(strs))
+}
+
+fn waNewIndexGo(news: List[List[ValType]], i: Int, m: StrMap[Int]) -> StrMap[Int] {
+    match news {
+        Nil => m,
+        Cons(fields, rest) => waNewIndexGo(rest, i + 1, smInsert(m, waFieldKey(fields, ""), i)),
+    }
+}
+
+fn waNewIndex(nfuncs: Int, news: List[List[ValType]]) -> StrMap[Int] {
+    waNewIndexGo(news, nfuncs + 1, smEmpty())
+}
+
+fn waHeader() -> Bytes {
+    waBytes(Cons(0, Cons(97, Cons(115, Cons(109, Cons(1, Cons(0, Cons(0, Cons(0, Nil)))))))))
+}
+
+fn waSection(id: Int, content: Bytes) -> Bytes {
+    waCat(waCat(waByte(id), waUleb128(waLength(content))), content)
+}
+
+fn waValTypes(xs: List[ValType], b: Bytes) -> Bytes {
+    match xs {
+        Nil => b,
+        Cons(t, rest) => waValTypes(rest, waCat(b, waByte(waValType(t)))),
+    }
+}
+
+fn waEncodeSig(s: Sig, b: Bytes) -> Bytes {
+    match s {
+        IrSig(params, result) => {
+            let b1 = waCat(b, waByte(96))
+            let b2 = waCat(b1, waUleb128(length(params)))
+            let b3 = waValTypes(params, b2)
+            let b4 = waCat(b3, waUleb128(1))
+            waCat(b4, waByte(waValType(result)))
+        },
+    }
+}
+
+fn waEncodeSigs(xs: List[Sig], b: Bytes) -> Bytes {
+    match xs {
+        Nil => b,
+        Cons(s, rest) => waEncodeSigs(rest, waEncodeSig(s, b)),
+    }
+}
+
+fn waEncodeVoids(xs: List[List[ValType]], b: Bytes) -> Bytes {
+    match xs {
+        Nil => b,
+        Cons(params, rest) => {
+            let b1 = waCat(b, waByte(96))
+            let b2 = waCat(b1, waUleb128(length(params)))
+            let b3 = waValTypes(params, b2)
+            waEncodeVoids(rest, waCat(b3, waUleb128(0)))
+        },
+    }
+}
+
+fn waTypeSection(sigs: List[Sig], voids: List[List[ValType]]) -> Bytes {
+    let b = waUleb128(length(sigs) + length(voids))
+    waSection(1, waEncodeVoids(voids, waEncodeSigs(sigs, b)))
+}
+
+fn waNthSig(xs: List[Sig], i: Int) -> Sig {
+    match xs {
+        Nil => IrSig(Nil, VtPtr),
+        Cons(s, rest) => if i == 0 {
+            s
+        } else {
+            waNthSig(rest, i - 1)
+        },
+    }
+}
+
+fn waFuncTypes(fs: List[IrFunc], types: StrMap[Int], b: Bytes) -> Bytes {
+    match fs {
+        Nil => b,
+        Cons(func, rest) => match func {
+            IrFunc(_, sig, _, _) => waFuncTypes(rest, types, waCat(b, waUleb128(waLookup(types, waSigKey(sig))))),
+        },
+    }
+}
+
+fn waSigTypes(xs: List[Sig], types: StrMap[Int], b: Bytes) -> Bytes {
+    match xs {
+        Nil => b,
+        Cons(s, rest) => waSigTypes(rest, types, waCat(b, waUleb128(waLookup(types, waSigKey(s))))),
+    }
+}
+
+fn waFuncSection(
+    funcs: List[IrFunc],
+    types: StrMap[Int],
+    aux: List[Sig],
+    ioSigs: List[Sig],
+    mem: Bool,
+    startType: Int
+) -> Bytes {
+    let n0 = length(funcs)
+    let n1 = if mem { n0 + length(aux) + length(ioSigs) } else { n0 }
+    let n = if startType >= 0 { n1 + 1 } else { n1 }
+    let b0 = waUleb128(n)
+    let b1 = waFuncTypes(funcs, types, b0)
+    let b2 = waSigTypes(aux, types, b1)
+    let b3 = if mem { waSigTypes(ioSigs, types, b2) } else { b2 }
+    let b4 = if startType >= 0 { waCat(b3, waUleb128(startType)) } else { b3 }
+    waSection(3, b4)
+}
+
+fn waTable(table: List[Int]) -> Bytes {
+    let n = length(table)
+    let b0 = waUleb128(1)
+    let b1 = waRaw(b0, Cons(112, Cons(1, Nil)))
+    let b2 = waCat(b1, waUleb128(n))
+    waSection(4, waCat(b2, waUleb128(n)))
+}
+
+fn waMemory(minPages: Int) -> Bytes {
+    let b0 = waUleb128(1)
+    let b1 = waCat(b0, waByte(1))
+    let b2 = waCat(b1, waUleb128(minPages))
+    waSection(5, waCat(b2, waUleb128(32768)))
+}
+
+fn waGlobal(heap: Int) -> Bytes {
+    let b0 = waUleb128(1)
+    let b1 = waRaw(b0, Cons(127, Cons(1, Nil)))
+    waSection(6, waEnd(waI32(b1, heap)))
+}
+
+fn waExportMain(idx: Int) -> Bytes {
+    let b0 = waUleb128(1)
+    let b1 = waCat(waCat(b0, waUleb128(4)), waString("main"))
+    waSection(7, waU(waRaw(b1, Cons(0, Nil)), idx))
+}
+
+fn waElemIds(table: List[Int], base: Int, b: Bytes) -> Bytes {
+    match table {
+        Nil => b,
+        Cons(id, rest) => waElemIds(rest, base, waCat(b, waUleb128(id + base))),
+    }
+}
+
+fn waElement(table: List[Int], base: Int) -> Bytes {
+    let b0 = waUleb128(1)
+    let b1 = waRaw(b0, Cons(0, Cons(65, Cons(0, Cons(11, Nil)))))
+    let b2 = waCat(b1, waUleb128(length(table)))
+    waSection(9, waElemIds(table, base, b2))
+}
+
+fn waData(data: Bytes) -> Bytes {
+    let b0 = waUleb128(1)
+    let b1 = waRaw(b0, Cons(0, Nil))
+    let b2 = waEnd(waI32(b1, 8))
+    let b3 = waCat(b2, waUleb128(waLength(data)))
+    waSection(11, waCat(b3, data))
+}
+
+fn waEncodeAlloc() -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waRaw(b0, Cons(35, Cons(0, Cons(33, Cons(1, Nil)))))
+    let b2 = waRaw(b1, Cons(35, Cons(0, Cons(32, Cons(0, Cons(106, Cons(36, Cons(0, Nil))))))))
+    let b3 = waRaw(b2, Cons(35, Cons(0, Cons(63, Cons(0, Nil)))))
+    let b4 = waRaw(waI32(b3, 16), Cons(116, Cons(75, Cons(4, Cons(64, Nil)))))
+    let b5 = waRaw(b4, Cons(35, Cons(0, Cons(63, Cons(0, Nil)))))
+    let b6 = waRaw(waI32(b5, 16), Cons(116, Cons(107, Nil)))
+    let b7 = waRaw(waI32(waRaw(waI32(b6, 65535), Cons(106, Nil)), 16), Cons(118, Cons(64, Cons(0, Nil))))
+    let b8 = waRaw(waI32(b7, -1), Cons(70, Cons(4, Cons(64, Cons(0, Cons(11, Cons(11, Nil)))))))
+    waEnd(waRaw(b8, Cons(32, Cons(1, Nil))))
+}
+
+fn waNewFields(b: Bytes, fields: List[ValType], p: Int, i: Int) -> Bytes {
+    match fields {
+        Nil => b,
+        Cons(t, rest) => {
+            let b1 = waLocalGet(waLocalGet(b, p), i + 1)
+            let off = 8 + 8 * i
+            let b2 = if waValType(t) == 126 {
+                waU(waRaw(b1, Cons(55, Cons(3, Nil))), off)
+            } else {
+                waU(waRaw(b1, Cons(54, Cons(2, Nil))), off)
+            }
+            waNewFields(b2, rest, p, i + 1)
+        },
+    }
+}
+
+fn waEncodeNew(allocIdx: Int, fields: List[ValType]) -> Bytes {
+    let n = length(fields)
+    let p = n + 1
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waLocalSet(waCallFunc(waI32(b0, 8 + 8 * n), allocIdx), p)
+    let b2 = waRaw(waLocalGet(waLocalGet(b1, p), 0), Cons(54, Cons(2, Cons(0, Nil))))
+    waEnd(waLocalGet(waNewFields(b2, fields, p, 0), p))
+}
+
+fn waDropLocals(xs: List[ValType], n: Int) -> List[ValType] {
+    if n <= 0 {
+        xs
+    } else {
+        match xs {
+            Nil => Nil,
+            Cons(_, rest) => waDropLocals(rest, n - 1),
+        }
+    }
+}
+
+fn waAddGrp(rev: List[WaGrp], wt: Int) -> List[WaGrp] {
+    match rev {
+        Nil => Cons(WaGrp(1, wt), Nil),
+        Cons(g, rest) => match g {
+            WaGrp(n, t) => if t == wt {
+                Cons(WaGrp(n + 1, t), rest)
+            } else {
+                Cons(WaGrp(1, wt), rev)
+            },
+        },
+    }
+}
+
+fn waLocalGroups(xs: List[ValType], rev: List[WaGrp]) -> List[WaGrp] {
+    match xs {
+        Nil => rev,
+        Cons(t, rest) => waLocalGroups(rest, waAddGrp(rev, waValType(t))),
+    }
+}
+
+fn waEncodeGroups(xs: List[WaGrp], b: Bytes) -> Bytes {
+    match xs {
+        Nil => b,
+        Cons(g, rest) => match g {
+            WaGrp(n, t) => waEncodeGroups(rest, waCat(waCat(b, waUleb128(n)), waByte(t))),
+        },
+    }
+}
+
+fn waEncodeLocals(sig: Sig, locals: List[ValType], scratch: Bool) -> Bytes {
+    match sig {
+        IrSig(params, _) => {
+            let groups = waLocalGroups(waDropLocals(locals, length(params)), Nil)
+            let groups2 = if scratch { waAddGrp(groups, 126) } else { groups }
+            waEncodeGroups(reverse(groups2), waUleb128(length(groups2)))
+        },
+    }
+}
+
+fn waCIFound(found: Bool, e: IrExpr) -> Bool {
+    if found {
+        true
+    } else {
+        match e {
+            IrCallIndirect(_, _, _, _) => true,
+            _ => false,
+        }
+    }
+}
+
+fn waUsesCI(e: IrExpr) -> Bool {
+    waWalk(Cons(e, Nil), false, waCIFound)
+}
+
+fn waIntBin(op: BinOp) -> Int {
+    match op {
+        IrAdd => 124,
+        IrSub => 125,
+        IrMul => 126,
+        IrDiv => 127,
+        IrRem => 129,
+        IrEq => 81,
+        IrNe => 82,
+        IrLt => 83,
+        IrGt => 85,
+        IrLe => 87,
+        IrGe => 89,
+    }
+}
+
+fn waBoolBin(op: BinOp) -> Int {
+    match op {
+        IrEq => 70,
+        IrNe => 71,
+        _ => 0,
+    }
+}
+
+fn waTableAt(table: List[Int], id: Int, i: Int) -> Int {
+    match table {
+        Nil => 0,
+        Cons(f, rest) => if f == id {
+            i
+        } else {
+            waTableAt(rest, id, i + 1)
+        },
+    }
+}
+
+fn waPrimIdx(ctx: WaCtx, op: PrimOp) -> Int {
+    match ctx {
+        WaCtx(_, _, _, _, _, strFn, _, ioFn) => match strFn {
+            WaStrFn(_, byteAt, slice, fromByte, compare, intToStr, concat, eq) => match ioFn {
+                WaIoFn(_, print, eprint, _, readStdin, _, readFile, fileExists, writeFile, argCount, argAt, exit, _) => match op {
+                    IrStrByteAt => byteAt,
+                    IrStrSlice => slice,
+                    IrStrFromByte => fromByte,
+                    IrStrCompare => compare,
+                    IrIntToString => intToStr,
+                    IrStrConcat => concat,
+                    IrStrEq => eq,
+                    IrIOPrint => print,
+                    IrIOEPrint => eprint,
+                    IrIOReadStdin => readStdin,
+                    IrIOReadFile => readFile,
+                    IrIOFileExists => fileExists,
+                    IrIOWriteFile => writeFile,
+                    IrIOArgCount => argCount,
+                    IrIOArgAt => argAt,
+                    IrIOExit => exit,
+                    _ => 0,
+                },
+            },
+        },
+    }
+}
+
+fn waHead(args: List[IrExpr]) -> IrExpr {
+    match args {
+        Cons(a, _) => a,
+        Nil => IrIntConst(0),
+    }
+}
+
+fn waArgs(
+    ctx: WaCtx,
+    result: ValType,
+    scratch: Int,
+    b: Bytes,
+    args: List[IrExpr]
+) -> Bytes {
+    match args {
+        Nil => b,
+        Cons(a, rest) => waArgs(ctx, result, scratch, waExpr(ctx, result, scratch, b, a), rest),
+    }
+}
+
+fn waLets(
+    ctx: WaCtx,
+    result: ValType,
+    scratch: Int,
+    b: Bytes,
+    lets: List[IrLet]
+) -> Bytes {
+    match lets {
+        Nil => b,
+        Cons(one, rest) => match one {
+            IrLet(local, value) => {
+                let b1 = waExpr(ctx, result, scratch, b, value)
+                waLets(ctx, result, scratch, waU(waCat(b1, waByte(33)), local), rest)
+            },
+        },
+    }
+}
+
+fn waNthCase(cases: List[IrTagCase], i: Int) -> IrTagCase {
+    match cases {
+        Nil => IrTagCase(0, IrIntConst(0)),
+        Cons(c, rest) => if i == 0 {
+            c
+        } else {
+            waNthCase(rest, i - 1)
+        },
+    }
+}
+
+fn waDefNone(def: Option[IrExpr]) -> Bool {
+    match def {
+        None => true,
+        Some(_) => false,
+    }
+}
+
+fn waSwitch(
+    ctx: WaCtx,
+    result: ValType,
+    scratch: Int,
+    b: Bytes,
+    local: Int,
+    cases: List[IrTagCase],
+    def: Option[IrExpr],
+    t: ValType,
+    i: Int
+) -> Bytes {
+    let n = length(cases)
+    if waDefNone(def) && i == n - 1 {
+        match waNthCase(cases, i) {
+            IrTagCase(_, body) => waExpr(ctx, result, scratch, b, body),
+        }
+    } else if i == n {
+        match def {
+            None => b,
+            Some(e) => waExpr(ctx, result, scratch, b, e),
+        }
+    } else {
+        match waNthCase(cases, i) {
+            IrTagCase(tag, body) => {
+                let b1 = waLoadI32(waLocalGet(b, local), 0)
+                let b2 = waRaw(waI32(b1, tag), Cons(70, Nil))
+                let b3 = waCat(waCat(b2, waByte(4)), waByte(waValType(t)))
+                let b4 = waExpr(ctx, result, scratch, b3, body)
+                let b5 = waCat(b4, waByte(5))
+                let b6 = waSwitch(ctx, result, scratch, b5, local, cases, def, t, i + 1)
+                waCat(b6, waByte(11))
+            },
+        }
+    }
+}
+
+fn waConstr(
+    ctx: WaCtx,
+    result: ValType,
+    scratch: Int,
+    b: Bytes,
+    fields: List[IrExpr],
+    rev: List[ValType]
+) -> Pair[Bytes, List[ValType]] {
+    match fields {
+        Nil => Pair(b, rev),
+        Cons(f, rest) => waConstr(ctx, result, scratch, waExpr(ctx, result, scratch, b, f), rest, Cons(irExprType(f), rev)),
+    }
+}
+
+fn waExpr(
+    ctx: WaCtx,
+    result: ValType,
+    scratch: Int,
+    b: Bytes,
+    e: IrExpr
+) -> Bytes {
+    match e {
+        IrIntConst(v) => waI64(b, v),
+        IrBoolConst(v) => if v {
+            waRaw(b, Cons(65, Cons(1, Nil)))
+        } else {
+            waRaw(b, Cons(65, Cons(0, Nil)))
+        },
+        IrLocalGet(i, _) => waLocalGet(b, i),
+        IrStrConst(s) => match ctx {
+            WaCtx(_, _, _, _, addr, _, _, _) => waI32(b, waLookup(addr, s)),
+        },
+        IrFuncValue(id, env) => match ctx {
+            WaCtx(table, _, _, _, _, _, _, _) => match env {
+                None => waI64(b, waTableAt(table, id, 0)),
+                Some(x) => {
+                    let b1 = waRaw(waExpr(ctx, result, scratch, b, x), Cons(173, Nil))
+                    let b2 = waRaw(waI64(b1, 32), Cons(134, Nil))
+                    waRaw(waI64(b2, waTableAt(table, id, 0)), Cons(132, Nil))
+                },
+            },
+        },
+        IrUnary(op, x) => match op {
+            IrNeg => waRaw(waExpr(ctx, result, scratch, waI64(b, 0), x), Cons(125, Nil)),
+            IrNot => waRaw(waExpr(ctx, result, scratch, b, x), Cons(69, Nil)),
+        },
+        IrBinary(op, x, y) => {
+            let b1 = waExpr(ctx, result, scratch, waExpr(ctx, result, scratch, b, x), y)
+            match irExprType(x) {
+                VtInt => waCat(b1, waByte(waIntBin(op))),
+                VtBool => waCat(b1, waByte(waBoolBin(op))),
+                _ => waCat(b1, waByte(waIntBin(op))),
+            }
+        },
+        IrIf(c, t, el, vt) => {
+            let b1 = waExpr(ctx, result, scratch, b, c)
+            let b2 = waCat(waCat(b1, waByte(4)), waByte(waValType(vt)))
+            let b3 = waExpr(ctx, result, scratch, b2, t)
+            let b4 = waCat(b3, waByte(5))
+            waCat(waExpr(ctx, result, scratch, b4, el), waByte(11))
+        },
+        IrBlock(lets, r) => waExpr(ctx, result, scratch, waLets(ctx, result, scratch, b, lets), r),
+        IrCall(func, args, _, tail) => match ctx {
+            WaCtx(_, _, _, _, _, _, base, _) => {
+                let b1 = waArgs(ctx, result, scratch, b, args)
+                let op = if tail { 18 } else { 16 }
+                waU(waCat(b1, waByte(op)), func + base)
+            },
+        },
+        IrCallIndirect(callee, sig, args, tail) => match ctx {
+            WaCtx(_, types, _, _, _, _, _, _) => {
+                let b1 = waArgs(ctx, result, scratch, b, args)
+                let b2 = waExpr(ctx, result, scratch, b1, callee)
+                let b3 = waLocalTee(b2, scratch)
+                let b4 = waRaw(waRaw(waI64(b3, 32), Cons(136, Nil)), Cons(167, Nil))
+                let b5 = waRaw(waLocalGet(b4, scratch), Cons(167, Nil))
+                let op = if tail { 19 } else { 17 }
+                let ty = waLookup(types, waSigKey(waIndirectSig(sig)))
+                waRaw(waU(waCat(b5, waByte(op)), ty), Cons(0, Nil))
+            },
+        },
+        IrConstruct(tag, fields) => match ctx {
+            WaCtx(_, _, _, newIdx, _, _, _, _) => {
+                let b1 = waI32(b, tag)
+                let Pair(b2, rev) = waConstr(ctx, result, scratch, b1, fields, Nil)
+                let idx = waLookup(newIdx, waFieldKey(reverse(rev), ""))
+                waCallFunc(b2, idx)
+            },
+        },
+        IrField(local, index, t) => {
+            let b1 = waLocalGet(b, local)
+            let off = 8 + 8 * index
+            if waValType(t) == 126 {
+                waU(waRaw(b1, Cons(41, Cons(3, Nil))), off)
+            } else {
+                waU(waRaw(b1, Cons(40, Cons(2, Nil))), off)
+            }
+        },
+        IrSwitchTag(local, cases, def, t) => waSwitch(ctx, result, scratch, b, local, cases, def, t, 0),
+        IrPrim(op, args) => match op {
+            IrStrLength => waRaw(waExpr(ctx, result, scratch, b, waHead(args)), Cons(40, Cons(2, Cons(0, Cons(173, Nil))))),
+            IrBitAnd => waRaw(waArgs(ctx, result, scratch, b, args), Cons(131, Nil)),
+            IrBitOr => waRaw(waArgs(ctx, result, scratch, b, args), Cons(132, Nil)),
+            IrBitXor => waRaw(waArgs(ctx, result, scratch, b, args), Cons(133, Nil)),
+            IrShiftLeft => waRaw(waArgs(ctx, result, scratch, b, args), Cons(134, Nil)),
+            IrShiftRight => waRaw(waArgs(ctx, result, scratch, b, args), Cons(135, Nil)),
+            IrShiftRightUnsigned => waRaw(waArgs(ctx, result, scratch, b, args), Cons(136, Nil)),
+            _ => waCallFunc(waArgs(ctx, result, scratch, b, args), waPrimIdx(ctx, op)),
+        },
+    }
+}
+
+fn waEncodeBody(ctx: WaCtx, func: IrFunc) -> Bytes {
+    match func {
+        IrFunc(_, sig, locals, body) => match sig {
+            IrSig(_, result) => {
+                let scratch = if waUsesCI(body) { length(locals) } else { -1 }
+                let b = waEncodeLocals(sig, locals, scratch >= 0)
+                waCat(waExpr(ctx, result, scratch, b, body), waByte(11))
+            },
+        },
+    }
+}
+
+fn waAddBody(content: Bytes, body: Bytes) -> Bytes {
+    waCat(waCat(content, waUleb128(waLength(body))), body)
+}
+
+fn waCodeFuncs(ctx: WaCtx, fs: List[IrFunc], b: Bytes) -> Bytes {
+    match fs {
+        Nil => b,
+        Cons(func, rest) => waCodeFuncs(ctx, rest, waAddBody(b, waEncodeBody(ctx, func))),
+    }
+}
+
+fn waCodeNews(allocIdx: Int, news: List[List[ValType]], b: Bytes) -> Bytes {
+    match news {
+        Nil => b,
+        Cons(fields, rest) => waCodeNews(allocIdx, rest, waAddBody(b, waEncodeNew(allocIdx, fields))),
+    }
+}
+
+fn waCode(
+    ctx: WaCtx,
+    funcs: List[IrFunc],
+    main: Int,
+    mem: Bool,
+    news: List[List[ValType]],
+    strs: WaStrUse,
+    io: WaIoUse,
+    startType: Int,
+    closureType: Int,
+    readMsg: Int,
+    writeMsg: Int,
+    nl: Int
+) -> Bytes {
+    match ctx {
+        WaCtx(_, _, allocIdx, _, _, strFn, base, ioFn) => {
+            let n0 = length(funcs)
+            let n1 = if mem { n0 + 1 + length(news) + waStrCount(strs) + waIoCount(io) } else { n0 }
+            let n = if startType >= 0 { n1 + 1 } else { n1 }
+            let b0 = waUleb128(n)
+            let b1 = waCodeFuncs(ctx, funcs, b0)
+            let b2 = if mem {
+                let bA = waAddBody(b1, waEncodeAlloc())
+                let bN = waCodeNews(allocIdx, news, bA)
+                let bS = waAppendStr(bN, allocIdx, strFn, strs)
+                match strFn {
+                    WaStrFn(_, _, _, _, _, _, concat, _) => waAppendIO(bS, allocIdx, ioFn, concat, readMsg, writeMsg, nl, io),
+                }
+            } else {
+                b1
+            }
+            let b3 = if startType >= 0 {
+                waAddBody(b2, waEncodeStart(main + base, closureType))
+            } else {
+                b2
+            }
+            waSection(10, b3)
+        },
+    }
+}
+
+fn waReadWrite(io: WaIoUse) -> Pair[Bool, Bool] {
+    match io {
+        WaIoUse(_, _, _, readFile, _, writeFile, _, _, _) => Pair(readFile, writeFile),
+    }
+}
+
+pub fn encodeModule(m: IrModule) -> String {
+    match m {
+        IrModule(funcs, table, main, command) => {
+            let io = waWalkFuncs(funcs, waIoEmpty(), waIoVisit)
+            let wasi = command || waIoAny(io)
+            let mem = waUsesMemory(m)
+            let newsRev = if mem {
+                waWalkFuncs(funcs, NewsAcc(Nil, smEmpty()), waNewsVisit)
+            } else {
+                NewsAcc(Nil, smEmpty())
+            }
+            let news = match newsRev {
+                NewsAcc(rev, _) => if mem { reverse(rev) } else { Nil },
+            }
+            let strs0 = if mem { waWalkFuncs(funcs, waStrEmpty(), waStrVisit) } else { waStrEmpty() }
+            let Pair(readFile, writeFile) = waReadWrite(io)
+            let strs = if mem && (readFile || writeFile) { waStrForceConcat(strs0) } else { strs0 }
+            let lay0 = if mem { waWalkFuncs(funcs, waLayEmpty(), waLayVisit) } else { waLayEmpty() }
+            let lay1 = if mem && readFile { waLayAdd(lay0, "error: cannot read file ") } else { lay0 }
+            let lay2 = if mem && writeFile { waLayAdd(lay1, "error: cannot write file ") } else { lay1 }
+            let lay = if mem && (readFile || writeFile) { waLayAdd(lay2, "\n") } else { lay2 }
+            let nfuncs = length(funcs)
+            let aux = if mem { waAuxSigs(news, strs) } else { Nil }
+            let wasiSigs = if wasi { waWasiSigs() } else { Nil }
+            let ioSigs = if wasi { waIoSigs(io) } else { Nil }
+            let types0: StrMap[Int] = smEmpty()
+            let acc = waAddSigs(ioSigs, waAddSigs(wasiSigs, waAddSigs(aux, waWalkFuncs(funcs, waFuncSigs(funcs, TyAcc(Nil, types0, 0)), waCIVisit))))
+            match acc {
+                TyAcc(rev, types, sigCount) => match lay {
+                    WaLay(addr, heap, data) => {
+                        let sigs = reverse(rev)
+                        let procExit = if wasi { sigCount } else { -1 }
+                        let voids1 = if wasi { Cons(Cons(VtPtr, Nil), Nil) } else { Nil }
+                        let startType = if command { sigCount + length(voids1) } else { -1 }
+                        let voids = if command { append(voids1, Cons(Nil, Nil)) } else { voids1 }
+                        let base = if wasi { 7 } else { 0 }
+                        let allocIdx = nfuncs + base
+                        let newMap: StrMap[Int] = waNewIndex(allocIdx, news)
+                        let strFn = waStrIndices(allocIdx, length(news), strs)
+                        let ioFn = waIoIndices(allocIdx + 1 + length(news) + waStrCount(strs), io, command)
+                        let ctx = WaCtx(table, types, allocIdx, newMap, addr, strFn, base, ioFn)
+                        let out0 = waHeader()
+                        let out1 = waCat(out0, waTypeSection(sigs, voids))
+                        let out2 = if wasi {
+                            waCat(out1, waEncodeImport(waLookup(types, waSigKey(waNthSig(wasiSigs, 0))), waLookup(types, waSigKey(waNthSig(wasiSigs, 1))), waLookup(types, waSigKey(waNthSig(wasiSigs, 2))), waLookup(types, waSigKey(waNthSig(wasiSigs, 3))), procExit))
+                        } else {
+                            out1
+                        }
+                        let out3 = waCat(out2, waFuncSection(funcs, types, aux, ioSigs, mem, startType))
+                        let out4 = waCat(out3, waTable(table))
+                        let out5 = if mem {
+                            waCat(waCat(out4, waMemory(waMemoryMinPages(heap))), waGlobal(heap))
+                        } else {
+                            out4
+                        }
+                        let startIdx = match ioFn {
+                            WaIoFn(_, _, _, _, _, _, _, _, _, _, _, _, start) => start,
+                        }
+                        let out6 = if command {
+                            waCat(out5, waEncodeCommandExport(startIdx))
+                        } else {
+                            waCat(out5, waExportMain(main + base))
+                        }
+                        let out7 = if length(table) > 0 {
+                            waCat(out6, waElement(table, base))
+                        } else {
+                            out6
+                        }
+                        let closure = waLookup(types, waSigKey(IrSig(Cons(VtPtr, Nil), VtPtr)))
+                        let readMsg = waLookup(addr, "error: cannot read file ")
+                        let writeMsg = waLookup(addr, "error: cannot write file ")
+                        let nl = waLookup(addr, "\n")
+                        let out8 = waCat(out7, waCode(ctx, funcs, main, mem, news, strs, io, startType, closure, readMsg, writeMsg, nl))
+                        let out9 = if waLength(data) > 0 { waCat(out8, waData(data)) } else { out8 }
+                        waToString(out9)
+                    },
+                },
+            }
+        },
+    }
+}

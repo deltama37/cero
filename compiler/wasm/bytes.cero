@@ -1,0 +1,73 @@
+import "std/list"
+import "util/doc"
+
+pub type Bytes = | Bytes(Int, Doc)
+
+pub fn waEmpty() -> Bytes {
+    Bytes(0, DEmpty)
+}
+
+pub fn waByte(b: Int) -> Bytes {
+    Bytes(1, DText(stringFromByte(bitAnd(b, 255))))
+}
+
+fn waBytesGo(bs: List[Int], chunk: String, n: Int, doc: Doc, docLen: Int) -> Bytes {
+    match bs {
+        Nil => if n == 0 {
+            Bytes(docLen, doc)
+        } else {
+            Bytes(docLen + n, DCat(doc, DText(chunk)))
+        },
+        Cons(b, rest) => {
+            let chunk2 = chunk ++ stringFromByte(bitAnd(b, 255))
+            if n + 1 >= 32 {
+                waBytesGo(rest, "", 0, DCat(doc, DText(chunk2)), docLen + n + 1)
+            } else {
+                waBytesGo(rest, chunk2, n + 1, doc, docLen)
+            }
+        },
+    }
+}
+
+pub fn waBytes(bs: List[Int]) -> Bytes {
+    waBytesGo(bs, "", 0, DEmpty, 0)
+}
+
+pub fn waString(s: String) -> Bytes {
+    if s == "" {
+        waEmpty()
+    } else {
+        Bytes(stringLength(s), DText(s))
+    }
+}
+
+pub fn waCat(a: Bytes, b: Bytes) -> Bytes {
+    match a {
+        Bytes(na, da) => match b {
+            Bytes(nb, db) => Bytes(na + nb, DCat(da, db)),
+        },
+    }
+}
+
+fn waConcatAcc(xs: List[Bytes], acc: Bytes) -> Bytes {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => waConcatAcc(rest, waCat(acc, x)),
+    }
+}
+
+pub fn waConcat(xs: List[Bytes]) -> Bytes {
+    waConcatAcc(xs, waEmpty())
+}
+
+pub fn waLength(b: Bytes) -> Int {
+    match b {
+        Bytes(n, _) => n,
+    }
+}
+
+pub fn waToString(b: Bytes) -> String {
+    match b {
+        Bytes(_, d) => docToString(d),
+    }
+}

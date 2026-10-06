@@ -1,0 +1,409 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "ir/ir"
+import "util/strmap"
+import "wasm/bytes"
+import "wasm/leb128"
+
+pub type WaStrUse = | WaStrUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+
+pub type WaStrFn = | WaStrFn(Int, Int, Int, Int, Int, Int, Int, Int)
+
+pub type WaLay = | WaLay(StrMap[Int], Int, Bytes)
+
+type WaStrPart = | WaStrPart(Int, Sig)
+
+pub fn waStrEmpty() -> WaStrUse {
+    WaStrUse(false, false, false, false, false, false, false)
+}
+
+pub fn waStrNote(u: WaStrUse, op: PrimOp) -> WaStrUse {
+    match u {
+        WaStrUse(byteAt, slice, fromByte, compare, intToStr, concat, eq) => match op {
+            IrStrByteAt => WaStrUse(true, slice, fromByte, compare, intToStr, concat, eq),
+            IrStrSlice => WaStrUse(byteAt, true, fromByte, compare, intToStr, concat, eq),
+            IrStrFromByte => WaStrUse(byteAt, slice, true, compare, intToStr, concat, eq),
+            IrStrCompare => WaStrUse(byteAt, slice, fromByte, true, intToStr, concat, eq),
+            IrIntToString => WaStrUse(byteAt, slice, fromByte, compare, true, concat, eq),
+            IrStrConcat => WaStrUse(byteAt, slice, fromByte, compare, intToStr, true, eq),
+            IrStrEq => WaStrUse(byteAt, slice, fromByte, compare, intToStr, concat, true),
+            _ => u,
+        },
+    }
+}
+
+pub fn waStrForceConcat(u: WaStrUse) -> WaStrUse {
+    match u {
+        WaStrUse(byteAt, slice, fromByte, compare, intToStr, _, eq) => WaStrUse(byteAt, slice, fromByte, compare, intToStr, true, eq),
+    }
+}
+
+fn waStrAllocUsed(u: WaStrUse) -> Bool {
+    match u {
+        WaStrUse(_, slice, fromByte, _, intToStr, concat, _) => slice || fromByte || intToStr || concat,
+    }
+}
+
+fn sigPtr() -> Sig {
+    IrSig(Cons(VtPtr, Nil), VtPtr)
+}
+
+fn sigByteAt() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtInt, Nil)), VtInt)
+}
+
+fn sigSlice() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtInt, Cons(VtInt, Nil))), VtPtr)
+}
+
+fn sigFromByte() -> Sig {
+    IrSig(Cons(VtInt, Nil), VtPtr)
+}
+
+fn sigCompare() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtPtr, Nil)), VtInt)
+}
+
+fn sigConcat() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtPtr, Nil)), VtPtr)
+}
+
+fn sigEq() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtPtr, Nil)), VtBool)
+}
+
+fn waStrPlan(u: WaStrUse) -> List[WaStrPart] {
+    match u {
+        WaStrUse(byteAt, slice, fromByte, compare, intToStr, concat, eq) => {
+            let a = if waStrAllocUsed(u) { Cons(WaStrPart(0, sigPtr()), Nil) } else { Nil }
+            let b = if byteAt { Cons(WaStrPart(1, sigByteAt()), a) } else { a }
+            let c = if slice { Cons(WaStrPart(2, sigSlice()), b) } else { b }
+            let d = if fromByte { Cons(WaStrPart(3, sigFromByte()), c) } else { c }
+            let e = if compare { Cons(WaStrPart(4, sigCompare()), d) } else { d }
+            let f = if intToStr { Cons(WaStrPart(5, sigFromByte()), e) } else { e }
+            let g = if concat { Cons(WaStrPart(6, sigConcat()), f) } else { f }
+            let h = if eq { Cons(WaStrPart(7, sigEq()), g) } else { g }
+            reverse(h)
+        },
+    }
+}
+
+fn waStrSigsGo(xs: List[WaStrPart], acc: List[Sig]) -> List[Sig] {
+    match xs {
+        Nil => reverse(acc),
+        Cons(p, rest) => match p {
+            WaStrPart(_, sig) => waStrSigsGo(rest, Cons(sig, acc)),
+        },
+    }
+}
+
+pub fn waStrSigs(u: WaStrUse) -> List[Sig] {
+    waStrSigsGo(waStrPlan(u), Nil)
+}
+
+pub fn waStrCount(u: WaStrUse) -> Int {
+    length(waStrPlan(u))
+}
+
+fn waStrNone() -> WaStrFn {
+    WaStrFn(-1, -1, -1, -1, -1, -1, -1, -1)
+}
+
+fn waStrPut(f: WaStrFn, kind: Int, idx: Int) -> WaStrFn {
+    match f {
+        WaStrFn(alloc, byteAt, slice, fromByte, compare, intToStr, concat, eq) => if kind == 0 {
+            WaStrFn(idx, byteAt, slice, fromByte, compare, intToStr, concat, eq)
+        } else if kind == 1 {
+            WaStrFn(alloc, idx, slice, fromByte, compare, intToStr, concat, eq)
+        } else if kind == 2 {
+            WaStrFn(alloc, byteAt, idx, fromByte, compare, intToStr, concat, eq)
+        } else if kind == 3 {
+            WaStrFn(alloc, byteAt, slice, idx, compare, intToStr, concat, eq)
+        } else if kind == 4 {
+            WaStrFn(alloc, byteAt, slice, fromByte, idx, intToStr, concat, eq)
+        } else if kind == 5 {
+            WaStrFn(alloc, byteAt, slice, fromByte, compare, idx, concat, eq)
+        } else if kind == 6 {
+            WaStrFn(alloc, byteAt, slice, fromByte, compare, intToStr, idx, eq)
+        } else {
+            WaStrFn(alloc, byteAt, slice, fromByte, compare, intToStr, concat, idx)
+        },
+    }
+}
+
+fn waStrIdxGo(xs: List[WaStrPart], n: Int, f: WaStrFn) -> WaStrFn {
+    match xs {
+        Nil => f,
+        Cons(p, rest) => match p {
+            WaStrPart(kind, _) => waStrIdxGo(rest, n + 1, waStrPut(f, kind, n)),
+        },
+    }
+}
+
+pub fn waStrIndices(nfuncs: Int, nnews: Int, u: WaStrUse) -> WaStrFn {
+    waStrIdxGo(waStrPlan(u), nfuncs + 1 + nnews, waStrNone())
+}
+
+fn waI32LE(n: Int) -> Bytes {
+    waBytes(Cons(bitAnd(n, 255), Cons(bitAnd(shiftRightUnsigned(n, 8), 255), Cons(bitAnd(shiftRightUnsigned(n, 16), 255), Cons(bitAnd(shiftRightUnsigned(n, 24), 255), Nil)))))
+}
+
+fn waStrBlockSize(n: Int) -> Int {
+    bitAnd(n + 15, bitXor(-1, 7))
+}
+
+fn waZeros(n: Int) -> Bytes {
+    if n <= 0 {
+        waEmpty()
+    } else {
+        waCat(waByte(0), waZeros(n - 1))
+    }
+}
+
+fn waStrBlock(value: String) -> Bytes {
+    let n = stringLength(value)
+    let size = waStrBlockSize(n)
+    let pad = size - 8 - n
+    waCat(waCat(waCat(waI32LE(n), waZeros(4)), waString(value)), waZeros(pad))
+}
+
+pub fn waLayEmpty() -> WaLay {
+    WaLay(smEmpty(), 8, waEmpty())
+}
+
+pub fn waLayAdd(lay: WaLay, value: String) -> WaLay {
+    match lay {
+        WaLay(addr, heap, data) => match smLookup(addr, value) {
+            Some(_) => lay,
+            None => {
+                let block = waStrBlock(value)
+                WaLay(smInsert(addr, value, heap), heap + waLength(block), waCat(data, block))
+            },
+        },
+    }
+}
+
+pub fn waMemoryMinPages(heap: Int) -> Int {
+    let pages = (heap + 65535) / 65536
+    if pages < 1 {
+        1
+    } else {
+        pages
+    }
+}
+
+fn waAdd(b: Bytes) -> Bytes {
+    waRaw(b, Cons(106, Nil))
+}
+
+fn waTrapIf(b: Bytes) -> Bytes {
+    waEnd(waRaw(waRaw(b, Cons(4, Cons(64, Nil))), Cons(0, Nil)))
+}
+
+fn waEncodeStrAlloc(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waCallFunc(waRaw(waI32(waAdd(waI32(waLocalGet(b0, 0), 15)), -8), Cons(113, Nil)), allocIdx)
+    let b2 = waLocalSet(b1, 1)
+    let b3 = waStoreI32(waLocalGet(waLocalGet(b2, 1), 0), 0)
+    let b4 = waStoreI32(waI32(waLocalGet(b3, 1), 0), 4)
+    waEnd(waLocalGet(b4, 1))
+}
+
+fn waEncodeStrByteAt() -> Bytes {
+    let b0 = waBytes(Cons(0, Nil))
+    let b1 = waRaw(waRaw(waLoadI32(waLocalGet(waLocalGet(b0, 1), 0), 0), Cons(173, Nil)), Cons(90, Nil))
+    let b2 = waEnd(waRaw(waRaw(b1, Cons(4, Cons(64, Nil))), Cons(0, Nil)))
+    let b3 = waAdd(waRaw(waLocalGet(waLocalGet(b2, 0), 1), Cons(167, Nil)))
+    waEnd(waLoad8UI64(waAdd(waI32(b3, 8)), 0))
+}
+
+fn waEncodeStrSlice(strAlloc: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(2, Cons(127, Nil))))
+    let b1 = waTrapIf(waRaw(waI64(waLocalGet(b0, 1), 0), Cons(83, Nil)))
+    let b2 = waTrapIf(waRaw(waLocalGet(waLocalGet(b1, 1), 2), Cons(85, Nil)))
+    let b3 = waTrapIf(waRaw(waRaw(waLoadI32(waLocalGet(waLocalGet(b2, 2), 0), 0), Cons(173, Nil)), Cons(85, Nil)))
+    let b4 = waLocalSet(waRaw(waRaw(waLocalGet(waLocalGet(b3, 2), 1), Cons(125, Nil)), Cons(167, Nil)), 3)
+    let b5 = waLocalSet(waCallFunc(waLocalGet(b4, 3), strAlloc), 4)
+    let d = waAdd(waI32(waLocalGet(b5, 4), 8))
+    let s = waAdd(waRaw(waLocalGet(waAdd(waI32(waLocalGet(d, 0), 8)), 1), Cons(167, Nil)))
+    let b6 = waMemCopy(waLocalGet(s, 3))
+    waEnd(waLocalGet(b6, 4))
+}
+
+fn waEncodeStrFromByte(strAlloc: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waTrapIf(waRaw(waI64(waLocalGet(b0, 0), 255), Cons(86, Nil)))
+    let b2 = waLocalSet(waCallFunc(waI32(b1, 1), strAlloc), 1)
+    let b3 = waStore8(waRaw(waLocalGet(waLocalGet(b2, 1), 0), Cons(167, Nil)), 8)
+    waEnd(waLocalGet(b3, 1))
+}
+
+fn waByteAt(b: Bytes, base: Int, index: Int, dst: Int) -> Bytes {
+    waLocalSet(waLoad8U(waAdd(waLocalGet(waAdd(waI32(waLocalGet(b, base), 8)), index)), 0), dst)
+}
+
+fn waEncodeStrCompare() -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(6, Cons(127, Nil))))
+    let b1 = waLocalSet(waLoadI32(waLocalGet(b0, 0), 0), 2)
+    let b2 = waLocalSet(waLoadI32(waLocalGet(b1, 1), 0), 3)
+    let b3 = waRaw(waLocalGet(waLocalGet(b2, 2), 3), Cons(73, Nil))
+    let b4 = waRaw(b3, Cons(4, Cons(127, Nil)))
+    let b5 = waRaw(waLocalGet(b4, 2), Cons(5, Nil))
+    let b6 = waEnd(waLocalGet(b5, 3))
+    let b7 = waLocalSet(b6, 4)
+    let b8 = waLocalSet(waI32(b7, 0), 5)
+    let b9 = waRaw(b8, Cons(2, Cons(126, Nil)))
+    let b10 = waRaw(b9, Cons(3, Cons(64, Nil)))
+    let b11 = waRaw(waLocalGet(waLocalGet(b10, 5), 4), Cons(78, Nil))
+    let b12 = waRaw(b11, Cons(4, Cons(64, Nil)))
+    let b13 = waRaw(waLocalGet(waLocalGet(b12, 2), 3), Cons(73, Nil))
+    let b14 = waRaw(b13, Cons(4, Cons(126, Nil)))
+    let b15 = waRaw(waI64(b14, -1), Cons(5, Nil))
+    let b16 = waRaw(waLocalGet(waLocalGet(b15, 2), 3), Cons(75, Nil))
+    let b17 = waRaw(b16, Cons(4, Cons(126, Nil)))
+    let b18 = waRaw(waI64(b17, 1), Cons(5, Nil))
+    let b19 = waEnd(waI64(b18, 0))
+    let b20 = waEnd(b19)
+    let b21 = waBr(b20, 2)
+    let b22 = waEnd(b21)
+    let b23 = waByteAt(b22, 0, 5, 6)
+    let b24 = waByteAt(b23, 1, 5, 7)
+    let b25 = waRaw(waLocalGet(waLocalGet(b24, 6), 7), Cons(71, Nil))
+    let b26 = waRaw(b25, Cons(4, Cons(64, Nil)))
+    let b27 = waRaw(waLocalGet(waLocalGet(b26, 6), 7), Cons(73, Nil))
+    let b28 = waRaw(b27, Cons(4, Cons(126, Nil)))
+    let b29 = waRaw(waI64(b28, -1), Cons(5, Nil))
+    let b30 = waEnd(waI64(b29, 1))
+    let b31 = waBr(b30, 2)
+    let b32 = waEnd(b31)
+    let b33 = waLocalSet(waAdd(waI32(waLocalGet(b32, 5), 1)), 5)
+    let b34 = waBr(b33, 0)
+    let b35 = waEnd(b34)
+    let b36 = waEnd(waI64(b35, 0))
+    waEnd(b36)
+}
+
+fn waEncodeIntToString(strAlloc: Int) -> Bytes {
+    let b0 = waBytes(Cons(2, Cons(2, Cons(126, Cons(5, Cons(127, Nil))))))
+    let b1 = waRaw(waI64(waLocalGet(b0, 0), 0), Cons(83, Nil))
+    let b2 = waRaw(b1, Cons(4, Cons(127, Nil)))
+    let b3 = waRaw(waI32(b2, 1), Cons(5, Nil))
+    let b4 = waEnd(waI32(b3, 0))
+    let b5 = waLocalSet(b4, 3)
+    let b6 = waRaw(waLocalGet(b5, 3), Cons(4, Cons(126, Nil)))
+    let b7 = waRaw(waRaw(waI64(b6, 0), Cons(32, Cons(0, Nil))), Cons(125, Nil))
+    let b8 = waLocalGet(waRaw(b7, Cons(5, Nil)), 0)
+    let b9 = waEnd(b8)
+    let b10 = waLocalSet(b9, 1)
+    let b11 = waLocalSet(waI32(b10, 0), 4)
+    let b12 = waLocalSet(waLocalGet(b11, 1), 2)
+    let b13 = waRaw(b12, Cons(2, Cons(64, Nil)))
+    let b14 = waRaw(b13, Cons(3, Cons(64, Nil)))
+    let b15 = waLocalSet(waAdd(waI32(waLocalGet(b14, 4), 1)), 4)
+    let b16 = waLocalTee(waRaw(waI64(waLocalGet(b15, 2), 10), Cons(128, Nil)), 2)
+    let b17 = waBrIf(waRaw(b16, Cons(80, Nil)), 1)
+    let b18 = waBr(b17, 0)
+    let b19 = waEnd(waEnd(b18))
+    let b20 = waLocalSet(waAdd(waLocalGet(waLocalGet(b19, 4), 3)), 5)
+    let b21 = waLocalSet(waCallFunc(waLocalGet(b20, 5), strAlloc), 6)
+    let b22 = waLocalSet(waLocalGet(b21, 5), 7)
+    let b23 = waLocalSet(waLocalGet(b22, 1), 2)
+    let b24 = waRaw(b23, Cons(2, Cons(64, Nil)))
+    let b25 = waRaw(b24, Cons(3, Cons(64, Nil)))
+    let b26 = waLocalSet(waRaw(waI32(waLocalGet(b25, 7), 1), Cons(107, Nil)), 7)
+    let b27 = waAdd(waI32(waAdd(waLocalGet(waLocalGet(b26, 6), 7)), 8))
+    let b28 = waStore8(waAdd(waI32(waRaw(waRaw(waI64(waLocalGet(b27, 2), 10), Cons(130, Nil)), Cons(167, Nil)), '0')), 0)
+    let b29 = waLocalSet(waRaw(waI64(waLocalGet(b28, 2), 10), Cons(128, Nil)), 2)
+    let b30 = waBrIf(waRaw(waLocalGet(waLocalGet(b29, 7), 3), Cons(75, Nil)), 0)
+    let b31 = waEnd(waEnd(b30))
+    let b32 = waRaw(waLocalGet(b31, 3), Cons(4, Cons(64, Nil)))
+    let b33 = waEnd(waStore8(waI32(waLocalGet(b32, 6), '-'), 8))
+    waEnd(waLocalGet(b33, 6))
+}
+
+fn waEncodeStrConcat(strAlloc: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(3, Cons(127, Nil))))
+    let b1 = waLocalSet(waLoadI32(waLocalGet(b0, 0), 0), 2)
+    let b2 = waLocalSet(waLoadI32(waLocalGet(b1, 1), 0), 3)
+    let b3 = waLocalSet(waCallFunc(waAdd(waLocalGet(waLocalGet(b2, 2), 3)), strAlloc), 4)
+    let c1 = waMemCopy(waLocalGet(waAdd(waI32(waLocalGet(waAdd(waI32(waLocalGet(b3, 4), 8)), 0), 8)), 2))
+    let c2 = waAdd(waLocalGet(waAdd(waI32(waLocalGet(c1, 4), 8)), 2))
+    let c3 = waMemCopy(waLocalGet(waAdd(waI32(waLocalGet(c2, 1), 8)), 3))
+    waEnd(waLocalGet(c3, 4))
+}
+
+fn waEncodeStrEq() -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(2, Cons(127, Nil))))
+    let b1 = waRaw(waLocalGet(waLocalGet(b0, 0), 1), Cons(70, Nil))
+    let b2 = waRaw(b1, Cons(4, Cons(127, Nil)))
+    let b3 = waRaw(waI32(b2, 1), Cons(5, Nil))
+    let b4 = waLocalTee(waLoadI32(waLocalGet(b3, 0), 0), 2)
+    let b5 = waRaw(waLoadI32(waLocalGet(b4, 1), 0), Cons(71, Nil))
+    let b6 = waRaw(b5, Cons(4, Cons(127, Nil)))
+    let b7 = waRaw(waI32(b6, 0), Cons(5, Nil))
+    let b8 = waLocalSet(waI32(b7, 0), 3)
+    let b9 = waRaw(b8, Cons(2, Cons(127, Nil)))
+    let b10 = waRaw(b9, Cons(3, Cons(64, Nil)))
+    let b11 = waRaw(waLocalGet(waLocalGet(b10, 3), 2), Cons(78, Nil))
+    let b12 = waRaw(b11, Cons(4, Cons(64, Nil)))
+    let b13 = waBr(waI32(b12, 1), 2)
+    let b14 = waEnd(b13)
+    let b15 = waLoad8U(waAdd(waLocalGet(waAdd(waI32(waLocalGet(b14, 0), 8)), 3)), 0)
+    let b16 = waLoad8U(waAdd(waLocalGet(waAdd(waI32(waLocalGet(b15, 1), 8)), 3)), 0)
+    let b17 = waRaw(b16, Cons(71, Nil))
+    let b18 = waRaw(b17, Cons(4, Cons(64, Nil)))
+    let b19 = waBr(waI32(b18, 0), 2)
+    let b20 = waEnd(b19)
+    let b21 = waLocalSet(waAdd(waI32(waLocalGet(b20, 3), 1)), 3)
+    let b22 = waBr(b21, 0)
+    let b23 = waEnd(b22)
+    let b24 = waEnd(waI32(b23, 1))
+    let b25 = waEnd(b24)
+    let b26 = waEnd(b25)
+    waEnd(b26)
+}
+
+fn waStrBody(kind: Int, allocIdx: Int, strAlloc: Int) -> Bytes {
+    if kind == 0 {
+        waEncodeStrAlloc(allocIdx)
+    } else if kind == 1 {
+        waEncodeStrByteAt()
+    } else if kind == 2 {
+        waEncodeStrSlice(strAlloc)
+    } else if kind == 3 {
+        waEncodeStrFromByte(strAlloc)
+    } else if kind == 4 {
+        waEncodeStrCompare()
+    } else if kind == 5 {
+        waEncodeIntToString(strAlloc)
+    } else if kind == 6 {
+        waEncodeStrConcat(strAlloc)
+    } else {
+        waEncodeStrEq()
+    }
+}
+
+fn waAddBody(content: Bytes, body: Bytes) -> Bytes {
+    waCat(waCat(content, waUleb128(waLength(body))), body)
+}
+
+fn waAppendStrGo(
+    xs: List[WaStrPart],
+    content: Bytes,
+    allocIdx: Int,
+    strAlloc: Int
+) -> Bytes {
+    match xs {
+        Nil => content,
+        Cons(p, rest) => match p {
+            WaStrPart(kind, _) => waAppendStrGo(rest, waAddBody(content, waStrBody(kind, allocIdx, strAlloc)), allocIdx, strAlloc),
+        },
+    }
+}
+
+pub fn waAppendStr(content: Bytes, allocIdx: Int, fns: WaStrFn, u: WaStrUse) -> Bytes {
+    match fns {
+        WaStrFn(strAlloc, _, _, _, _, _, _, _) => waAppendStrGo(waStrPlan(u), content, allocIdx, strAlloc),
+    }
+}
