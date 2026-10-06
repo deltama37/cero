@@ -13,6 +13,12 @@ func TestString(t *testing.T) {
 	}{
 		{name: "Int", typ: Int, want: "Int"},
 		{name: "Bool", typ: Bool, want: "Bool"},
+		{name: "String", typ: String, want: "String"},
+		{
+			name: "String to String",
+			typ:  &Func{Params: []Type{String}, Result: String},
+			want: "String -> String",
+		},
 		{name: "Int to Int", typ: intToInt, want: "Int -> Int"},
 		{
 			name: "pair to Int",
@@ -208,7 +214,10 @@ func TestEqual(t *testing.T) {
 	}{
 		{name: "Int", a: Int, b: Int, want: true},
 		{name: "Bool", a: Bool, b: Bool, want: true},
+		{name: "String", a: String, b: String, want: true},
 		{name: "Int and Bool", a: Int, b: Bool, want: false},
+		{name: "String and Int", a: String, b: Int, want: false},
+		{name: "String and Bool", a: String, b: Bool, want: false},
 		{name: "same function structure", a: nested(), b: nested(), want: true},
 		{
 			name: "different param count",

@@ -15,6 +15,9 @@ type IntType struct{}
 // BoolType is the type of booleans.
 type BoolType struct{}
 
+// StringType is the built-in String type.
+type StringType struct{}
+
 // Func is a function type. Function types are always represented as *Func.
 type Func struct {
 	Params []Type
@@ -66,9 +69,13 @@ var Int Type = IntType{}
 // Bool is the Bool type.
 var Bool Type = BoolType{}
 
+// String is the String type.
+var String Type = StringType{}
+
 var (
 	_ Type = IntType{}
 	_ Type = BoolType{}
+	_ Type = StringType{}
 	_ Type = (*Func)(nil)
 	_ Type = (*Named)(nil)
 	_ Type = (*TypeParam)(nil)
@@ -84,6 +91,11 @@ func (IntType) isType() {}
 func (BoolType) String() string { return "Bool" }
 
 func (BoolType) isType() {}
+
+// String returns "String".
+func (StringType) String() string { return "String" }
+
+func (StringType) isType() {}
 
 // String formats a function type.
 //
@@ -317,6 +329,9 @@ func Equal(a, b Type) bool {
 		return ok
 	case BoolType:
 		_, ok := b.(BoolType)
+		return ok
+	case StringType:
+		_, ok := b.(StringType)
 		return ok
 	case *Func:
 		fb, ok := b.(*Func)
