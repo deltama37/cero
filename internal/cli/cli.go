@@ -37,7 +37,7 @@ const usage = `ceroc - the Cero compiler (bootstrap, Go implementation)
 Usage:
     ceroc <command> [arguments]
     ceroc build [-o output.wasm] <file.cero>
-    ceroc run <file.cero>
+    ceroc run <file.cero> [args...]
 
 Commands:
     build      Compile a Cero source file to WebAssembly
@@ -50,16 +50,18 @@ See docs/adr/0001-cero-language-initial-policy.md for the language roadmap.
 `
 
 // Run dispatches a ceroc invocation. args is the argument list *excluding* the
-// program name (i.e. os.Args[1:]). It writes user-facing output to stdout and
-// diagnostics to stderr, and returns the process exit code.
+// program name (i.e. os.Args[1:]). stdin is the standard input of `ceroc run`.
+// It writes user-facing output to stdout and diagnostics to stderr, and
+// returns the process exit code.
 //
-// Run calls run(args, stdout, stderr, os.Getenv).
-func Run(args []string, stdout, stderr io.Writer) int {
-	return run(args, stdout, stderr, os.Getenv)
+// Run calls run(args, stdin, stdout, stderr, os.Getenv).
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return run(args, stdin, stdout, stderr, os.Getenv)
 }
 
 func run(
 	args []string,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 	getenv func(string) string,
@@ -79,7 +81,7 @@ func run(
 	case "build":
 		return build(args[1:], stderr)
 	case "run":
-		return runSource(args[1:], stdout, stderr, getenv)
+		return runSource(args[1:], stdin, stdout, stderr, getenv)
 	case "fmt":
 		fmt.Fprintf(stderr, "ceroc fmt: not yet implemented (v0.1 work in progress)\n")
 		return exitNotImplemented
@@ -152,11 +154,12 @@ func defaultOutput(input string) string {
 
 func runSource(
 	args []string,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 	getenv func(string) string,
 ) int {
-	input, err := parseRunArgs(args)
+	input, progArgs, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "ceroc run: %s\n", err.Error())
 		return exitUsageError
@@ -175,10 +178,14 @@ func runSource(
 		fmt.Fprintf(stderr, "ceroc: %v\n", fmt.Errorf("read %s: %w", input, err))
 		return exitFailure
 	}
-	compiled, err := driver.Compile(input, src)
+	compiled, err := driver.CompileProgram(input, src, os.ReadFile)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitFailure
+	}
+	if !compiled.Command && len(progArgs) > 0 {
+		fmt.Fprintln(stderr, "ceroc run: arguments are only passed to programs whose main returns IO[Unit]")
+		return exitUsageError
 	}
 	dir, err := os.MkdirTemp("", "ceroc-run-*")
 	if err != nil {
@@ -187,11 +194,31 @@ func runSource(
 	}
 	defer os.RemoveAll(dir)
 	wasmPath := filepath.Join(dir, "main.wasm")
-	if err := os.WriteFile(wasmPath, compiled, 0o644); err != nil {
+	if err := os.WriteFile(wasmPath, compiled.Wasm, 0o644); err != nil {
 		fmt.Fprintf(stderr, "ceroc: %v\n", fmt.Errorf("write %s: %w", wasmPath, err))
 		return exitFailure
 	}
-	cmd := exec.Command(path, "run", "--invoke", "main", wasmPath)
+	var cmdArgs []string
+	if compiled.Command {
+		cmdArgs = append([]string{"run", "--dir=.", wasmPath}, progArgs...)
+	} else {
+		cmdArgs = []string{"run", "--invoke", "main", wasmPath}
+	}
+	cmd := exec.Command(path, cmdArgs...)
+	if compiled.Command {
+		cmd.Stdin = stdin
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		if err := cmd.Run(); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				return exitErr.ExitCode()
+			}
+			fmt.Fprintf(stderr, "ceroc run: runtime failed: %v\n", err)
+			return exitFailure
+		}
+		return exitOK
+	}
 	var runtimeStderr bytes.Buffer
 	cmd.Stdout = stdout
 	cmd.Stderr = &runtimeStderr
@@ -203,19 +230,12 @@ func runSource(
 	return exitOK
 }
 
-func parseRunArgs(args []string) (string, error) {
-	var input string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			return "", fmt.Errorf("unknown flag %q", a)
-		}
-		if input != "" {
-			return "", errors.New("too many arguments")
-		}
-		input = a
+func parseRunArgs(args []string) (string, []string, error) {
+	if len(args) == 0 {
+		return "", nil, errors.New("missing input file")
 	}
-	if input == "" {
-		return "", errors.New("missing input file")
+	if strings.HasPrefix(args[0], "-") {
+		return "", nil, fmt.Errorf("unknown flag %q", args[0])
 	}
-	return input, nil
+	return args[0], args[1:], nil
 }
