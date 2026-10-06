@@ -1243,6 +1243,67 @@ func vecCount(t *testing.T, payload []byte) int {
 	return int(n)
 }
 
+func TestEncodeIntOps(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want []byte
+	}{
+		{
+			name: "rem",
+			src:  "fn main() -> Int { 7 % 3 }\n",
+			want: []byte{0x00, opI64Const, 0x07, opI64Const, 0x03, opI64RemS, opEnd},
+		},
+		{
+			name: "and",
+			src:  "fn main() -> Int { bitAnd(12, 10) }\n",
+			want: []byte{0x00, opI64Const, 0x0c, opI64Const, 0x0a, opI64And, opEnd},
+		},
+		{
+			name: "or",
+			src:  "fn main() -> Int { bitOr(12, 10) }\n",
+			want: []byte{0x00, opI64Const, 0x0c, opI64Const, 0x0a, opI64Or, opEnd},
+		},
+		{
+			name: "xor",
+			src:  "fn main() -> Int { bitXor(12, 10) }\n",
+			want: []byte{0x00, opI64Const, 0x0c, opI64Const, 0x0a, opI64Xor, opEnd},
+		},
+		{
+			name: "shl",
+			src:  "fn main() -> Int { shiftLeft(1, 62) }\n",
+			want: []byte{0x00, opI64Const, 0x01, opI64Const, 0x3e, opI64Shl, opEnd},
+		},
+		{
+			name: "shr_s",
+			src:  "fn main() -> Int { shiftRight(-8, 1) }\n",
+			want: []byte{0x00, opI64Const, 0x00, opI64Const, 0x08, opI64Sub, opI64Const, 0x01, opI64ShrS, opEnd},
+		},
+		{
+			name: "shr_u",
+			src:  "fn main() -> Int { shiftRightUnsigned(-1, 60) }\n",
+			want: []byte{0x00, opI64Const, 0x00, opI64Const, 0x01, opI64Sub, opI64Const, 0x3c, opI64ShrU, opEnd},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wasm := Encode(lowerModule(t, tt.src))
+			bodies := functionBodies(t, wasm)
+			if len(bodies) != 1 {
+				t.Fatalf("function bodies = %d, want 1", len(bodies))
+			}
+			if !bytes.Equal(bodies[0], tt.want) {
+				t.Errorf("main =\n%x\nwant:\n%x", bodies[0], tt.want)
+			}
+		})
+	}
+}
+
 func TestEncodeIO(t *testing.T) {
 	t.Parallel()
 

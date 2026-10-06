@@ -74,9 +74,13 @@ const (
 	opI64Mul             byte = 0x7e
 	opI64DivS            byte = 0x7f
 	opI64DivU            byte = 0x80
+	opI64RemS            byte = 0x81
 	opI64RemU            byte = 0x82
+	opI64And             byte = 0x83
 	opI64Or              byte = 0x84
+	opI64Xor             byte = 0x85
 	opI64Shl             byte = 0x86
+	opI64ShrS            byte = 0x87
 	opI64ShrU            byte = 0x88
 	opI32WrapI64         byte = 0xa7
 	opI64ExtendI32U      byte = 0xad
@@ -200,8 +204,10 @@ type encoder struct {
 }
 
 // usesMemory reports whether any function body contains a Construct,
-// Field, SwitchTag, StrConst or Prim node. A WASI command always has
-// memory so _start can call alloc through the IO helpers.
+// Field, SwitchTag, StrConst, or a Prim other than a bit operation.
+// Bit operations are plain i64 instructions and do not use memory.
+// A WASI command always has memory so _start can call alloc through the
+// IO helpers.
 func usesMemory(m *ir.Module) bool {
 	if m.Command {
 		return true
@@ -209,9 +215,13 @@ func usesMemory(m *ir.Module) bool {
 	for _, fn := range m.Funcs {
 		found := false
 		walk(fn.Body, func(e ir.Expr) {
-			switch e.(type) {
-			case *ir.Construct, *ir.Field, *ir.SwitchTag, *ir.StrConst, *ir.Prim:
+			switch e := e.(type) {
+			case *ir.Construct, *ir.Field, *ir.SwitchTag, *ir.StrConst:
 				found = true
+			case *ir.Prim:
+				if _, bit := intPrimOp(e.Op); !bit {
+					found = true
+				}
 			}
 		})
 		if found {
@@ -878,11 +888,39 @@ func (e *encoder) prim(x *ir.Prim) {
 		e.buf = append(e.buf, opI32Load, alignI32, 0x00, opI64ExtendI32U)
 		return
 	}
+	if op, ok := intPrimOp(x.Op); ok {
+		if len(x.Args) != 2 {
+			panic(fmt.Sprintf("wasm: bit operation has %d arguments", len(x.Args)))
+		}
+		e.expr(x.Args[0])
+		e.expr(x.Args[1])
+		e.buf = append(e.buf, op)
+		return
+	}
 	for _, arg := range x.Args {
 		e.expr(arg)
 	}
 	e.buf = append(e.buf, opCall)
 	e.buf = appendUleb128(e.buf, uint64(e.primFunc(x.Op)))
+}
+
+func intPrimOp(op ir.PrimOp) (byte, bool) {
+	switch op {
+	case ir.BitAnd:
+		return opI64And, true
+	case ir.BitOr:
+		return opI64Or, true
+	case ir.BitXor:
+		return opI64Xor, true
+	case ir.ShiftLeft:
+		return opI64Shl, true
+	case ir.ShiftRight:
+		return opI64ShrS, true
+	case ir.ShiftRightUnsigned:
+		return opI64ShrU, true
+	default:
+		return 0, false
+	}
 }
 
 func (e *encoder) primFunc(op ir.PrimOp) int {
@@ -1012,6 +1050,8 @@ func intBinOp(op ir.BinOp) byte {
 		return opI64Mul
 	case ir.Div:
 		return opI64DivS
+	case ir.Rem:
+		return opI64RemS
 	case ir.Eq:
 		return opI64Eq
 	case ir.Ne:
