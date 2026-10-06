@@ -63,6 +63,8 @@ func FormatExpr(e Expr) string {
 	switch e := e.(type) {
 	case *IntLit:
 		return strconv.FormatInt(e.Value, 10)
+	case *StringLit:
+		return strconv.Quote(e.Value)
 	case *BoolLit:
 		if e.Value {
 			return "true"
@@ -123,6 +125,8 @@ func FormatPattern(p Pattern) string {
 		return "(" + strings.Join(parts, " ") + ")"
 	case *IntPat:
 		return strconv.FormatInt(p.Value, 10)
+	case *StrPat:
+		return strconv.Quote(p.Value)
 	case *BoolPat:
 		if p.Value {
 			return "true"
@@ -202,6 +206,8 @@ func binaryName(kind token.Kind) string {
 	switch kind {
 	case token.Plus:
 		return "+"
+	case token.PlusPlus:
+		return "++"
 	case token.Minus:
 		return "-"
 	case token.Star:

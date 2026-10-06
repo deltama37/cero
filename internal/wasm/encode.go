@@ -16,9 +16,14 @@ const (
 	secExport   byte = 7
 	secElement  byte = 9
 	secCode     byte = 10
+	secData     byte = 11
 
 	opUnreachable        byte = 0x00
+	opBlock              byte = 0x02
+	opLoop               byte = 0x03
 	opEnd                byte = 0x0b
+	opBr                 byte = 0x0c
+	opBrIf               byte = 0x0d
 	opIf                 byte = 0x04
 	opElse               byte = 0x05
 	opCall               byte = 0x10
@@ -32,8 +37,11 @@ const (
 	opGlobalSet          byte = 0x24
 	opI32Load            byte = 0x28
 	opI64Load            byte = 0x29
+	opI32Load8U          byte = 0x2d
+	opI64Load8U          byte = 0x31
 	opI32Store           byte = 0x36
 	opI64Store           byte = 0x37
+	opI32Store8          byte = 0x3a
 	opMemorySize         byte = 0x3f
 	opMemoryGrow         byte = 0x40
 	opI32Const           byte = 0x41
@@ -41,21 +49,29 @@ const (
 	opI32Eqz             byte = 0x45
 	opI32Eq              byte = 0x46
 	opI32Ne              byte = 0x47
+	opI32LtU             byte = 0x49
 	opI32GtU             byte = 0x4b
+	opI32GeU             byte = 0x4e
+	opI64Eqz             byte = 0x50
 	opI64Eq              byte = 0x51
 	opI64Ne              byte = 0x52
 	opI64LtS             byte = 0x53
+	opI64GtU             byte = 0x56
 	opI64GtS             byte = 0x55
 	opI64LeS             byte = 0x57
 	opI64GeS             byte = 0x59
+	opI64GeU             byte = 0x5a
 	opI32Add             byte = 0x6a
 	opI32Sub             byte = 0x6b
+	opI32And             byte = 0x71
 	opI32Shl             byte = 0x74
 	opI32ShrU            byte = 0x76
 	opI64Add             byte = 0x7c
 	opI64Sub             byte = 0x7d
 	opI64Mul             byte = 0x7e
 	opI64DivS            byte = 0x7f
+	opI64DivU            byte = 0x80
+	opI64RemU            byte = 0x82
 	opI64Or              byte = 0x84
 	opI64Shl             byte = 0x86
 	opI64ShrU            byte = 0x88
@@ -72,6 +88,7 @@ const (
 	elemActiveFlags      byte = 0x00
 	alignI32             byte = 0x02
 	alignI64             byte = 0x03
+	alignI8              byte = 0x00
 
 	// memoryMaxPages is 32768 so that page count << 16 stays inside an
 	// unsigned i32 (ADR-0003).
@@ -85,31 +102,40 @@ var wasmHeader = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 func Encode(m *ir.Module) []byte {
 	mem := usesMemory(m)
 	var news [][]ir.ValType
+	var strs strUse
+	var lay strLayout
 	if mem {
 		news = collectNews(m)
+		strs = collectStrUse(m)
+		lay = layoutStrings(m)
 	}
-	sigs, types := collectTypes(m, mem, news)
+	sigs, types := collectTypes(m, mem, news, strs)
 	e := &encoder{
 		table:    m.Table,
 		types:    types,
 		allocIdx: len(m.Funcs),
 		newIdx:   newFuncIndex(len(m.Funcs), news),
 		scratch:  -1,
+		strAddr:  lay.addr,
+		strFn:    strFuncIndices(len(m.Funcs), len(news), strs),
 	}
 
 	out := append([]byte(nil), wasmHeader...)
 	out = append(out, encodeTypeSection(sigs)...)
-	out = append(out, encodeFunctionSection(m, types, mem, news)...)
+	out = append(out, encodeFunctionSection(m, types, mem, news, strs)...)
 	out = append(out, encodeTableSection(m)...)
 	if mem {
-		out = append(out, encodeMemorySection()...)
-		out = append(out, encodeGlobalSection()...)
+		out = append(out, encodeMemorySection(memoryMinPages(lay.heap))...)
+		out = append(out, encodeGlobalSection(lay.heap)...)
 	}
 	out = append(out, encodeExportSection(m)...)
 	if len(m.Table) > 0 {
 		out = append(out, encodeElementSection(m)...)
 	}
-	out = append(out, e.encodeCodeSection(m, mem, news)...)
+	out = append(out, e.encodeCodeSection(m, mem, news, strs)...)
+	if len(lay.data) > 0 {
+		out = append(out, encodeDataSection(lay.data)...)
+	}
 	return out
 }
 
@@ -121,16 +147,18 @@ type encoder struct {
 	newIdx   map[string]int
 	result   ir.ValType // result type of the function being encoded
 	scratch  int        // local index for call_indirect, or -1
+	strAddr  map[string]int
+	strFn    strFuncIdx
 }
 
 // usesMemory reports whether any function body contains a Construct,
-// Field or SwitchTag node.
+// Field, SwitchTag, StrConst or Prim node.
 func usesMemory(m *ir.Module) bool {
 	for _, fn := range m.Funcs {
 		found := false
 		walk(fn.Body, func(e ir.Expr) {
 			switch e.(type) {
-			case *ir.Construct, *ir.Field, *ir.SwitchTag:
+			case *ir.Construct, *ir.Field, *ir.SwitchTag, *ir.StrConst, *ir.Prim:
 				found = true
 			}
 		})
@@ -147,9 +175,15 @@ func usesMemory(m *ir.Module) bool {
 // A CallIndirect is registered with an environment pointer appended, the
 // same signature as the function in the table. Bool and Ptr are both i32,
 // so they collapse to one wasm type. FuncRef is i64, so it collapses with
-// Int. When the module uses memory, alloc's type and each new's type are
-// added after that scan, in auxiliary-function order.
-func collectTypes(m *ir.Module, mem bool, news [][]ir.ValType) ([]ir.Sig, map[string]int) {
+// Int. When the module uses memory, alloc's type, each new's type, and the
+// types of the string helpers that are used are added after that scan,
+// in auxiliary-function order.
+func collectTypes(
+	m *ir.Module,
+	mem bool,
+	news [][]ir.ValType,
+	strs strUse,
+) ([]ir.Sig, map[string]int) {
 	var sigs []ir.Sig
 	index := make(map[string]int)
 	add := func(s ir.Sig) {
@@ -171,7 +205,7 @@ func collectTypes(m *ir.Module, mem bool, news [][]ir.ValType) ([]ir.Sig, map[st
 		})
 	}
 	if mem {
-		for _, s := range auxiliarySigs(news) {
+		for _, s := range auxiliarySigs(news, strs) {
 			add(s)
 		}
 	}
@@ -205,12 +239,13 @@ func collectNews(m *ir.Module) [][]ir.ValType {
 	return news
 }
 
-// auxiliarySigs is alloc's signature followed by each new's signature.
+// auxiliarySigs is alloc's signature, followed by each new's signature,
+// followed by the signatures of the string helpers that are used.
 // i32 is represented as ir.Ptr and i64 as ir.Int; sigKey compares wasm
 // value types, so a Bool parameter shares an index with Ptr and a FuncRef
 // parameter shares an index with Int.
-func auxiliarySigs(news [][]ir.ValType) []ir.Sig {
-	out := make([]ir.Sig, 0, 1+len(news))
+func auxiliarySigs(news [][]ir.ValType, strs strUse) []ir.Sig {
+	out := make([]ir.Sig, 0, 1+len(news)+8)
 	out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr}, Result: ir.Ptr})
 	for _, fields := range news {
 		params := make([]ir.ValType, 1+len(fields))
@@ -219,6 +254,30 @@ func auxiliarySigs(news [][]ir.ValType) []ir.Sig {
 			params[i+1] = wasmAsIR(ft)
 		}
 		out = append(out, ir.Sig{Params: params, Result: ir.Ptr})
+	}
+	if strs.alloc() {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr}, Result: ir.Ptr})
+	}
+	if strs.byteAt {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr, ir.Int}, Result: ir.Int})
+	}
+	if strs.slice {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr, ir.Int, ir.Int}, Result: ir.Ptr})
+	}
+	if strs.fromByte {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Ptr})
+	}
+	if strs.compare {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr, ir.Ptr}, Result: ir.Int})
+	}
+	if strs.intToStr {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Ptr})
+	}
+	if strs.concat {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr, ir.Ptr}, Result: ir.Ptr})
+	}
+	if strs.eq {
+		out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr, ir.Ptr}, Result: ir.Bool})
 	}
 	return out
 }
@@ -300,13 +359,17 @@ func walk(e ir.Expr, visit func(ir.Expr)) {
 		for _, field := range e.Fields {
 			walk(field, visit)
 		}
-	case *ir.Field:
+	case *ir.Field, *ir.StrConst:
 	case *ir.SwitchTag:
 		for _, c := range e.Cases {
 			walk(c.Body, visit)
 		}
 		if e.Default != nil {
 			walk(e.Default, visit)
+		}
+	case *ir.Prim:
+		for _, arg := range e.Args {
+			walk(arg, visit)
 		}
 	default:
 		panic(fmt.Sprintf("wasm: unhandled expr %T", e))
@@ -359,11 +422,12 @@ func encodeFunctionSection(
 	types map[string]int,
 	mem bool,
 	news [][]ir.ValType,
+	strs strUse,
 ) []byte {
 	n := len(m.Funcs)
 	var aux []ir.Sig
 	if mem {
-		aux = auxiliarySigs(news)
+		aux = auxiliarySigs(news, strs)
 		n += len(aux)
 	}
 	content := appendUleb128(nil, uint64(n))
@@ -376,20 +440,30 @@ func encodeFunctionSection(
 	return section(secFunction, content)
 }
 
-func encodeMemorySection() []byte {
+func encodeMemorySection(minPages int) []byte {
 	content := appendUleb128(nil, 1)
 	content = append(content, limitsMinMax)
-	content = appendUleb128(content, 1)
+	content = appendUleb128(content, uint64(minPages))
 	content = appendUleb128(content, memoryMaxPages)
 	return section(secMemory, content)
 }
 
-func encodeGlobalSection() []byte {
+func encodeGlobalSection(heap int) []byte {
 	content := appendUleb128(nil, 1)
 	content = append(content, valI32, mutVar, opI32Const)
-	content = appendSleb128(content, heapStart)
+	content = appendSleb128(content, int64(heap))
 	content = append(content, opEnd)
 	return section(secGlobal, content)
+}
+
+func encodeDataSection(data []byte) []byte {
+	content := appendUleb128(nil, 1)
+	content = append(content, 0x00, opI32Const)
+	content = appendSleb128(content, heapStart)
+	content = append(content, opEnd)
+	content = appendUleb128(content, uint64(len(data)))
+	content = append(content, data...)
+	return section(secData, content)
 }
 
 func encodeTableSection(m *ir.Module) []byte {
@@ -421,10 +495,15 @@ func encodeElementSection(m *ir.Module) []byte {
 	return section(secElement, content)
 }
 
-func (e *encoder) encodeCodeSection(m *ir.Module, mem bool, news [][]ir.ValType) []byte {
+func (e *encoder) encodeCodeSection(
+	m *ir.Module,
+	mem bool,
+	news [][]ir.ValType,
+	strs strUse,
+) []byte {
 	n := len(m.Funcs)
 	if mem {
-		n += 1 + len(news)
+		n += 1 + len(news) + strs.count()
 	}
 	content := appendUleb128(nil, uint64(n))
 	for _, fn := range m.Funcs {
@@ -441,6 +520,7 @@ func (e *encoder) encodeCodeSection(m *ir.Module, mem bool, news [][]ir.ValType)
 			content = appendUleb128(content, uint64(len(body)))
 			content = append(content, body...)
 		}
+		content = e.appendStrHelpers(content, strs)
 	}
 	return section(secCode, content)
 }
@@ -674,9 +754,60 @@ func (e *encoder) expr(x ir.Expr) {
 		e.buf = appendUleb128(e.buf, offset)
 	case *ir.SwitchTag:
 		e.switchTag(x, 0)
+	case *ir.StrConst:
+		addr, ok := e.strAddr[x.Value]
+		if !ok {
+			panic("wasm: string literal has no address")
+		}
+		e.buf = append(e.buf, opI32Const)
+		e.buf = appendSleb128(e.buf, int64(addr))
+	case *ir.Prim:
+		e.prim(x)
 	default:
 		panic(fmt.Sprintf("wasm: unhandled expr %T", x))
 	}
+}
+
+func (e *encoder) prim(x *ir.Prim) {
+	if x.Op == ir.StrLength {
+		if len(x.Args) != 1 {
+			panic(fmt.Sprintf("wasm: string.length has %d arguments", len(x.Args)))
+		}
+		e.expr(x.Args[0])
+		e.buf = append(e.buf, opI32Load, alignI32, 0x00, opI64ExtendI32U)
+		return
+	}
+	for _, arg := range x.Args {
+		e.expr(arg)
+	}
+	e.buf = append(e.buf, opCall)
+	e.buf = appendUleb128(e.buf, uint64(e.primFunc(x.Op)))
+}
+
+func (e *encoder) primFunc(op ir.PrimOp) int {
+	idx := -1
+	switch op {
+	case ir.StrByteAt:
+		idx = e.strFn.byteAt
+	case ir.StrSlice:
+		idx = e.strFn.slice
+	case ir.StrFromByte:
+		idx = e.strFn.fromByte
+	case ir.StrCompare:
+		idx = e.strFn.compare
+	case ir.IntToString:
+		idx = e.strFn.intToStr
+	case ir.StrConcat:
+		idx = e.strFn.concat
+	case ir.StrEq:
+		idx = e.strFn.eq
+	default:
+		panic(fmt.Sprintf("wasm: unknown prim %d", int(op)))
+	}
+	if idx < 0 {
+		panic(fmt.Sprintf("wasm: no helper for prim %d", int(op)))
+	}
+	return idx
 }
 
 func (e *encoder) funcValue(x *ir.FuncValue) {

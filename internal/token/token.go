@@ -11,9 +11,10 @@ import (
 type Kind int
 
 const (
-	EOF   Kind = iota
-	Ident      // foo
-	Int        // 123
+	EOF    Kind = iota
+	Ident       // foo
+	Int         // 123
+	String      // string literal; Token.Text holds the decoded bytes
 
 	// Keywords
 	Fn         // fn
@@ -41,19 +42,20 @@ const (
 	RBracket // ]
 
 	// Operators
-	Plus   // +
-	Minus  // -
-	Star   // *
-	Slash  // /
-	Eq     // ==
-	NotEq  // !=
-	Lt     // <
-	LtEq   // <=
-	Gt     // >
-	GtEq   // >=
-	AndAnd // &&
-	OrOr   // ||
-	Bang   // !
+	Plus     // +
+	PlusPlus // ++
+	Minus    // -
+	Star     // *
+	Slash    // /
+	Eq       // ==
+	NotEq    // !=
+	Lt       // <
+	LtEq     // <=
+	Gt       // >
+	GtEq     // >=
+	AndAnd   // &&
+	OrOr     // ||
+	Bang     // !
 )
 
 // String returns the name used in error messages:
@@ -70,6 +72,8 @@ func (k Kind) String() string {
 		return "identifier"
 	case Int:
 		return "integer literal"
+	case String:
+		return "string literal"
 	case Fn:
 		return "'fn'"
 	case Let:
@@ -114,6 +118,8 @@ func (k Kind) String() string {
 		return "']'"
 	case Plus:
 		return "'+'"
+	case PlusPlus:
+		return "'++'"
 	case Minus:
 		return "'-'"
 	case Star:
@@ -157,8 +163,9 @@ var Keywords = map[string]Kind{
 }
 
 // Token is a lexical token. Text is the source spelling, empty for EOF.
+// A string literal's Text is the decoded bytes.
 type Token struct {
 	Kind Kind
-	Text string   // source text; "" for EOF
+	Text string   // source text; decoded bytes for a string literal; "" for EOF
 	Pos  diag.Pos // position of the first character
 }

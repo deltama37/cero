@@ -197,6 +197,65 @@ func TestFormatExpr(t *testing.T) {
 			},
 			want: "(switch.tag 1 (case 0 0) (default 7))",
 		},
+		{name: "empty string", expr: &StrConst{Value: ""}, want: `(str "")`},
+		{name: "string", expr: &StrConst{Value: "ab"}, want: `(str "ab")`},
+		{name: "string escape", expr: &StrConst{Value: "a\n"}, want: `(str "a\n")`},
+		{
+			name: "string length",
+			expr: &Prim{Op: StrLength, Args: []Expr{&StrConst{Value: "ab"}}},
+			want: `(prim string.length (str "ab"))`,
+		},
+		{
+			name: "string byte at",
+			expr: &Prim{Op: StrByteAt, Args: []Expr{&StrConst{Value: "A"}, &IntConst{Value: 0}}},
+			want: `(prim string.byte_at (str "A") 0)`,
+		},
+		{
+			name: "string slice",
+			expr: &Prim{
+				Op: StrSlice,
+				Args: []Expr{
+					&StrConst{Value: "hello"},
+					&IntConst{Value: 1},
+					&IntConst{Value: 4},
+				},
+			},
+			want: `(prim string.slice (str "hello") 1 4)`,
+		},
+		{
+			name: "string from byte",
+			expr: &Prim{Op: StrFromByte, Args: []Expr{&IntConst{Value: 65}}},
+			want: "(prim string.from_byte 65)",
+		},
+		{
+			name: "string compare",
+			expr: &Prim{
+				Op:   StrCompare,
+				Args: []Expr{&StrConst{Value: "a"}, &StrConst{Value: "b"}},
+			},
+			want: `(prim string.compare (str "a") (str "b"))`,
+		},
+		{
+			name: "int to string",
+			expr: &Prim{Op: IntToString, Args: []Expr{&IntConst{Value: -7}}},
+			want: "(prim int.to_string -7)",
+		},
+		{
+			name: "string concat",
+			expr: &Prim{
+				Op:   StrConcat,
+				Args: []Expr{&StrConst{Value: "a"}, &StrConst{Value: "b"}},
+			},
+			want: `(prim string.concat (str "a") (str "b"))`,
+		},
+		{
+			name: "string eq",
+			expr: &Prim{
+				Op:   StrEq,
+				Args: []Expr{&LocalGet{Local: 0, T: Ptr}, &StrConst{Value: "hi"}},
+			},
+			want: `(prim string.eq (local 0) (str "hi"))`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -397,6 +456,15 @@ func TestType(t *testing.T) {
 		{name: "construct", expr: &Construct{Tag: 1}, want: Ptr},
 		{name: "field", expr: &Field{Local: 0, Index: 1, T: Int}, want: Int},
 		{name: "switch tag", expr: &SwitchTag{T: Bool}, want: Bool},
+		{name: "string const", expr: &StrConst{Value: "a"}, want: Ptr},
+		{name: "string length", expr: &Prim{Op: StrLength}, want: Int},
+		{name: "string byte at", expr: &Prim{Op: StrByteAt}, want: Int},
+		{name: "string slice", expr: &Prim{Op: StrSlice}, want: Ptr},
+		{name: "string from byte", expr: &Prim{Op: StrFromByte}, want: Ptr},
+		{name: "string compare", expr: &Prim{Op: StrCompare}, want: Int},
+		{name: "int to string", expr: &Prim{Op: IntToString}, want: Ptr},
+		{name: "string concat", expr: &Prim{Op: StrConcat}, want: Ptr},
+		{name: "string eq", expr: &Prim{Op: StrEq}, want: Bool},
 	}
 
 	for _, tt := range tests {

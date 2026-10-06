@@ -100,6 +100,12 @@ func TestParseExpr(t *testing.T) {
 			src:  "{\nlet value =\n if c {\n 10 } else { 20 }\nvalue\n}",
 			want: "(block (let value (if c (block 10) (block 20))) value)",
 		},
+		{name: "string literal", src: `"hi"`, want: `"hi"`},
+		{name: "string literal escape", src: `"a\n"`, want: `"a\n"`},
+		{name: "string concat left assoc", src: `"a" ++ "b" ++ c`, want: `(++ (++ "a" "b") c)`},
+		{name: "plus and concat", src: `a + b ++ c`, want: `(++ (+ a b) c)`},
+		{name: "string pattern", src: `match s { "fn" => 1, _ => 0 }`, want: `(match s (=> "fn" 1) (=> _ 0))`},
+		{name: "nested string pattern", src: `match x { Cons("a\n", _) => 1 }`, want: `(match x (=> (Cons "a\n" _) 1))`},
 		{name: "leading zeros", src: "007", want: "7"},
 		{name: "max int64", src: "9223372036854775807", want: "9223372036854775807"},
 		{

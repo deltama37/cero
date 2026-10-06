@@ -106,9 +106,98 @@ func (l *lexer) scan() (token.Token, error) {
 		return l.scanIdent(start), nil
 	case isDigit(r):
 		return l.scanNumber(start)
+	case r == '"':
+		return l.scanString(start)
 	default:
 		return l.scanSymbol(start)
 	}
+}
+
+func (l *lexer) scanString(start diag.Pos) (token.Token, error) {
+	l.advance()
+	var buf []byte
+	for {
+		if l.done() {
+			return token.Token{}, diag.Errorf(start, "unterminated string literal")
+		}
+		r := l.peek()
+		if r == '"' {
+			l.advance()
+			return token.Token{Kind: token.String, Text: string(buf), Pos: start}, nil
+		}
+		if r == '\n' {
+			return token.Token{}, diag.Errorf(start, "newline in string literal")
+		}
+		if r == '\\' {
+			escPos := diag.Pos{Line: l.line, Col: l.col}
+			l.advance()
+			if l.done() {
+				return token.Token{}, diag.Errorf(start, "unterminated string literal")
+			}
+			if l.peek() == '\n' {
+				return token.Token{}, diag.Errorf(start, "newline in string literal")
+			}
+			b, err := l.scanEscape(escPos)
+			if err != nil {
+				return token.Token{}, err
+			}
+			buf = append(buf, b)
+			continue
+		}
+		begin := l.i
+		l.advance()
+		buf = append(buf, l.src[begin:l.i]...)
+	}
+}
+
+func (l *lexer) scanEscape(escPos diag.Pos) (byte, error) {
+	switch l.peek() {
+	case 'n':
+		l.advance()
+		return '\n', nil
+	case 't':
+		l.advance()
+		return '\t', nil
+	case 'r':
+		l.advance()
+		return '\r', nil
+	case '\\':
+		l.advance()
+		return '\\', nil
+	case '"':
+		l.advance()
+		return '"', nil
+	case '0':
+		l.advance()
+		return 0, nil
+	case 'x':
+		l.advance()
+		hi, ok := l.readHex()
+		if !ok {
+			return 0, diag.Errorf(escPos, "invalid escape sequence '\\x'")
+		}
+		lo, ok := l.readHex()
+		if !ok {
+			return 0, diag.Errorf(escPos, "invalid escape sequence '\\x'")
+		}
+		return hi<<4 | lo, nil
+	default:
+		r := l.peek()
+		l.advance()
+		return 0, diag.Errorf(escPos, "invalid escape sequence '\\%c'", r)
+	}
+}
+
+func (l *lexer) readHex() (byte, bool) {
+	if l.done() {
+		return 0, false
+	}
+	v, ok := hexValue(l.peek())
+	if !ok {
+		return 0, false
+	}
+	l.advance()
+	return v, true
 }
 
 func (l *lexer) scanIdent(start diag.Pos) token.Token {
@@ -177,6 +266,8 @@ func matchTwo(r, next rune) (token.Kind, string, bool) {
 		return token.AndAnd, "&&", true
 	case r == '|' && next == '|':
 		return token.OrOr, "||", true
+	case r == '+' && next == '+':
+		return token.PlusPlus, "++", true
 	default:
 		return 0, "", false
 	}
@@ -233,4 +324,17 @@ func isIdentPart(r rune) bool {
 
 func isDigit(r rune) bool {
 	return r >= '0' && r <= '9'
+}
+
+func hexValue(r rune) (byte, bool) {
+	switch {
+	case r >= '0' && r <= '9':
+		return byte(r - '0'), true
+	case r >= 'a' && r <= 'f':
+		return byte(r-'a') + 10, true
+	case r >= 'A' && r <= 'F':
+		return byte(r-'A') + 10, true
+	default:
+		return 0, false
+	}
 }

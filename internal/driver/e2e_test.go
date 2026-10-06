@@ -1138,6 +1138,152 @@ fn main() -> Int {
 `,
 			want: "13",
 		},
+		{
+			name: "strings example",
+			file: "examples/strings.cero",
+			want: "42",
+		},
+		{
+			name: "string concatenation length",
+			src:  "fn main() -> Int { stringLength(\"hello\" ++ \", \" ++ \"world\") }\n",
+			want: "12",
+		},
+		{
+			name: "string byte at",
+			src:  "fn main() -> Int { stringByteAt(\"A\", 0) }\n",
+			want: "65",
+		},
+		{
+			name: "string escapes",
+			src:  "fn main() -> Int { stringLength(\"a\\n\\t\\\\\\\"\\0\\x41\") }\n",
+			want: "7",
+		},
+		{
+			name: "utf-8 byte length",
+			src:  "fn main() -> Int { stringLength(\"é\") }\n",
+			want: "2",
+		},
+		{
+			name: "string slice",
+			src: `fn main() -> Int {
+    if stringSlice("hello", 1, 4) == "ell" { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "string compare",
+			src: `fn main() -> Int {
+    let ab = stringCompare("a", "b")
+    let ba = stringCompare("b", "a")
+    let eq = stringCompare("ab", "ab")
+    let pre = stringCompare("a", "ab")
+    ab + 1 + (ba + 1) * 2 + (eq + 1) * 4 + (pre + 1) * 8
+}
+`,
+			want: "8",
+		},
+		{
+			name: "int to string",
+			src: `fn bit(b: Bool, n: Int) -> Int {
+    if b { n } else { 0 }
+}
+
+fn main() -> Int {
+    let z = intToString(0)
+    let p = intToString(42)
+    let n = intToString(-7)
+    let m = intToString(-9223372036854775807 - 1)
+    bit(z == "0", 1) + bit(stringLength(z) == 1, 2) + bit(p == "42", 4) + bit(stringLength(p) == 2, 8) + bit(n == "-7", 16) + bit(stringLength(n) == 2, 32) + bit(m == "-9223372036854775808", 64) + bit(stringLength(m) == 20, 128)
+}
+`,
+			want: "255",
+		},
+		{
+			name: "string from byte",
+			src: `fn main() -> Int {
+    if stringFromByte(104) ++ "i" == "hi" { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "empty string",
+			src: `fn main() -> Int {
+    let e = ""
+    if e == "" && stringLength(e) == 0 && e ++ "a" == "a" && "b" ++ e == "b" { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "empty slice",
+			src: `fn main() -> Int {
+    if stringSlice("hello", 2, 2) == "" && stringSlice("hello", 0, 0) == "" && stringSlice("", 0, 0) == "" && stringLength(stringSlice("ab", 1, 1)) == 0 { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "byte boundaries",
+			src: `fn main() -> Int {
+    let hi = stringFromByte(255)
+    let z = stringFromByte(0)
+    if stringLength(hi) == 1 && stringByteAt(hi, 0) == 255 && stringLength(z) == 1 && stringByteAt(z, 0) == 0 { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "string match",
+			src: `fn classify(w: String) -> Int {
+    match w {
+        "fn" => 1,
+        "let" => 2,
+        "match" => 3,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    classify("fn") * 100 + classify("let") * 10 + classify("nope")
+}
+`,
+			want: "120",
+		},
+		{
+			name: "built-in passed as a value",
+			src: `fn apply(f: String -> Int, s: String) -> Int {
+    f(s)
+}
+
+fn main() -> Int {
+    apply(stringLength, "abc")
+}
+`,
+			want: "3",
+		},
+		{
+			name: "ten thousand concatenations",
+			src: `fn grow(n: Int, acc: String) -> String {
+    if n == 0 {
+        acc
+    } else {
+        grow(n - 1, acc ++ "x")
+    }
+}
+
+fn main() -> Int {
+    stringLength(grow(10000, ""))
+}
+`,
+			want: "10000",
+		},
+		{
+			name: "literal longer than 64KiB",
+			src:  "fn main() -> Int { stringLength(\"" + strings.Repeat("a", 70000) + "\") }\n",
+			want: "70000",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1173,6 +1319,60 @@ fn main() -> Int {
 			}
 			if got := strings.TrimSpace(string(out)); got != tt.want {
 				t.Errorf("stdout = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestE2ERuntimeTrap(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("wasmtime"); err != nil {
+		t.Skip("wasmtime not found")
+	}
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "stringByteAt out of range",
+			src:  "fn main() -> Int { stringByteAt(\"A\", 1) }\n",
+		},
+		{
+			name: "stringByteAt on an empty string",
+			src:  "fn main() -> Int { stringByteAt(\"\", 0) }\n",
+		},
+		{
+			name: "stringFromByte above 255",
+			src:  "fn main() -> Int { stringLength(stringFromByte(256)) }\n",
+		},
+		{
+			name: "stringSlice end past the length",
+			src:  "fn main() -> Int { stringLength(stringSlice(\"ab\", 0, 3)) }\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wasm, err := Compile("main.cero", []byte(tt.src))
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+			path := filepath.Join(t.TempDir(), "main.wasm")
+			if err := os.WriteFile(path, wasm, 0o644); err != nil {
+				t.Fatalf("write wasm: %v", err)
+			}
+			cmd := exec.Command("wasmtime", "run", "--invoke", "main", path)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("wasmtime succeeded, stdout = %q", out)
+			}
+			exit, ok := err.(*exec.ExitError)
+			if !ok || exit.ExitCode() == 0 {
+				t.Fatalf("wasmtime error = %v, output = %q", err, out)
 			}
 		})
 	}

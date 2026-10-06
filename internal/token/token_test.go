@@ -13,6 +13,7 @@ func TestKindString(t *testing.T) {
 		{name: "EOF", kind: EOF, want: "end of file"},
 		{name: "Ident", kind: Ident, want: "identifier"},
 		{name: "Int", kind: Int, want: "integer literal"},
+		{name: "String", kind: String, want: "string literal"},
 		{name: "Fn", kind: Fn, want: "'fn'"},
 		{name: "Type", kind: Type, want: "'type'"},
 		{name: "Match", kind: Match, want: "'match'"},
@@ -23,6 +24,7 @@ func TestKindString(t *testing.T) {
 		{name: "LBracket", kind: LBracket, want: "'['"},
 		{name: "RBracket", kind: RBracket, want: "']'"},
 		{name: "AndAnd", kind: AndAnd, want: "'&&'"},
+		{name: "PlusPlus", kind: PlusPlus, want: "'++'"},
 	}
 
 	for _, tt := range tests {

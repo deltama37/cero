@@ -397,7 +397,7 @@ func (p *parser) parseRel() (ast.Expr, error) {
 }
 
 func (p *parser) parseAdd() (ast.Expr, error) {
-	return p.parseLeft(p.parseMul, token.Plus, token.Minus)
+	return p.parseLeft(p.parseMul, token.Plus, token.Minus, token.PlusPlus)
 }
 
 func (p *parser) parseMul() (ast.Expr, error) {
@@ -498,6 +498,10 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 			return nil, diag.Errorf(tok.Pos, "integer literal out of range: %s", tok.Text)
 		}
 		return &ast.IntLit{Pos: tok.Pos, Value: value}, nil
+	case token.String:
+		tok := p.cur()
+		p.advance()
+		return &ast.StringLit{Pos: tok.Pos, Value: tok.Text}, nil
 	case token.True:
 		pos := p.cur().Pos
 		p.advance()
@@ -743,6 +747,10 @@ func (p *parser) parsePattern() (ast.Pattern, error) {
 			return nil, diag.Errorf(tok.Pos, "integer literal out of range: %s", tok.Text)
 		}
 		return &ast.IntPat{Pos: tok.Pos, Value: value}, nil
+	case token.String:
+		tok := p.cur()
+		p.advance()
+		return &ast.StrPat{Pos: tok.Pos, Value: tok.Text}, nil
 	case token.True:
 		pos := p.cur().Pos
 		p.advance()
