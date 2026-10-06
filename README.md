@@ -90,6 +90,18 @@ with design documents in [`docs/design/`](docs/design/):
   `mapIO`, `println`, `eprintln`, `forEach`, `args` and `unit`
   ([ADR-0012](docs/adr/0012-v0.10-io.md);
   `examples/io/hello.cero`, `examples/io/cat.cero`, `examples/io/wc.cero`)
+* v0.11: small conveniences for writing a compiler. `%` is integer
+  remainder (the sign follows the dividend; a zero divisor traps). A
+  character literal such as `'a'` or `'\n'` is the `Int` of that one
+  byte. `bitAnd`, `bitOr`, `bitXor`, `shiftLeft`, `shiftRight` and
+  `shiftRightUnsigned` are the 64-bit bit operations. `let! x = e` is
+  sugar for `bind(e, fn(x) { ... })`, and a module may declare its own
+  `bind`. A top-level declaration or an import hides a built-in of the
+  same name. `let Pair(a, b) = e` is sugar for a one-arm `match`, and
+  the pattern must be exhaustive. A parameter may be named `_`, more
+  than once
+  ([ADR-0013](docs/adr/0013-v0.11-conveniences-for-writing-a-compiler.md);
+  `examples/conveniences.cero`)
 
 `ceroc fmt` is not implemented yet.
 
