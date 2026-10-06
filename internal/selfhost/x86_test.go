@@ -175,40 +175,29 @@ func TestX86Diff(t *testing.T) {
 	skipNoX86(t)
 
 	root := repoRoot(t)
-	var run, deferred []string
-	for _, file := range x86Corpus(t, root) {
-		ok, err := x86Unit1(root, file)
-		if err != nil {
-			t.Fatalf("lower %s: %v", file, err)
-		}
-		if ok {
-			run = append(run, file)
-		} else {
-			deferred = append(deferred, file)
-		}
-	}
-	t.Logf("x86 unit1 %d deferred %d", len(run), len(deferred))
+	files := x86Corpus(t, root)
+	t.Logf("x86 diff %d", len(files))
 	for _, must := range x86Must {
 		found := false
-		for _, file := range run {
+		for _, file := range files {
 			if file == must {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("required program %s is not in the unit 1 set", must)
+			t.Errorf("required program %s is not in the corpus", must)
 		}
 	}
-	if len(run) == 0 {
-		t.Fatal("no unit 1 programs")
+	if len(files) == 0 {
+		t.Fatal("no programs")
 	}
 
 	outDir := filepath.Join(root, "internal/selfhost/testdata/.out/x86")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	for _, file := range run {
+	for _, file := range files {
 		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 			x86DiffOne(t, root, outDir, file)
@@ -216,30 +205,76 @@ func TestX86Diff(t *testing.T) {
 	}
 }
 
+func TestX86IO(t *testing.T) {
+	t.Parallel()
+	skipNoX86(t)
+
+	root := repoRoot(t)
+	outDir := filepath.Join(root, "internal/selfhost/testdata/.out/x86")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	tests := []struct {
+		name  string
+		file  string
+		stdin string
+		args  []string
+		files map[string]string
+	}{
+		{name: "hello", file: "examples/io/hello.cero"},
+		{name: "wc", file: "examples/io/wc.cero", stdin: "a\nb c\n"},
+		{
+			name:  "cat-two",
+			file:  "examples/io/cat.cero",
+			args:  []string{"a.txt", "b.txt"},
+			files: map[string]string{"a.txt": "hello\n", "b.txt": "world\n"},
+		},
+		{
+			name: "cat-missing",
+			file: "examples/io/cat.cero",
+			args: []string{"missing.txt"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			x86DiffIO(t, root, outDir, tt.name, tt.file, tt.stdin, tt.args, tt.files)
+		})
+	}
+}
+
 func x86DiffOne(t *testing.T, root, outDir, file string) {
 	t.Helper()
 
-	wantOut, wantCode, wantStop := x86WasmMain(t, root, file)
-	name := strings.ReplaceAll(file, "/", "_")
-	rel := filepath.Join("internal/selfhost/testdata/.out/x86", name)
-	stdout, stderr, code := runCero(t, root, "build", "--target", "x86_64-linux", file, "-o", rel)
-	if code != 0 {
-		t.Fatalf("build exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	mod, err := x86Lower(root, file)
+	if err != nil {
+		t.Fatalf("lower %s: %v", file, err)
 	}
-	bin := filepath.Join(outDir, name)
-	if err := os.Chmod(bin, 0o755); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	gotOut, gotCode, gotStop := x86Run(t, bin)
-	if wantStop || gotStop {
-		if wantStop && gotStop {
-			return
+	dir := t.TempDir()
+	x86Compare(t, root, outDir, strings.ReplaceAll(file, "/", "_"), file, mod.Command, dir, "", nil)
+}
+
+func x86DiffIO(
+	t *testing.T,
+	root string,
+	outDir string,
+	name string,
+	file string,
+	stdin string,
+	args []string,
+	files map[string]string,
+) {
+	t.Helper()
+
+	dir := t.TempDir()
+	for fname, body := range files {
+		path := filepath.Join(dir, fname)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", fname, err)
 		}
-		t.Fatalf("timeout native %v wasm %v", gotStop, wantStop)
 	}
-	if gotCode != wantCode || gotOut != wantOut {
-		t.Fatalf("stdout %q exit %d, want stdout %q exit %d", gotOut, gotCode, wantOut, wantCode)
-	}
+	binName := strings.ReplaceAll(file, "/", "_") + "_" + name
+	x86Compare(t, root, outDir, binName, file, true, dir, stdin, args)
 }
 
 func x86Corpus(t *testing.T, root string) []string {
@@ -251,26 +286,6 @@ func x86Corpus(t *testing.T, root string) []string {
 	files = append(files, checkOKFiles(t, root)...)
 	files = append(files, relGlob(t, root, "internal/selfhost/testdata/programs/*.cero")...)
 	return files
-}
-
-func x86Unit1(root, file string) (bool, error) {
-	mod, err := x86Lower(root, file)
-	if err != nil {
-		return false, err
-	}
-	if mod.Command {
-		return false, nil
-	}
-	fn := mod.Funcs[mod.Main]
-	if len(fn.Sig.Params) != 0 || fn.Sig.Result != ir.Int {
-		return false, nil
-	}
-	for _, f := range mod.Funcs {
-		if x86BadPrim(f.Body) {
-			return false, nil
-		}
-	}
-	return true, nil
 }
 
 func x86Lower(root, file string) (*ir.Module, error) {
@@ -295,84 +310,74 @@ func x86Lower(root, file string) (*ir.Module, error) {
 	return lower.LowerProgram(mods, info), nil
 }
 
-func x86InlinePrim(op ir.PrimOp) bool {
-	switch op {
-	case ir.StrLength, ir.BitAnd, ir.BitOr, ir.BitXor, ir.ShiftLeft, ir.ShiftRight, ir.ShiftRightUnsigned:
+func x86Compare(
+	t *testing.T,
+	root string,
+	outDir string,
+	binName string,
+	file string,
+	command bool,
+	dir string,
+	stdin string,
+	args []string,
+) {
+	t.Helper()
+
+	want := x86Wasm(t, root, file, command, dir, stdin, args)
+	rel := filepath.Join("internal/selfhost/testdata/.out/x86", binName)
+	stdout, stderr, code := runCero(t, root, "build", "--target", "x86_64-linux", file, "-o", rel)
+	if code != 0 {
+		t.Fatalf("build exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	bin := filepath.Join(outDir, binName)
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	got := x86Exec(t, bin, dir, stdin, args)
+	if want.stopped || got.stopped {
+		if want.stopped && got.stopped {
+			return
+		}
+		t.Fatalf("timeout native %v wasm %v", got.stopped, want.stopped)
+	}
+	if got.code != want.code || got.out != want.out || !x86ErrOK(command, got.code, got.err, want.err) {
+		t.Fatalf("stdout %q stderr %q exit %d, want stdout %q stderr %q exit %d", got.out, got.err, got.code, want.out, want.err, want.code)
+	}
+}
+
+func x86ErrOK(
+	command bool,
+	code int,
+	got string,
+	want string,
+) bool {
+	if !command || got == want {
 		return true
-	default:
+	}
+	const trapLine = "error: runtime trap\n"
+	if code != 134 || !strings.HasSuffix(got, trapLine) {
 		return false
 	}
+	rest := strings.TrimSuffix(got, trapLine)
+	return strings.HasPrefix(want, rest) && want != rest
 }
 
-func x86BadPrim(e ir.Expr) bool {
-	if e == nil {
-		return false
-	}
-	switch e := e.(type) {
-	case *ir.IntConst, *ir.BoolConst, *ir.StrConst, *ir.LocalGet, *ir.Field:
-		return false
-	case *ir.FuncValue:
-		return e.Env != nil && x86BadPrim(e.Env)
-	case *ir.Unary:
-		return x86BadPrim(e.X)
-	case *ir.Binary:
-		return x86BadPrim(e.X) || x86BadPrim(e.Y)
-	case *ir.If:
-		return x86BadPrim(e.Cond) || x86BadPrim(e.Then) || x86BadPrim(e.Else)
-	case *ir.Block:
-		for _, let := range e.Lets {
-			if x86BadPrim(let.Value) {
-				return true
-			}
-		}
-		return x86BadPrim(e.Result)
-	case *ir.Call:
-		for _, arg := range e.Args {
-			if x86BadPrim(arg) {
-				return true
-			}
-		}
-		return false
-	case *ir.CallIndirect:
-		if x86BadPrim(e.Callee) {
-			return true
-		}
-		for _, arg := range e.Args {
-			if x86BadPrim(arg) {
-				return true
-			}
-		}
-		return false
-	case *ir.Construct:
-		for _, field := range e.Fields {
-			if x86BadPrim(field) {
-				return true
-			}
-		}
-		return false
-	case *ir.SwitchTag:
-		for _, c := range e.Cases {
-			if x86BadPrim(c.Body) {
-				return true
-			}
-		}
-		return e.Default != nil && x86BadPrim(e.Default)
-	case *ir.Prim:
-		if !x86InlinePrim(e.Op) {
-			return true
-		}
-		for _, arg := range e.Args {
-			if x86BadPrim(arg) {
-				return true
-			}
-		}
-		return false
-	default:
-		panic(fmt.Sprintf("x86: unhandled expr %T", e))
-	}
+type x86Result struct {
+	out     string
+	err     string
+	code    int
+	stopped bool
 }
 
-func x86WasmMain(t *testing.T, root, file string) (string, int, bool) {
+func x86Wasm(
+	t *testing.T,
+	root string,
+	file string,
+	command bool,
+	dir string,
+	stdin string,
+	args []string,
+) x86Result {
 	t.Helper()
 
 	src, err := os.ReadFile(filepath.Join(root, file))
@@ -393,31 +398,45 @@ func x86WasmMain(t *testing.T, root, file string) (string, int, bool) {
 	if err := os.WriteFile(path, out.Wasm, 0o644); err != nil {
 		t.Fatalf("write wasm: %v", err)
 	}
-	return x86Run(t, "wasmtime", "run", "--invoke", "main", path)
+	if command {
+		cmd := append([]string{"run", "--dir=.", path}, args...)
+		return x86Exec(t, "wasmtime", dir, stdin, cmd)
+	}
+	return x86Exec(t, "wasmtime", "", "", []string{"run", "--invoke", "main", path})
 }
 
-func x86Run(t *testing.T, name string, args ...string) (string, int, bool) {
+func x86Exec(
+	t *testing.T,
+	name string,
+	dir string,
+	stdin string,
+	args []string,
+) x86Result {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err == nil {
-		return stdout.String(), 0, false
+		return x86Result{out: stdout.String(), err: stderr.String()}
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", 0, true
+		return x86Result{stopped: true}
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return stdout.String(), exitErr.ExitCode(), false
+		return x86Result{out: stdout.String(), err: stderr.String(), code: exitErr.ExitCode()}
 	}
 	t.Fatalf("run %s: %v\nstderr:\n%s", name, err, stderr.String())
-	return "", 1, false
+	return x86Result{code: 1}
 }
 
 var x86Must = []string{
