@@ -2,6 +2,8 @@
 package typecheck
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/deltama37/cero/internal/ast"
@@ -30,7 +32,8 @@ type Symbol struct {
 	Decl *ast.FuncDecl // set only for SymFunc
 	Ctor *types.Ctor   // set only for SymCtor
 	// TypeParams are the type parameters Type is generic over: the function's
-	// own for a generic SymFunc, Ctor.Data.Params for a SymCtor, and nil
+	// own for a generic SymFunc, Ctor.Data.Params for a SymCtor, the ones
+	// created by generalization for a generalized let (SymLocal), and nil
 	// otherwise.
 	TypeParams []*types.TypeParam
 }
@@ -46,8 +49,8 @@ type Info struct {
 	Datas    map[*ast.TypeDecl]*types.Data // every type declaration
 	CtorPats map[*ast.CtorPat]*types.Ctor  // constructor of every constructor pattern
 	PatVars  map[*ast.VarPat]*Symbol       // symbol declared by every variable pattern
-	// TypeArgs holds, for every Ident whose symbol has TypeParams, the type
-	// arguments of that use in TypeParams order.
+	// TypeArgs holds, for every Ident whose symbol has TypeParams (including
+	// a generalized let), the type arguments of that use in TypeParams order.
 	TypeArgs map[*ast.Ident][]types.Type
 }
 
@@ -168,6 +171,7 @@ func Check(file *ast.File) (*Info, error) {
 	for i, d := range file.Funcs {
 		c.tparams = scopeOf(c.info.Funcs[d].TypeParams)
 		c.metas = nil
+		c.fresh = 0
 		ctx := &funcCtx{}
 		if err := c.checkFunc(ctx, d.Params, sigs[i], d.Body); err != nil {
 			return nil, err
@@ -200,14 +204,15 @@ type checker struct {
 	ctors   map[string]*types.Ctor
 	tparams map[string]*types.TypeParam // type parameters in scope; nil outside generic declarations
 	metas   []*pendingMeta              // created while checking the current top-level function, in creation order
+	fresh   int                         // number of t1, t2, ... names used in the current top-level function
 }
 
 // pendingMeta remembers where a unification variable was created so that an
 // unsolved one can be reported.
 type pendingMeta struct {
-	meta  *types.Meta
-	owner string   // name of the instantiated function or constructor
-	pos   diag.Pos // position of the instantiating Ident
+	meta *types.Meta
+	pos  diag.Pos
+	msg  string // the error message reported when meta is still unsolved
 }
 
 // scopeOf returns a name-to-parameter map, or nil when ps is empty.
@@ -350,6 +355,14 @@ func (c *checker) checkFunc(
 		c.info.Params[p] = sym
 		ctx.scope.names[p.Name] = sym
 	}
+	if sig.Result == nil {
+		t, err := c.infer(ctx, body)
+		if err != nil {
+			return err
+		}
+		sig.Result = t
+		return nil
+	}
 	return c.expect(ctx, body, sig.Result)
 }
 
@@ -451,6 +464,20 @@ func (c *checker) inferIdent(ctx *funcCtx, e *ast.Ident) (types.Type, *diag.Erro
 	return c.instantiate(sym, e), nil
 }
 
+// newMeta creates a unification variable named name and remembers it so
+// that checkSolved can report msg at pos if it stays unsolved.
+func (c *checker) newMeta(name string, pos diag.Pos, msg string) *types.Meta {
+	m := &types.Meta{Name: name}
+	c.metas = append(c.metas, &pendingMeta{meta: m, pos: pos, msg: msg})
+	return m
+}
+
+// freshName returns the next of "t1", "t2", ... for the current top-level function.
+func (c *checker) freshName() string {
+	c.fresh++
+	return "t" + strconv.Itoa(c.fresh)
+}
+
 // instantiate returns sym.Type with sym.TypeParams replaced by fresh metas
 // and records the metas in Info.TypeArgs[id]. For a symbol without type
 // parameters it returns sym.Type and records nothing.
@@ -460,9 +487,8 @@ func (c *checker) instantiate(sym *Symbol, id *ast.Ident) types.Type {
 	}
 	args := make([]types.Type, len(sym.TypeParams))
 	for i, tp := range sym.TypeParams {
-		m := &types.Meta{Name: tp.Name}
-		c.metas = append(c.metas, &pendingMeta{meta: m, owner: sym.Name, pos: id.Pos})
-		args[i] = m
+		msg := fmt.Sprintf("cannot infer type argument '%s' of '%s'; add a type annotation", tp.Name, sym.Name)
+		args[i] = c.newMeta(tp.Name, id.Pos, msg)
 	}
 	c.info.TypeArgs[id] = args
 	return types.Subst(sym.Type, sym.TypeParams, args)
@@ -508,6 +534,15 @@ func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *dia
 		if err != nil {
 			return nil, err
 		}
+		if _, ok := types.Prune(t).(*types.Meta); ok {
+			if err := c.expect(ctx, e.Y, t); err != nil {
+				return nil, err
+			}
+			if !types.Equal(t, types.Int) && !types.Equal(t, types.Bool) {
+				return nil, diag.Errorf(resultPos(e.X), "cannot compare values of type %s", t)
+			}
+			return types.Bool, nil
+		}
 		if !types.Equal(t, types.Int) && !types.Equal(t, types.Bool) {
 			return nil, diag.Errorf(resultPos(e.X), "cannot compare values of type %s", t)
 		}
@@ -538,19 +573,35 @@ func (c *checker) inferCall(ctx *funcCtx, e *ast.CallExpr) (types.Type, *diag.Er
 	if err != nil {
 		return nil, err
 	}
-	sig, ok := types.Prune(ft).(*types.Func)
-	if !ok {
+	switch callee := types.Prune(ft).(type) {
+	case *types.Func:
+		if len(e.Args) != len(callee.Params) {
+			return nil, diag.Errorf(e.LParen, "wrong number of arguments: expected %d, found %d", len(callee.Params), len(e.Args))
+		}
+		for i, arg := range e.Args {
+			if err := c.expect(ctx, arg, callee.Params[i]); err != nil {
+				return nil, err
+			}
+		}
+		return callee.Result, nil
+	case *types.Meta:
+		argTypes := make([]types.Type, len(e.Args))
+		for i, arg := range e.Args {
+			at, err := c.infer(ctx, arg)
+			if err != nil {
+				return nil, err
+			}
+			argTypes[i] = at
+		}
+		res := c.newMeta(c.freshName(), e.LParen, "cannot infer the result type of this call; add a type annotation")
+		want := &types.Func{Params: argTypes, Result: res}
+		if !unify(want, callee) {
+			return nil, diag.Errorf(resultPos(e.Fn), "expected %s, found %s", want, ft)
+		}
+		return res, nil
+	default:
 		return nil, diag.Errorf(resultPos(e.Fn), "cannot call non-function value of type %s", ft)
 	}
-	if len(e.Args) != len(sig.Params) {
-		return nil, diag.Errorf(e.LParen, "wrong number of arguments: expected %d, found %d", len(sig.Params), len(e.Args))
-	}
-	for i, arg := range e.Args {
-		if err := c.expect(ctx, arg, sig.Params[i]); err != nil {
-			return nil, err
-		}
-	}
-	return sig.Result, nil
 }
 
 func (c *checker) inferIf(ctx *funcCtx, e *ast.IfExpr) (types.Type, *diag.Error) {
@@ -596,11 +647,16 @@ func (c *checker) inferBlock(ctx *funcCtx, e *ast.BlockExpr) (types.Type, *diag.
 		if err := c.checkBindable(l.Name, l.NamePos); err != nil {
 			return nil, err
 		}
+		var tps []*types.TypeParam
+		if generalizable(l.Value) {
+			t, tps = c.generalize(ctx, t)
+		}
 		sym := &Symbol{
-			Kind: SymLocal,
-			Name: l.Name,
-			Type: t,
-			Pos:  l.NamePos,
+			Kind:       SymLocal,
+			Name:       l.Name,
+			Type:       t,
+			Pos:        l.NamePos,
+			TypeParams: tps,
 		}
 		c.info.Defs[l] = sym
 		ctx.scope.names[l.Name] = sym
@@ -609,9 +665,25 @@ func (c *checker) inferBlock(ctx *funcCtx, e *ast.BlockExpr) (types.Type, *diag.
 }
 
 func (c *checker) inferFuncLit(ctx *funcCtx, e *ast.FuncLit) (types.Type, *diag.Error) {
-	sig, err := c.resolveFuncType(e.Params, e.Result)
-	if err != nil {
-		return nil, err
+	sig := &types.Func{Params: make([]types.Type, len(e.Params))}
+	for i, p := range e.Params {
+		if p.Type == nil {
+			msg := fmt.Sprintf("cannot infer the type of parameter '%s'; add a type annotation", p.Name)
+			sig.Params[i] = c.newMeta(c.freshName(), p.Pos, msg)
+			continue
+		}
+		pt, err := c.resolveType(p.Type)
+		if err != nil {
+			return nil, err
+		}
+		sig.Params[i] = pt
+	}
+	if e.Result != nil {
+		rt, err := c.resolveType(e.Result)
+		if err != nil {
+			return nil, err
+		}
+		sig.Result = rt
 	}
 	c.info.FuncLits[e] = sig
 	child := &funcCtx{parent: ctx}
@@ -619,6 +691,51 @@ func (c *checker) inferFuncLit(ctx *funcCtx, e *ast.FuncLit) (types.Type, *diag.
 		return nil, err
 	}
 	return sig, nil
+}
+
+// generalizable reports whether a let whose value is e may be generalized:
+// e is an anonymous function or a name (ADR-0006).
+func generalizable(e ast.Expr) bool {
+	switch e.(type) {
+	case *ast.FuncLit, *ast.Ident:
+		return true
+	default:
+		return false
+	}
+}
+
+// generalize turns the unsolved metas of t that do not occur in the type of
+// any local symbol in scope into new type parameters, by solving each such
+// meta to its type parameter. It returns t resolved and the type parameters
+// in order of first occurrence in t, or (t, nil) when there are none.
+func (c *checker) generalize(ctx *funcCtx, t types.Type) (types.Type, []*types.TypeParam) {
+	cand := types.Metas(t)
+	if len(cand) == 0 {
+		return t, nil
+	}
+	inEnv := make(map[*types.Meta]bool)
+	for f := ctx; f != nil; f = f.parent {
+		for s := f.scope; s != nil; s = s.parent {
+			for _, sym := range s.names {
+				for _, m := range types.Metas(sym.Type) {
+					inEnv[m] = true
+				}
+			}
+		}
+	}
+	var tps []*types.TypeParam
+	for _, m := range cand {
+		if inEnv[m] {
+			continue
+		}
+		tp := &types.TypeParam{Name: m.Name}
+		m.Solution = tp
+		tps = append(tps, tp)
+	}
+	if len(tps) == 0 {
+		return t, nil
+	}
+	return types.Resolve(t), tps
 }
 
 func ctorType(ctor *types.Ctor) types.Type {
@@ -664,6 +781,11 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 	if err != nil {
 		return nil, err
 	}
+	if mv, ok := types.Prune(st).(*types.Meta); ok {
+		if err := c.inferScrutinee(mv, m.Arms); err != nil {
+			return nil, err
+		}
+	}
 	switch types.Prune(st).(type) {
 	case *types.Func:
 		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot match on values of type %s", st)
@@ -693,6 +815,35 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 		return nil, diag.Errorf(m.Pos, "non-exhaustive match: %s", missing)
 	}
 	return result, nil
+}
+
+// inferScrutinee solves mv, the unsolved type of a matched value, from the
+// first arm whose pattern is a constructor, integer or boolean pattern. It
+// leaves mv unsolved when every pattern is '_' or a variable.
+func (c *checker) inferScrutinee(mv *types.Meta, arms []*ast.MatchArm) *diag.Error {
+	for _, arm := range arms {
+		switch p := arm.Pattern.(type) {
+		case *ast.CtorPat:
+			ctor := c.ctors[p.Name]
+			if ctor == nil {
+				return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
+			}
+			var args []types.Type
+			for _, tp := range ctor.Data.Params {
+				msg := fmt.Sprintf("cannot infer type argument '%s' of '%s'; add a type annotation", tp.Name, ctor.Name)
+				args = append(args, c.newMeta(tp.Name, p.Pos, msg))
+			}
+			mv.Solution = &types.Named{Data: ctor.Data, Args: args}
+			return nil
+		case *ast.IntPat:
+			mv.Solution = types.Int
+			return nil
+		case *ast.BoolPat:
+			mv.Solution = types.Bool
+			return nil
+		}
+	}
+	return nil
 }
 
 func (c *checker) inferMatchArm(
@@ -878,7 +1029,7 @@ func (cov *coverage) missing() string {
 func (c *checker) checkSolved() *diag.Error {
 	for _, pm := range c.metas {
 		if _, ok := types.Prune(pm.meta).(*types.Meta); ok {
-			return diag.Errorf(pm.pos, "cannot infer type argument '%s' of '%s'; add a type annotation", pm.meta.Name, pm.owner)
+			return diag.Errorf(pm.pos, "%s", pm.msg)
 		}
 	}
 	return nil
@@ -893,6 +1044,12 @@ func (c *checker) resolveInfo() {
 	}
 	for _, sym := range c.info.PatVars {
 		sym.Type = types.Resolve(sym.Type)
+	}
+	for _, sym := range c.info.Params {
+		sym.Type = types.Resolve(sym.Type)
+	}
+	for lit, sig := range c.info.FuncLits {
+		c.info.FuncLits[lit] = types.Resolve(sig).(*types.Func)
 	}
 	for _, args := range c.info.TypeArgs {
 		for i := range args {

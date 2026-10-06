@@ -15,11 +15,18 @@ import (
 // Lower converts a type-checked file into an IR module.
 // It panics if info is inconsistent with file (a type checker bug).
 func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
+	polyLets := make(map[*typecheck.Symbol]*ast.LetStmt)
+	for stmt, sym := range info.Defs {
+		if len(sym.TypeParams) > 0 {
+			polyLets[sym] = stmt
+		}
+	}
 	l := &lowerer{
 		info:      info,
 		module:    &ir.Module{Funcs: make([]*ir.Func, 0, len(file.Funcs))},
 		declID:    make(map[*ast.FuncDecl]ir.FuncID, len(file.Funcs)),
 		instances: make(map[*ast.FuncDecl]map[string]ir.FuncID),
+		polyLets:  polyLets,
 	}
 
 	foundMain := false
@@ -73,6 +80,8 @@ type lowerer struct {
 	queue     []*instance                            // specializations whose bodies are not lowered yet, in creation order
 	env       map[*types.TypeParam]ir.ValType        // representation of each type parameter of the function being lowered; nil when it has none
 	lambdas   int
+	// polyLets maps the symbol of every generalized let to its statement.
+	polyLets map[*typecheck.Symbol]*ast.LetStmt
 }
 
 // instance is one specialization of a generic function.
@@ -146,7 +155,7 @@ func (l *lowerer) convert(
 	case *ast.BoolLit:
 		return &ir.BoolConst{Value: e.Value}
 	case *ast.Ident:
-		return l.lowerIdent(e, locals)
+		return l.lowerIdent(fn, e, locals)
 	case *ast.UnaryExpr:
 		return l.lowerUnary(fn, locals, e)
 	case *ast.BinaryExpr:
@@ -166,13 +175,20 @@ func (l *lowerer) convert(
 	}
 }
 
-func (l *lowerer) lowerIdent(e *ast.Ident, locals map[*typecheck.Symbol]ir.LocalID) ir.Expr {
+func (l *lowerer) lowerIdent(
+	fn *ir.Func,
+	e *ast.Ident,
+	locals map[*typecheck.Symbol]ir.LocalID,
+) ir.Expr {
 	sym := l.info.Uses[e]
 	if sym == nil {
 		panic(fmt.Sprintf("lower: missing symbol for '%s' at %s", e.Name, e.Pos))
 	}
 	switch sym.Kind {
 	case typecheck.SymParam, typecheck.SymLocal:
+		if len(sym.TypeParams) > 0 {
+			return l.lowerPolyUse(fn, locals, e, sym)
+		}
 		id, ok := locals[sym]
 		if !ok {
 			panic(fmt.Sprintf("lower: no local for '%s' at %s", e.Name, e.Pos))
@@ -291,22 +307,59 @@ func (l *lowerer) lowerBlock(
 	if len(e.Lets) == 0 {
 		return l.lowerExpr(fn, locals, e.Result)
 	}
-	lets := make([]*ir.Let, len(e.Lets))
-	for i, stmt := range e.Lets {
-		value := l.lowerExpr(fn, locals, stmt.Value)
+	lets := make([]*ir.Let, 0, len(e.Lets))
+	for _, stmt := range e.Lets {
 		sym := l.info.Defs[stmt]
 		if sym == nil {
 			panic(fmt.Sprintf("lower: missing symbol for let '%s' at %s", stmt.Name, stmt.NamePos))
 		}
+		if len(sym.TypeParams) > 0 {
+			continue
+		}
+		value := l.lowerExpr(fn, locals, stmt.Value)
 		id := ir.LocalID(len(fn.Locals))
 		locals[sym] = id
 		fn.Locals = append(fn.Locals, l.valType(sym.Type))
-		lets[i] = &ir.Let{Local: id, Value: value}
+		lets = append(lets, &ir.Let{Local: id, Value: value})
+	}
+	if len(lets) == 0 {
+		return l.lowerExpr(fn, locals, e.Result)
 	}
 	return &ir.Block{
 		Lets:   lets,
 		Result: l.lowerExpr(fn, locals, e.Result),
 	}
+}
+
+// lowerPolyUse lowers a use at id of the generalized let sym by lowering the
+// let's value with the let's type parameters mapped to the representations
+// of the use's type arguments.
+func (l *lowerer) lowerPolyUse(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	id *ast.Ident,
+	sym *typecheck.Symbol,
+) ir.Expr {
+	stmt := l.polyLets[sym]
+	if stmt == nil {
+		panic(fmt.Sprintf("lower: missing let for generalized '%s' at %s", id.Name, id.Pos))
+	}
+	args := l.info.TypeArgs[id]
+	if len(args) != len(sym.TypeParams) {
+		panic(fmt.Sprintf("lower: missing type arguments for '%s' at %s", id.Name, id.Pos))
+	}
+	env := make(map[*types.TypeParam]ir.ValType, len(l.env)+len(sym.TypeParams))
+	for tp, vt := range l.env {
+		env[tp] = vt
+	}
+	for i, tp := range sym.TypeParams {
+		env[tp] = l.valType(args[i])
+	}
+	saved := l.env
+	l.env = env
+	value := l.lowerExpr(fn, locals, stmt.Value)
+	l.env = saved
+	return value
 }
 
 func (l *lowerer) lowerMatch(

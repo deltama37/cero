@@ -1638,15 +1638,21 @@ func TestCheckGenericSuccess(t *testing.T) {
 			},
 		},
 		{
-			name:     "later use determines None",
+			name:     "later use instantiates a generalized None",
 			src:      genericPrelude + "fn main() -> Int { let o = None match o { Some(n) => n + 1, None => 0 } }\n",
 			wantMain: "Int",
 			check: func(t *testing.T, file *ast.File, info *Info) {
 				mainFn := funcByName(t, file, "main")
-				if got := info.Defs[mainFn.Body.Lets[0]].Type.String(); got != "Option[Int]" {
-					t.Errorf("o type = %s, want Option[Int]", got)
+				sym := info.Defs[mainFn.Body.Lets[0]]
+				if got := sym.Type.String(); got != "Option[T]" {
+					t.Errorf("o type = %s, want Option[T]", got)
 				}
-				pat := mainFn.Body.Result.(*ast.MatchExpr).Arms[0].Pattern.(*ast.CtorPat)
+				if len(sym.TypeParams) != 1 || sym.TypeParams[0].Name != "T" {
+					t.Errorf("o type params = %v, want [T]", sym.TypeParams)
+				}
+				match := mainFn.Body.Result.(*ast.MatchExpr)
+				wantTypeArgs(t, info, match.Scrutinee.(*ast.Ident), "Int")
+				pat := match.Arms[0].Pattern.(*ast.CtorPat)
 				n := pat.Args[0].(*ast.VarPat)
 				if got := info.PatVars[n].Type.String(); got != "Int" {
 					t.Errorf("n type = %s, want Int", got)
@@ -1736,14 +1742,19 @@ fn main() -> Int { apply(identity, 7) }
 			},
 		},
 		{
-			name:     "let is monomorphic",
+			name:     "let generalizes a generic function",
 			src:      genericPrelude + "fn main() -> Int { let f = identity f(5) }\n",
 			wantMain: "Int",
 			check: func(t *testing.T, file *ast.File, info *Info) {
-				letStmt := funcByName(t, file, "main").Body.Lets[0]
-				if got := info.Defs[letStmt].Type.String(); got != "Int -> Int" {
-					t.Errorf("f type = %s, want Int -> Int", got)
+				body := funcByName(t, file, "main").Body
+				sym := info.Defs[body.Lets[0]]
+				if got := sym.Type.String(); got != "T -> T" {
+					t.Errorf("f type = %s, want T -> T", got)
 				}
+				if len(sym.TypeParams) != 1 {
+					t.Errorf("f type params = %d, want 1", len(sym.TypeParams))
+				}
+				wantTypeArgs(t, info, body.Result.(*ast.CallExpr).Fn.(*ast.Ident), "Int")
 			},
 		},
 		{
@@ -1974,8 +1985,8 @@ func TestCheckGenericError(t *testing.T) {
 		},
 		{
 			name: "unsolved None",
-			src:  "type Option[T] = | None | Some(T)\nfn main() -> Int { let x = None 0 }\n",
-			want: "2:28: cannot infer type argument 'T' of 'None'; add a type annotation",
+			src:  "type Option[T] = | None | Some(T)\nfn identity[T](x: T) -> T { x }\nfn main() -> Int { let x = identity(None) 0 }\n",
+			want: "3:37: cannot infer type argument 'T' of 'None'; add a type annotation",
 		},
 		{
 			name: "unsolved length",
@@ -1999,14 +2010,9 @@ fn main() -> Int { match none() { _ => 0 } }
 			want: "2:26: cannot infer the type of the matched value; add a type annotation",
 		},
 		{
-			name: "call an unsolved meta",
-			src:  "fn nothing[T]() -> T { nothing() }\nfn main() -> Int { nothing()(1) }\n",
-			want: "2:20: cannot call non-function value of type ?T",
-		},
-		{
 			name: "occurs check on a let binding",
-			src:  "fn identity[T](x: T) -> T { x }\nfn main() -> Int { let f = identity f(f) }\n",
-			want: "2:39: expected ?T, found ?T -> ?T",
+			src:  "fn identity[T](x: T) -> T { x }\nfn main() -> Int { let f = identity(identity) f(f) }\n",
+			want: "2:49: expected ?T, found ?T -> ?T",
 		},
 		{
 			name: "option argument mismatch",
@@ -2053,6 +2059,366 @@ fn f(o: Option[Int]) -> Int { match o { Nil => 0, _ => 1 } }
 			t.Parallel()
 			requireError(t, tt.src, tt.want)
 		})
+	}
+}
+
+func TestCheckInferSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		src      string
+		wantMain string
+		check    func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name:     "let generalizes a generic function at two types",
+			src:      genericPrelude + "fn main() -> Int { let f = identity if f(true) { f(1) } else { 0 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				body := funcByName(t, file, "main").Body
+				wantScheme(t, info, body.Lets[0], "T -> T", "T")
+				sym := info.Defs[body.Lets[0]]
+				ft := sym.Type.(*types.Func)
+				if ft.Params[0] != sym.TypeParams[0] {
+					t.Errorf("parameter type = %s, want the let's type parameter", ft.Params[0])
+				}
+				ids := findIdents(body, "f")
+				if len(ids) != 2 {
+					t.Fatalf("f idents = %d, want 2", len(ids))
+				}
+				wantTypeArgs(t, info, ids[0], "Bool")
+				wantTypeArgs(t, info, ids[1], "Int")
+			},
+		},
+		{
+			name:     "let generalizes an anonymous function",
+			src:      "fn main() -> Int { let id = fn(x) { x } if id(true) { id(1) } else { 0 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				body := funcByName(t, file, "main").Body
+				wantScheme(t, info, body.Lets[0], "t1 -> t1", "t1")
+				lit := body.Lets[0].Value.(*ast.FuncLit)
+				if got := info.FuncLits[lit].String(); got != "t1 -> t1" {
+					t.Errorf("func lit type = %s, want t1 -> t1", got)
+				}
+				if got := info.Params[lit.Params[0]].Type.String(); got != "t1" {
+					t.Errorf("x type = %s, want t1", got)
+				}
+				ids := findIdents(body, "id")
+				if len(ids) != 2 {
+					t.Fatalf("id idents = %d, want 2", len(ids))
+				}
+				wantTypeArgs(t, info, ids[0], "Bool")
+				wantTypeArgs(t, info, ids[1], "Int")
+			},
+		},
+		{
+			name:     "let generalizes None",
+			src:      genericPrelude + "fn main() -> Int { let n = None let a: Option[Int] = n let b: Option[Bool] = n 0 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				wantScheme(t, info, lets[0], "Option[T]", "T")
+				wantScheme(t, info, lets[1], "Option[Int]")
+				wantScheme(t, info, lets[2], "Option[Bool]")
+				wantTypeArgs(t, info, lets[1].Value.(*ast.Ident), "Int")
+				wantTypeArgs(t, info, lets[2].Value.(*ast.Ident), "Bool")
+			},
+		},
+		{
+			name:     "unused generalized let",
+			src:      "fn main() -> Int { let f = fn(x) { 0 } 1 }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantScheme(t, info, funcByName(t, file, "main").Body.Lets[0], "t1 -> Int", "t1")
+			},
+		},
+		{
+			name:     "parameter inferred from its use",
+			src:      "fn main() -> Int { let inc = fn(x) { x + 1 } inc(41) }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				wantScheme(t, info, letStmt, "Int -> Int")
+				lit := letStmt.Value.(*ast.FuncLit)
+				if got := info.FuncLits[lit].String(); got != "Int -> Int" {
+					t.Errorf("func lit type = %s, want Int -> Int", got)
+				}
+			},
+		},
+		{
+			name: "parameter inferred from the expected function type",
+			src: genericPrelude + `fn map[T, U](xs: List[T], f: T -> U) -> List[U] { match xs { Nil => Nil, Cons(x, r) => Cons(f(x), map(r, f)) } }
+fn main() -> Int { let ys = map(Cons(1, Nil), fn(x) { x > 0 }) 0 }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				lit := letStmt.Value.(*ast.CallExpr).Args[1].(*ast.FuncLit)
+				if got := info.FuncLits[lit].String(); got != "Int -> Bool" {
+					t.Errorf("func lit type = %s, want Int -> Bool", got)
+				}
+				wantScheme(t, info, letStmt, "List[Bool]")
+			},
+		},
+		{
+			name:     "partially annotated anonymous function",
+			src:      "fn main() -> Int { let add = fn(a: Int, b) -> Int { a + b } add(1, 2) }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantScheme(t, info, funcByName(t, file, "main").Body.Lets[0], "(Int, Int) -> Int")
+			},
+		},
+		{
+			name: "match infers the scrutinee from a constructor pattern",
+			src: genericPrelude + `fn main() -> Int { let get = fn(o) { match o { Some(n) => n, None => 0 } } get(Some(5)) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				wantScheme(t, info, letStmt, "Option[Int] -> Int")
+				m := letStmt.Value.(*ast.FuncLit).Body.Result.(*ast.MatchExpr)
+				wantType(t, info, m.Scrutinee, "Option[Int]")
+			},
+		},
+		{
+			name:     "match infers the scrutinee from a literal pattern",
+			src:      "fn main() -> Int { let isZero = fn(n) { match n { 0 => true, _ => false } } if isZero(0) { 1 } else { 2 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantScheme(t, info, funcByName(t, file, "main").Body.Lets[0], "Int -> Bool")
+			},
+		},
+		{
+			name:     "call infers a function parameter",
+			src:      "fn main() -> Int { let applyOne = fn(f) { f(1) } applyOne(fn(x) { x * 2 }) }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				body := funcByName(t, file, "main").Body
+				wantScheme(t, info, body.Lets[0], "(Int -> t2) -> t2", "t2")
+				call := body.Result.(*ast.CallExpr)
+				wantTypeArgs(t, info, call.Fn.(*ast.Ident), "Int")
+				lit := call.Args[0].(*ast.FuncLit)
+				if got := info.FuncLits[lit].String(); got != "Int -> Int" {
+					t.Errorf("func lit type = %s, want Int -> Int", got)
+				}
+			},
+		},
+		{
+			name: "call an unsolved meta makes it a function",
+			src: `fn nothing[T]() -> T { nothing() }
+fn main() -> Int { nothing()(1) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				ids := findIdents(funcByName(t, file, "main").Body, "nothing")
+				if len(ids) != 1 {
+					t.Fatalf("nothing idents = %d, want 1", len(ids))
+				}
+				wantTypeArgs(t, info, ids[0], "Int -> Int")
+			},
+		},
+		{
+			name:     "comparison infers the left operand from the right",
+			src:      "fn main() -> Int { let eqOne = fn(x) { x == 1 } if eqOne(1) { 1 } else { 0 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantScheme(t, info, funcByName(t, file, "main").Body.Lets[0], "Int -> Bool")
+			},
+		},
+		{
+			name: "generalized let inside a generic function",
+			src: `fn twice[T](x: T) -> T { let id = fn(y) { y } id(id(x)) }
+fn main() -> Int { twice(1) }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				twice := funcByName(t, file, "twice")
+				wantScheme(t, info, twice.Body.Lets[0], "t1 -> t1", "t1")
+				ids := findIdents(twice.Body, "id")
+				if len(ids) != 2 {
+					t.Fatalf("id idents = %d, want 2", len(ids))
+				}
+				tp := info.Funcs[twice].TypeParams[0]
+				for i, id := range ids {
+					args := info.TypeArgs[id]
+					if len(args) != 1 {
+						t.Errorf("id %d type args = %d, want 1", i, len(args))
+						continue
+					}
+					got, ok := args[0].(*types.TypeParam)
+					if !ok || got != tp {
+						t.Errorf("id %d type arg = %v, want twice's type parameter", i, args[0])
+					}
+				}
+			},
+		},
+		{
+			name:     "generalized let of a generalized let",
+			src:      genericPrelude + "fn main() -> Int { let f = identity let g = f if g(true) { g(2) } else { 0 } }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				wantScheme(t, info, lets[1], "T -> T", "T")
+				arg := info.TypeArgs[lets[1].Value.(*ast.Ident)]
+				if len(arg) != 1 || arg[0] != info.Defs[lets[1]].TypeParams[0] {
+					t.Errorf("f type arg = %v, want g's type parameter", arg)
+				}
+			},
+		},
+		{
+			name:     "let of a call is not generalized",
+			src:      genericPrelude + "fn main() -> Int { let g = identity(fn(x) { x }) g(1) }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantScheme(t, info, funcByName(t, file, "main").Body.Lets[0], "Int -> Int")
+			},
+		},
+		{
+			name: "metas in the environment are not generalized",
+			src: genericPrelude + `fn main() -> Int { let o = identity(None) let p = o match p { Some(n) => n, None => 0 } }
+`,
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				wantScheme(t, info, lets[0], "Option[Int]")
+				wantScheme(t, info, lets[1], "Option[Int]")
+			},
+		},
+		{
+			name:     "parameter of an enclosing anonymous function is in the environment",
+			src:      "fn main() -> Int { let k = fn(x) { let y = x y } k(1) }\n",
+			wantMain: "Int",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				letStmt := funcByName(t, file, "main").Body.Lets[0]
+				wantScheme(t, info, letStmt, "t1 -> t1", "t1")
+				wantScheme(t, info, letStmt.Value.(*ast.FuncLit).Body.Lets[0], "t1")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.wantMain != "" {
+				mainFn := funcByName(t, file, "main")
+				wantType(t, info, mainFn.Body.Result, tt.wantMain)
+			}
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckInferError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "generalized function called with a wrong arity",
+			src:  "fn main() -> Int { let id = fn(x) { x } id(1, 2) }\n",
+			want: "1:43: wrong number of arguments: expected 1, found 2",
+		},
+		{
+			name: "monomorphic let used at two types",
+			src:  "fn identity[T](x: T) -> T { x }\nfn main() -> Int { let g = identity(fn(x) { x }) if g(true) { g(1) } else { 0 } }\n",
+			want: "2:65: expected Bool, found Int",
+		},
+		{
+			name: "unsolved parameter",
+			src:  "fn main() -> Int { let g = if true { fn(x) { 0 } } else { fn(y) { 1 } } 0 }\n",
+			want: "1:41: cannot infer the type of parameter 'x'; add a type annotation",
+		},
+		{
+			name: "unsolved call result",
+			src:  "fn main() -> Int { let g = if true { fn(f) { f(1) } } else { fn(h) { h(2) } } 0 }\n",
+			want: "1:47: cannot infer the result type of this call; add a type annotation",
+		},
+		{
+			name: "occurs check when calling a parameter",
+			src:  "fn main() -> Int { let g = fn(f) { f(f) } 0 }\n",
+			want: "1:36: expected ?t1 -> ?t2, found ?t1",
+		},
+		{
+			name: "compare two unannotated parameters",
+			src:  "fn main() -> Int { let eq = fn(x, y) { x == y } 0 }\n",
+			want: "1:40: cannot compare values of type ?t2",
+		},
+		{
+			name: "match on an unannotated parameter with only a wildcard",
+			src:  "fn main() -> Int { let f = fn(x) { match x { _ => 0 } } 0 }\n",
+			want: "1:42: cannot infer the type of the matched value; add a type annotation",
+		},
+		{
+			name: "match infers from an unknown constructor",
+			src:  "fn main() -> Int { let f = fn(x) { match x { Foo => 0, _ => 1 } } 0 }\n",
+			want: "1:46: unknown constructor 'Foo'",
+		},
+		{
+			name: "pattern of another data type after inference",
+			src:  "type Option[T] = | None | Some(T)\ntype List[T] = | Nil | Cons(T, List[T])\nfn main() -> Int { let f = fn(o) { match o { Some(n) => n, Nil => 0 } } 0 }\n",
+			want: "3:60: expected Option[?T], found List[?T]",
+		},
+		{
+			name: "literal pattern after a constructor pattern",
+			src:  "type Option[T] = | None | Some(T)\nfn main() -> Int { let f = fn(o) { match o { Some(n) => n, 0 => 0 } } 0 }\n",
+			want: "2:60: expected Option[?T], found Int",
+		},
+		{
+			name: "capture a generalized let",
+			src:  "fn main() -> Int { let id = fn(x) { x } let g = fn(y) { id(y) } 0 }\n",
+			want: "1:57: cannot capture 'id' in anonymous function: closures are not supported in v0.1",
+		},
+		{
+			name: "unannotated parameter used as Int and Bool",
+			src:  "fn main() -> Int { let f = fn(x) { if x { x + 1 } else { 0 } } 0 }\n",
+			want: "1:43: expected Int, found Bool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
+// wantScheme checks that the let's symbol has type want and type parameters
+// named names, in order. names is empty for a monomorphic let.
+func wantScheme(
+	t *testing.T,
+	info *Info,
+	l *ast.LetStmt,
+	want string,
+	names ...string,
+) {
+	t.Helper()
+
+	sym := info.Defs[l]
+	if sym == nil {
+		t.Fatalf("missing symbol for let %s", l.Name)
+	}
+	if sym.Type.String() != want {
+		t.Errorf("let %s type = %s, want %s", l.Name, sym.Type, want)
+	}
+	if len(sym.TypeParams) != len(names) {
+		t.Errorf("let %s type params = %d, want %d", l.Name, len(sym.TypeParams), len(names))
+		return
+	}
+	for i, name := range names {
+		if sym.TypeParams[i].Name != name {
+			t.Errorf("let %s type param %d = %s, want %s", l.Name, i, sym.TypeParams[i].Name, name)
+		}
 	}
 }
 

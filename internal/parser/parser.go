@@ -123,7 +123,7 @@ func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
 		}
 	}
 
-	params, err := p.parseParamList()
+	params, err := p.parseParamList(false)
 	if err != nil {
 		return nil, err
 	}
@@ -154,16 +154,17 @@ func (p *parser) parseFuncLit() (*ast.FuncLit, error) {
 	if err := p.expect(token.Fn); err != nil {
 		return nil, err
 	}
-	params, err := p.parseParamList()
+	params, err := p.parseParamList(true)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.expect(token.Arrow); err != nil {
-		return nil, err
-	}
-	result, err := p.parseType()
-	if err != nil {
-		return nil, err
+	var result ast.TypeExpr
+	if p.cur().Kind == token.Arrow {
+		p.advance()
+		result, err = p.parseType()
+		if err != nil {
+			return nil, err
+		}
 	}
 	body, err := p.parseBlock()
 	if err != nil {
@@ -177,7 +178,7 @@ func (p *parser) parseFuncLit() (*ast.FuncLit, error) {
 	}, nil
 }
 
-func (p *parser) parseParamList() ([]*ast.Param, error) {
+func (p *parser) parseParamList(allowUntyped bool) ([]*ast.Param, error) {
 	if err := p.expect(token.LParen); err != nil {
 		return nil, err
 	}
@@ -189,7 +190,7 @@ func (p *parser) parseParamList() ([]*ast.Param, error) {
 			return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.RParen, describe(p.cur()))
 		}
 		for {
-			param, err := p.parseParam()
+			param, err := p.parseParam(allowUntyped)
 			if err != nil {
 				return nil, err
 			}
@@ -206,12 +207,15 @@ func (p *parser) parseParamList() ([]*ast.Param, error) {
 	return params, nil
 }
 
-func (p *parser) parseParam() (*ast.Param, error) {
+func (p *parser) parseParam(allowUntyped bool) (*ast.Param, error) {
 	if p.cur().Kind != token.Ident {
 		return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
 	}
 	nameTok := p.cur()
 	p.advance()
+	if allowUntyped && p.cur().Kind != token.Colon {
+		return &ast.Param{Pos: nameTok.Pos, Name: nameTok.Text, Type: nil}, nil
+	}
 	if err := p.expect(token.Colon); err != nil {
 		return nil, err
 	}

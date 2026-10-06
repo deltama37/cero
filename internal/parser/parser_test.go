@@ -71,6 +71,31 @@ func TestParseExpr(t *testing.T) {
 			want: "(fn ((f (-> (Int) Int))) Int (block (call f 1)))",
 		},
 		{
+			name: "func lit without annotations",
+			src:  "fn(x, y) { x }",
+			want: "(fn ((x _) (y _)) _ (block x))",
+		},
+		{
+			name: "func lit partially annotated",
+			src:  "fn(x: Int, y) -> Int { x }",
+			want: "(fn ((x Int) (y _)) Int (block x))",
+		},
+		{
+			name: "func lit without result type",
+			src:  "fn(x: Int) { x }",
+			want: "(fn ((x Int)) _ (block x))",
+		},
+		{
+			name: "func lit without params or result type",
+			src:  "fn() { 1 }",
+			want: "(fn () _ (block 1))",
+		},
+		{
+			name: "call an unannotated func lit argument",
+			src:  "f(fn(x) { x + 1 }, 2)",
+			want: "(call f (fn ((x _)) _ (block (+ x 1))) 2)",
+		},
+		{
 			name: "let value spans lines",
 			src:  "{\nlet value =\n if c {\n 10 } else { 20 }\nvalue\n}",
 			want: "(block (let value (if c (block 10) (block 20))) value)",
@@ -707,6 +732,26 @@ func TestParseError(t *testing.T) {
 			expr: true,
 			want: "1:3: expected '(', found '['",
 		},
+		{
+			name: "func decl param without type",
+			src:  "fn f(x) -> Int { x }",
+			want: "1:7: expected ':', found ')'",
+		},
+		{
+			name: "func decl without result type",
+			src:  "fn f() { 1 }",
+			want: "1:8: expected '->', found '{'",
+		},
+		{
+			name: "func lit without body",
+			src:  "fn f() -> Int { fn(x) x }",
+			want: `1:23: expected '{', found identifier "x"`,
+		},
+		{
+			name: "func lit param followed by a type",
+			src:  "fn f() -> Int { fn(x Int) { x } }",
+			want: `1:22: expected ')', found identifier "Int"`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -721,6 +766,49 @@ func TestParseError(t *testing.T) {
 			}
 			requireDiag(t, err, tt.want)
 		})
+	}
+}
+
+func TestFuncLitOmittedTypes(t *testing.T) {
+	t.Parallel()
+
+	const src = "fn main() -> Int { let f = fn(x, y: Int) { y } 0 }"
+	file, err := ParseFile([]byte(src))
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	fn := file.Funcs[0]
+	if fn.Result == nil {
+		t.Fatal("FuncDecl.Result = nil, want a type")
+	}
+	if len(fn.Body.Lets) != 1 {
+		t.Fatalf("len(Lets) = %d, want 1", len(fn.Body.Lets))
+	}
+	lit, ok := fn.Body.Lets[0].Value.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("let value = %T, want *ast.FuncLit", fn.Body.Lets[0].Value)
+	}
+	if len(lit.Params) != 2 {
+		t.Fatalf("len(Params) = %d, want 2", len(lit.Params))
+	}
+	if lit.Params[0].Name != "x" {
+		t.Errorf("Params[0].Name = %q, want %q", lit.Params[0].Name, "x")
+	}
+	if lit.Params[0].Type != nil {
+		t.Errorf("Params[0].Type = %#v, want nil", lit.Params[0].Type)
+	}
+	if lit.Params[0].Pos != (diag.Pos{Line: 1, Col: 31}) {
+		t.Errorf("Params[0].Pos = %s, want 1:31", lit.Params[0].Pos)
+	}
+	named, ok := lit.Params[1].Type.(*ast.NamedType)
+	if !ok {
+		t.Fatalf("Params[1].Type = %T, want *ast.NamedType", lit.Params[1].Type)
+	}
+	if named.Name != "Int" {
+		t.Errorf("Params[1].Type.Name = %q, want %q", named.Name, "Int")
+	}
+	if lit.Result != nil {
+		t.Errorf("FuncLit.Result = %#v, want nil", lit.Result)
 	}
 }
 

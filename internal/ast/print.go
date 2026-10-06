@@ -91,7 +91,7 @@ func FormatExpr(e Expr) string {
 		parts = append(parts, FormatExpr(e.Result))
 		return "(block " + strings.Join(parts, " ") + ")"
 	case *FuncLit:
-		return "(fn (" + formatParams(e.Params) + ") " + FormatType(e.Result) + " " + FormatExpr(e.Body) + ")"
+		return "(fn (" + formatParams(e.Params) + ") " + formatOptType(e.Result) + " " + FormatExpr(e.Body) + ")"
 	case *MatchExpr:
 		parts := make([]string, 0, 1+len(e.Arms))
 		parts = append(parts, FormatExpr(e.Scrutinee))
@@ -169,7 +169,15 @@ func formatParams(params []*Param) string {
 }
 
 func formatParam(param *Param) string {
-	return "(" + param.Name + " " + FormatType(param.Type) + ")"
+	return "(" + param.Name + " " + formatOptType(param.Type) + ")"
+}
+
+// formatOptType formats t, or "_" when t is nil (an omitted annotation).
+func formatOptType(t TypeExpr) string {
+	if t == nil {
+		return "_"
+	}
+	return FormatType(t)
 }
 
 func formatLet(stmt *LetStmt) string {

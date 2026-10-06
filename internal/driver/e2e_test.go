@@ -811,6 +811,40 @@ fn main() -> Int {
 `,
 			want: "42",
 		},
+		{
+			name: "let-polymorphic anonymous function",
+			src:  "fn main() -> Int { let id = fn(x) { x } if id(true) { id(40) + 2 } else { 0 } }",
+			want: "42",
+		},
+		{
+			name: "let-polymorphic None",
+			src: `type Option[T] = | None | Some(T)
+
+fn orElse[T](o: Option[T], d: T) -> T { match o { None => d, Some(x) => x } }
+
+fn main() -> Int {
+    let none = None
+    if orElse(none, true) { orElse(none, 41) + 1 } else { 0 }
+}
+`,
+			want: "42",
+		},
+		{
+			name: "match infers the scrutinee type",
+			src: `type Option[T] = | None | Some(T)
+
+fn main() -> Int {
+    let get = fn(o) { match o { Some(n) => n, None => 0 } }
+    get(Some(40)) + get(None) + 2
+}
+`,
+			want: "42",
+		},
+		{
+			name: "inference example",
+			file: "examples/inference.cero",
+			want: "42",
+		},
 	}
 
 	for _, tt := range tests {
