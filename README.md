@@ -195,6 +195,47 @@ still open. It restarts at most five times in one minute. Another stop in
 that minute leaves the server stopped and shows an error. Saving a large
 program, such as `compiler/` itself, can restart the server.
 
+## x86-64
+
+The Cero-written compiler can write a Linux x86-64 executable
+([ADR-0019](docs/adr/0019-x86-64-backend.md)). The default target is still
+WebAssembly.
+
+```bash
+make selfhost-build
+./scripts/ceroc-cero build --target x86_64-linux examples/fib.cero -o fib
+chmod +x fib
+./fib   # prints 55
+```
+
+`chmod +x` is required. `writeFile` leaves the mode unchanged, so the
+executable bit stays unset. The same source behaves the same way under
+`wasmtime run`: `main: () -> Int` prints its result in decimal, then a
+newline, and exits 0. `main: () -> IO[Unit]` runs and exits 0, unless it
+calls `exit`. A runtime trap writes `error: runtime trap` to standard error
+and exits 134. Paths are relative to the current directory.
+
+The backend targets x86-64 Linux only. It does not optimize and it does not
+emit debug information. The call stack is the operating system's stack,
+usually 8 MiB, so a deep call that is not a tail call ends the process when
+that stack runs out. The heap is a bump allocator from `0x40000000` to
+`0xFFFF0000` (about 3 GiB) and is not collected.
+
+On Linux x86-64, `make selfhost` also builds that compiler as a native
+executable. After the WebAssembly fixed point, stage 1 compiles
+`compiler/main.cero` with `--target x86_64-linux`. That binary must
+reproduce `stage1.wasm`, and compiling itself again must reproduce the
+executable. The command prints the time and, when `/usr/bin/time -v` is
+available, the peak resident set of each of those builds. Other systems
+skip this part and say so. To keep a native compiler:
+
+```bash
+make selfhost-build
+./scripts/ceroc-cero build --target x86_64-linux compiler/main.cero -o bin/ceroc-x86
+chmod +x bin/ceroc-x86
+./bin/ceroc-x86 build examples/fib.cero
+```
+
 ## License
 
 Cero is released under the [MIT License](LICENSE).
