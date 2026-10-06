@@ -4,6 +4,8 @@ import "syntax/diag"
 import "syntax/print"
 import "driver/load"
 import "check/program"
+import "ir/print"
+import "lower/lower"
 
 fn usage() -> String {
     "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT]\n"
@@ -112,9 +114,27 @@ fn runCheck(stdDir: String, file: String, flag: String) -> IO[Unit] {
     }
 }
 
+fn runIr(stdDir: String, file: String) -> IO[Unit] {
+    let! ok = fileExists(file)
+    if ok {
+        let! result = loadProgram(file, stdDir)
+        match result {
+            LoadFailed(e) => die(1, formatError(e) ++ "\n"),
+            Loaded(mods, _) => match checkProgram(mods) {
+                Err(e) => die(1, formatError(e) ++ "\n"),
+                Ok(info) => print(irFormat(lowerProgram(mods, info)) ++ "\n"),
+            },
+        }
+    } else {
+        die(1, "ceroc: cannot read " ++ file ++ "\n")
+    }
+}
+
 fn dispatch(stdDir: String, cmd: String, file: String, flag: String) -> IO[Unit] {
-    if cmd == "ir" || cmd == "build" {
+    if cmd == "build" {
         die(3, "ceroc: " ++ cmd ++ ": not yet implemented\n")
+    } else if cmd == "ir" {
+        runIr(stdDir, file)
     } else if cmd == "check" {
         runCheck(stdDir, file, flag)
     } else {
