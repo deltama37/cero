@@ -16,29 +16,60 @@ func ParseFile(src []byte) (*ast.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	var imports []*ast.Import
+	for p.cur().Kind == token.Import {
+		imp, err := p.parseImport()
+		if err != nil {
+			return nil, err
+		}
+		imports = append(imports, imp)
+	}
 	var (
 		typeDecls []*ast.TypeDecl
 		funcs     []*ast.FuncDecl
 	)
 	for p.cur().Kind != token.EOF {
+		pub := false
+		if p.cur().Kind == token.Pub {
+			pub = true
+			p.advance()
+		}
 		switch p.cur().Kind {
-		case token.Type:
-			decl, err := p.parseTypeDecl()
-			if err != nil {
-				return nil, err
-			}
-			typeDecls = append(typeDecls, decl)
 		case token.Fn:
 			fn, err := p.parseFuncDecl()
 			if err != nil {
 				return nil, err
 			}
+			fn.Pub = pub
 			funcs = append(funcs, fn)
+		case token.Type:
+			decl, err := p.parseTypeDecl()
+			if err != nil {
+				return nil, err
+			}
+			decl.Pub = pub
+			typeDecls = append(typeDecls, decl)
+		case token.Import:
+			return nil, diag.Errorf(p.cur().Pos, "imports must come before declarations")
 		default:
+			if pub {
+				return nil, diag.Errorf(p.cur().Pos, "expected 'fn' or 'type' after 'pub', found %s", describe(p.cur()))
+			}
 			return nil, diag.Errorf(p.cur().Pos, "expected %s or %s, found %s", token.Fn, token.Type, describe(p.cur()))
 		}
 	}
-	return &ast.File{Types: typeDecls, Funcs: funcs}, nil
+	return &ast.File{Imports: imports, Types: typeDecls, Funcs: funcs}, nil
+}
+
+func (p *parser) parseImport() (*ast.Import, error) {
+	impTok := p.cur()
+	p.advance()
+	if p.cur().Kind != token.String {
+		return nil, diag.Errorf(p.cur().Pos, "expected string literal, found %s", describe(p.cur()))
+	}
+	pathTok := p.cur()
+	p.advance()
+	return &ast.Import{Pos: impTok.Pos, Path: pathTok.Text, PathPos: pathTok.Pos}, nil
 }
 
 // ParseExpr parses a single expression that must span the whole input.

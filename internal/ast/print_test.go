@@ -436,6 +436,40 @@ func TestFormat(t *testing.T) {
 			}),
 			want: "(type Unit (Unit))\n(fn add ((a Int) (b Int)) Int (block (+ a b)))\n(fn id () Bool (block false))",
 		},
+		{
+			name: "pub func decl",
+			got: FormatFunc(&FuncDecl{
+				Pub:    true,
+				Name:   "add",
+				Params: []*Param{{Name: "a", Type: intType}, {Name: "b", Type: intType}},
+				Result: intType,
+				Body:   block(ident("a")),
+			}),
+			want: "(pub fn add ((a Int) (b Int)) Int (block a))",
+		},
+		{
+			name: "pub type decl",
+			got: FormatTypeDecl(&TypeDecl{
+				Pub:   true,
+				Name:  "Shape",
+				Ctors: []*CtorDecl{{Name: "Circle", Fields: []TypeExpr{intType}}},
+			}),
+			want: "(pub type Shape (Circle Int))",
+		},
+		{
+			name: "file imports then decls",
+			got: FormatFile(&File{
+				Imports: []*Import{{Path: "std/list"}},
+				Types:   []*TypeDecl{{Pub: true, Name: "Unit", Ctors: []*CtorDecl{{Name: "Unit"}}}},
+				Funcs: []*FuncDecl{{
+					Pub:    true,
+					Name:   "main",
+					Result: intType,
+					Body:   block(intLit(1)),
+				}},
+			}),
+			want: "(import \"std/list\")\n(pub type Unit (Unit))\n(pub fn main () Int (block 1))",
+		},
 	}
 
 	for _, tt := range tests {

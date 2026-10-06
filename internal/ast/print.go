@@ -8,10 +8,13 @@ import (
 	"github.com/deltama37/cero/internal/token"
 )
 
-// FormatFile formats each type with FormatTypeDecl, then each function with
-// FormatFunc, and joins them with "\n".
+// FormatFile formats each import, then each type with FormatTypeDecl, then
+// each function with FormatFunc, and joins them with "\n".
 func FormatFile(f *File) string {
-	parts := make([]string, 0, len(f.Types)+len(f.Funcs))
+	parts := make([]string, 0, len(f.Imports)+len(f.Types)+len(f.Funcs))
+	for _, imp := range f.Imports {
+		parts = append(parts, "(import "+strconv.Quote(imp.Path)+")")
+	}
 	for _, decl := range f.Types {
 		parts = append(parts, FormatTypeDecl(decl))
 	}
@@ -23,7 +26,11 @@ func FormatFile(f *File) string {
 
 // FormatFunc formats a function declaration as an S-expression.
 func FormatFunc(d *FuncDecl) string {
-	return "(fn " + d.Name + formatTypeParams(d.TypeParams) + " (" + formatParams(d.Params) + ") " + formatOptType(d.Result) + " " + FormatExpr(d.Body) + ")"
+	head := "(fn "
+	if d.Pub {
+		head = "(pub fn "
+	}
+	return head + d.Name + formatTypeParams(d.TypeParams) + " (" + formatParams(d.Params) + ") " + formatOptType(d.Result) + " " + FormatExpr(d.Body) + ")"
 }
 
 // FormatTypeDecl formats a type declaration as an S-expression.
@@ -33,7 +40,11 @@ func FormatTypeDecl(d *TypeDecl) string {
 	for _, ctor := range d.Ctors {
 		parts = append(parts, formatCtor(ctor))
 	}
-	return "(type " + strings.Join(parts, " ") + ")"
+	head := "(type "
+	if d.Pub {
+		head = "(pub type "
+	}
+	return head + strings.Join(parts, " ") + ")"
 }
 
 // formatTypeParams returns "" for no type parameters, otherwise "[" + the
