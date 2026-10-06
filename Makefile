@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check vet lint check clean run
+.PHONY: build test fmt fmt-check vet lint check clean run selfhost selfhost-build
 
 BIN_DIR := bin
 CEROC   := $(BIN_DIR)/ceroc
@@ -38,6 +38,10 @@ clean:
 
 run: build
 	$(CEROC) $(ARGS)
+
+# selfhost checks that the Cero-written compiler reproduces itself (ADR-0015).
+selfhost:
+	./scripts/selfhost.sh
 
 selfhost-build: build
 	./bin/ceroc build compiler/main.cero -o bin/ceroc-cero.wasm

@@ -13,8 +13,9 @@ for the full design rationale and roadmap.
 
 ## Toolchain
 
-The bootstrap compiler and CLI, `ceroc`, is written in Go (per ADR-0001) and
-will later be re-implemented in Cero itself to reach self-hosting.
+The bootstrap compiler and CLI, `ceroc`, is written in Go (per ADR-0001).
+It remains the bootstrap; `compiler/` is the same compiler written in Cero.
+See [Self-hosting](#self-hosting).
 
 * Go 1.22+
 * [wasmtime](https://wasmtime.dev/) for `ceroc run` and the end-to-end tests
@@ -104,6 +105,40 @@ with design documents in [`docs/design/`](docs/design/):
   `examples/conveniences.cero`)
 
 `ceroc fmt` is not implemented yet.
+
+## Self-hosting
+
+`compiler/` is ceroc written in Cero
+([ADR-0014](docs/adr/0014-cero-written-ceroc.md)). It follows the Go
+compiler's algorithms, so a successful compile emits the same WebAssembly
+bytes. The Go compiler stays as the bootstrap: with Go and wasmtime, the
+self-hosted compiler is rebuilt from source, and no WebAssembly binary is
+committed
+([ADR-0015](docs/adr/0015-self-hosting.md)).
+
+`make selfhost` checks that fixed point with three builds:
+
+```text
+stage1.wasm  Go ceroc compiling compiler/main.cero
+stage2.wasm  stage1.wasm compiling compiler/main.cero
+stage3.wasm  stage2.wasm compiling compiler/main.cero
+```
+
+Self-hosting means `stage2.wasm` and `stage3.wasm` are identical. The port
+is faithful when `stage1.wasm` matches them too. The command prints each
+stage's size and time, and, when `/usr/bin/time -v` is available, the peak
+resident set of the stage 2 build. It exits with an error if either pair
+differs.
+
+`make selfhost-build` writes stage 1 to `bin/ceroc-cero.wasm`.
+`./scripts/ceroc-cero` runs that module with `wasmtime run --dir=.`, so
+paths are relative to the current directory:
+
+```bash
+make selfhost-build
+./scripts/ceroc-cero build examples/fib.cero
+wasmtime run --invoke main examples/fib.wasm   # prints 55
+```
 
 ## License
 

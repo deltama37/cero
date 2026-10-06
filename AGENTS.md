@@ -7,6 +7,9 @@ Cero 言語（ブートストラップコンパイラ `ceroc`、Go 製）のリ�
 
 - `cmd/ceroc/`: CLI のエントリポイント
 - `internal/`: コンパイラ本体。`lexer` → `parser`（`ast`）→ `typecheck`（`types`）→ `lower`（`ir`）→ `wasm` の順に処理し、`driver` がこれらをつなぎ、`cli` がコマンドを扱う。`diag` はコンパイルエラーの型
+- `internal/selfhost`: Go 製 ceroc と Cero 製 ceroc の差分テスト
+- `compiler/`: Cero で書いた ceroc（エントリは `compiler/main.cero`）
+- `std/`: Cero で書いた標準ライブラリ
 - `examples/`: サンプルの Cero プログラム
 - `docs/adr/`: 方針決定の記録（ADR）
 - `docs/design/`: 機能ごとの設計書（設計フェーズで作成する）
@@ -64,6 +67,7 @@ make check   # gofmt + go vet + go test（完了条件）
 make build   # ./bin/ceroc を生成
 ./bin/ceroc help
 ./bin/ceroc run examples/fib.cero   # 55 が出力される
+make selfhost   # 3 段ビルドで自己ホストを検査する（check には含めない）
 ```
 
-`internal/driver` と `internal/cli` の E2E テストは `wasmtime` を使う。`PATH` にない場合は skip されるので、E2E まで確認するときは wasmtime を入れておく。Cloud Agent 環境では `.cursor/environment.json` の `install` から `scripts/install-wasmtime.sh` が実行され、バージョン固定の wasmtime が `/usr/local/bin` に入る。
+`internal/driver` と `internal/cli` の E2E テストは `wasmtime` を使う。`PATH` にない場合は skip されるので、E2E まで確認するときは wasmtime を入れておく。`make selfhost` も wasmtime を使う。無いときは skip せず、メッセージを出して失敗する。Cloud Agent 環境では `.cursor/environment.json` の `install` から `scripts/install-wasmtime.sh` が実行され、バージョン固定の wasmtime が `/usr/local/bin` に入る。
