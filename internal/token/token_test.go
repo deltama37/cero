@@ -18,6 +18,8 @@ func TestKindString(t *testing.T) {
 		{name: "Type", kind: Type, want: "'type'"},
 		{name: "Match", kind: Match, want: "'match'"},
 		{name: "Underscore", kind: Underscore, want: "'_'"},
+		{name: "Import", kind: Import, want: "'import'"},
+		{name: "Pub", kind: Pub, want: "'pub'"},
 		{name: "Arrow", kind: Arrow, want: "'->'"},
 		{name: "FatArrow", kind: FatArrow, want: "'=>'"},
 		{name: "Bar", kind: Bar, want: "'|'"},
