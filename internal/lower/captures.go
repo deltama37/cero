@@ -122,7 +122,7 @@ func (cs *captureSet) addSym(
 
 func (cs *captureSet) bindPattern(p ast.Pattern, declared map[*typecheck.Symbol]bool) {
 	switch p := p.(type) {
-	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat:
+	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat, *ast.StrPat:
 	case *ast.VarPat:
 		sym := cs.info.PatVars[p]
 		if sym == nil {
@@ -140,7 +140,7 @@ func (cs *captureSet) bindPattern(p ast.Pattern, declared map[*typecheck.Symbol]
 
 func exprChildren(e ast.Expr) []ast.Expr {
 	switch e := e.(type) {
-	case *ast.IntLit, *ast.BoolLit:
+	case *ast.IntLit, *ast.BoolLit, *ast.StringLit, *ast.UnitLit:
 		return nil
 	case *ast.UnaryExpr:
 		return []ast.Expr{e.X}

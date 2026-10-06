@@ -70,6 +70,22 @@ fn main() -> Int { f(1) }
 			want: []string{},
 		},
 		{
+			name: "string and unit literals are not captures",
+			src: `fn main() -> Int {
+    let k = 1
+    fn() -> Int {
+        let n = stringLength("hi")
+        let u = ()
+        match "a" {
+            "a" => k + n,
+            _ => 0,
+        }
+    }()
+}
+`,
+			want: []string{"k"},
+		},
+		{
 			name: "first occurrence order without duplicates",
 			src: `fn main() -> Int {
     let a = 1
@@ -210,7 +226,7 @@ func funcLits(e ast.Expr) []*ast.FuncLit {
 			out = append(out, lit)
 		}
 		switch e := e.(type) {
-		case *ast.IntLit, *ast.BoolLit, *ast.Ident:
+		case *ast.IntLit, *ast.BoolLit, *ast.StringLit, *ast.UnitLit, *ast.Ident:
 		case *ast.UnaryExpr:
 			walk(e.X)
 		case *ast.BinaryExpr:
