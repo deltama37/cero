@@ -1,0 +1,320 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "util/intmap"
+
+pub type Type =
+    | TyInt
+    | TyBool
+    | TyString
+    | TyUnit
+    | TyFunc(List[Type], Type)
+    | TyNamed(Int, List[Type])
+    | TyParam(Int, String)
+    | TyMeta(Int)
+
+pub type CtorInfo = | CtorInfo(String, Int, List[Type], Int)
+
+pub type DataInfo = | DataInfo(String, List[Type], List[CtorInfo])
+
+pub type TyEnv = | TyEnv(IntMap[DataInfo], IntMap[String], IntMap[Type])
+
+pub fn tyIOData() -> Int {
+    0
+}
+
+fn solsOf(env: TyEnv) -> IntMap[Type] {
+    let TyEnv(_, _, sols) = env
+    sols
+}
+
+fn namesOf(env: TyEnv) -> IntMap[String] {
+    let TyEnv(_, names, _) = env
+    names
+}
+
+fn datasOf(env: TyEnv) -> IntMap[DataInfo] {
+    let TyEnv(datas, _, _) = env
+    datas
+}
+
+pub fn tyPrune(env: TyEnv, t: Type) -> Type {
+    match t {
+        TyMeta(id) => match imLookup(solsOf(env), id) {
+            Some(s) => tyPrune(env, s),
+            None => t,
+        },
+        _ => t,
+    }
+}
+
+fn resolveList(env: TyEnv, ts: List[Type], acc: List[Type]) -> List[Type] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => resolveList(env, rest, Cons(tyResolve(env, t), acc)),
+    }
+}
+
+pub fn tyResolve(env: TyEnv, t: Type) -> Type {
+    match tyPrune(env, t) {
+        TyFunc(ps, r) => TyFunc(resolveList(env, ps, Nil), tyResolve(env, r)),
+        TyNamed(id, args) => match args {
+            Nil => TyNamed(id, Nil),
+            _ => TyNamed(id, resolveList(env, args, Nil)),
+        },
+        other => other,
+    }
+}
+
+fn substParam(id: Int, params: List[Type], args: List[Type]) -> Option[Type] {
+    match params {
+        Nil => None,
+        Cons(p, prest) => match args {
+            Nil => None,
+            Cons(a, arest) => match p {
+                TyParam(pid, _) => if pid == id {
+                    Some(a)
+                } else {
+                    substParam(id, prest, arest)
+                },
+                _ => substParam(id, prest, arest),
+            },
+        },
+    }
+}
+
+fn substList(env: TyEnv, ts: List[Type], params: List[Type], args: List[Type], acc: List[Type]) -> List[Type] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => substList(env, rest, params, args, Cons(tySubst(env, t, params, args), acc)),
+    }
+}
+
+pub fn tySubst(env: TyEnv, t: Type, params: List[Type], args: List[Type]) -> Type {
+    match params {
+        Nil => t,
+        _ => match tyPrune(env, t) {
+            TyParam(id, name) => withDefault(substParam(id, params, args), TyParam(id, name)),
+            TyFunc(ps, r) => TyFunc(substList(env, ps, params, args, Nil), tySubst(env, r, params, args)),
+            TyNamed(id, as) => match as {
+                Nil => TyNamed(id, Nil),
+                _ => TyNamed(id, substList(env, as, params, args, Nil)),
+            },
+            other => other,
+        },
+    }
+}
+
+fn metaAdd(id: Int, acc: List[Int], seen: IntMap[Bool]) -> Pair[List[Int], IntMap[Bool]] {
+    if imMember(seen, id) {
+        Pair(acc, seen)
+    } else {
+        Pair(Cons(id, acc), imInsert(seen, id, true))
+    }
+}
+
+fn metaWalk(env: TyEnv, t: Type, acc: List[Int], seen: IntMap[Bool]) -> Pair[List[Int], IntMap[Bool]] {
+    match tyPrune(env, t) {
+        TyMeta(id) => metaAdd(id, acc, seen),
+        TyFunc(ps, r) => {
+            let Pair(acc2, seen2) = metaWalkList(env, ps, acc, seen)
+            metaWalk(env, r, acc2, seen2)
+        },
+        TyNamed(_, args) => metaWalkList(env, args, acc, seen),
+        _ => Pair(acc, seen),
+    }
+}
+
+fn metaWalkList(env: TyEnv, ts: List[Type], acc: List[Int], seen: IntMap[Bool]) -> Pair[List[Int], IntMap[Bool]] {
+    match ts {
+        Nil => Pair(acc, seen),
+        Cons(t, rest) => {
+            let Pair(acc2, seen2) = metaWalk(env, t, acc, seen)
+            metaWalkList(env, rest, acc2, seen2)
+        },
+    }
+}
+
+pub fn tyMetas(env: TyEnv, t: Type) -> List[Int] {
+    let Pair(acc, _) = metaWalk(env, t, Nil, imEmpty())
+    reverse(acc)
+}
+
+fn sameVar(t: Type, v: Type) -> Bool {
+    match t {
+        TyParam(i, _) => match v {
+            TyParam(j, _) => i == j,
+            _ => false,
+        },
+        TyMeta(i) => match v {
+            TyMeta(j) => i == j,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn mentionsList(env: TyEnv, ts: List[Type], v: Type) -> Bool {
+    match ts {
+        Nil => false,
+        Cons(t, rest) => if tyMentions(env, t, v) {
+            true
+        } else {
+            mentionsList(env, rest, v)
+        },
+    }
+}
+
+pub fn tyMentions(env: TyEnv, t: Type, v: Type) -> Bool {
+    let t2 = tyPrune(env, t)
+    if sameVar(t2, v) {
+        true
+    } else {
+        match t2 {
+            TyFunc(ps, r) => if mentionsList(env, ps, v) {
+                true
+            } else {
+                tyMentions(env, r, v)
+            },
+            TyNamed(_, args) => mentionsList(env, args, v),
+            _ => false,
+        }
+    }
+}
+
+fn equalList(env: TyEnv, xs: List[Type], ys: List[Type]) -> Bool {
+    match xs {
+        Nil => match ys {
+            Nil => true,
+            Cons(_, _) => false,
+        },
+        Cons(x, xr) => match ys {
+            Nil => false,
+            Cons(y, yr) => if tyEqual(env, x, y) {
+                equalList(env, xr, yr)
+            } else {
+                false
+            },
+        },
+    }
+}
+
+pub fn tyEqual(env: TyEnv, a: Type, b: Type) -> Bool {
+    match tyPrune(env, a) {
+        TyInt => match tyPrune(env, b) {
+            TyInt => true,
+            _ => false,
+        },
+        TyBool => match tyPrune(env, b) {
+            TyBool => true,
+            _ => false,
+        },
+        TyString => match tyPrune(env, b) {
+            TyString => true,
+            _ => false,
+        },
+        TyUnit => match tyPrune(env, b) {
+            TyUnit => true,
+            _ => false,
+        },
+        TyFunc(ps, r) => match tyPrune(env, b) {
+            TyFunc(qs, s) => if equalList(env, ps, qs) {
+                tyEqual(env, r, s)
+            } else {
+                false
+            },
+            _ => false,
+        },
+        TyNamed(id, args) => match tyPrune(env, b) {
+            TyNamed(id2, args2) => if id == id2 {
+                equalList(env, args, args2)
+            } else {
+                false
+            },
+            _ => false,
+        },
+        TyParam(id, _) => match tyPrune(env, b) {
+            TyParam(id2, _) => id == id2,
+            _ => false,
+        },
+        TyMeta(id) => match tyPrune(env, b) {
+            TyMeta(id2) => id == id2,
+            _ => false,
+        },
+    }
+}
+
+fn tyJoin(env: TyEnv, ts: List[Type], acc: String) -> String {
+    match ts {
+        Nil => acc,
+        Cons(t, rest) => match rest {
+            Nil => acc ++ tyString(env, t),
+            Cons(_, _) => tyJoin(env, rest, acc ++ tyString(env, t) ++ ", "),
+        },
+    }
+}
+
+fn tyIsFunc(env: TyEnv, t: Type) -> Bool {
+    match tyPrune(env, t) {
+        TyFunc(_, _) => true,
+        _ => false,
+    }
+}
+
+fn tyParamsString(env: TyEnv, ps: List[Type]) -> String {
+    match ps {
+        Nil => "()",
+        Cons(p, rest) => match rest {
+            Nil => if tyIsFunc(env, p) {
+                "(" ++ tyString(env, p) ++ ")"
+            } else {
+                tyString(env, p)
+            },
+            Cons(_, _) => "(" ++ tyJoin(env, ps, "") ++ ")",
+        },
+    }
+}
+
+fn dataName(env: TyEnv, id: Int) -> String {
+    match imLookup(datasOf(env), id) {
+        Some(info) => match info {
+            DataInfo(name, _, _) => name,
+        },
+        None => "",
+    }
+}
+
+fn tyNamedString(env: TyEnv, id: Int, args: List[Type]) -> String {
+    let name = dataName(env, id)
+    match args {
+        Nil => name,
+        _ => name ++ "[" ++ tyJoin(env, args, "") ++ "]",
+    }
+}
+
+pub fn tyString(env: TyEnv, t: Type) -> String {
+    match tyPrune(env, t) {
+        TyInt => "Int",
+        TyBool => "Bool",
+        TyString => "String",
+        TyUnit => "Unit",
+        TyFunc(ps, r) => tyParamsString(env, ps) ++ " -> " ++ tyString(env, r),
+        TyNamed(id, args) => tyNamedString(env, id, args),
+        TyParam(_, name) => name,
+        TyMeta(id) => "?" ++ withDefault(imLookup(namesOf(env), id), ""),
+    }
+}
+
+pub fn tyIsIO(env: TyEnv, t: Type) -> Bool {
+    match tyPrune(env, t) {
+        TyNamed(id, args) => if id == tyIOData() {
+            match args {
+                Cons(_, Nil) => true,
+                _ => false,
+            }
+        } else {
+            false
+        },
+        _ => false,
+    }
+}
