@@ -32,7 +32,8 @@ func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 			polyLets: polyLets,
 			memo:     make(map[*ast.FuncLit][]*typecheck.Symbol),
 		},
-		refs: make(map[ir.FuncID]ir.FuncID),
+		refs:        make(map[ir.FuncID]ir.FuncID),
+		builtinRefs: make(map[typecheck.Builtin]ir.FuncID),
 	}
 
 	foundMain := false
@@ -91,6 +92,8 @@ type lowerer struct {
 	captures *captureSet
 	// refs maps a function used as a value to its $ref wrapper.
 	refs map[ir.FuncID]ir.FuncID
+	// builtinRefs maps a built-in function used as a value to its $ref wrapper.
+	builtinRefs map[typecheck.Builtin]ir.FuncID
 }
 
 // instance is one specialization of a generic function.
@@ -172,6 +175,8 @@ func (l *lowerer) convert(
 		return &ir.IntConst{Value: e.Value}
 	case *ast.BoolLit:
 		return &ir.BoolConst{Value: e.Value}
+	case *ast.StringLit:
+		return &ir.StrConst{Value: e.Value}
 	case *ast.Ident:
 		return l.lowerIdent(fn, e, locals)
 	case *ast.UnaryExpr:
@@ -215,6 +220,10 @@ func (l *lowerer) lowerIdent(
 	case typecheck.SymFunc:
 		id := l.funcID(e, sym)
 		w := l.refWrapper(id)
+		l.addTable(w)
+		return &ir.FuncValue{Func: w}
+	case typecheck.SymBuiltin:
+		w := l.builtinRef(sym)
 		l.addTable(w)
 		return &ir.FuncValue{Func: w}
 	case typecheck.SymCtor:
@@ -266,6 +275,18 @@ func (l *lowerer) lowerBinary(
 		}
 	}
 	y := l.lowerExpr(fn, locals, e.Y)
+	switch e.Op {
+	case token.PlusPlus:
+		return &ir.Prim{Op: ir.StrConcat, Args: []ir.Expr{x, y}}
+	case token.Eq, token.NotEq:
+		if types.Equal(l.mustType(e.X), types.String) {
+			eq := &ir.Prim{Op: ir.StrEq, Args: []ir.Expr{x, y}}
+			if e.Op == token.NotEq {
+				return &ir.Unary{Op: ir.Not, X: eq}
+			}
+			return eq
+		}
+	}
 	return &ir.Binary{Op: binOp(e), X: x, Y: y}
 }
 
@@ -291,6 +312,12 @@ func (l *lowerer) lowerCall(
 				Func: fid,
 				Args: l.lowerArgs(fn, locals, e.Args),
 				T:    l.valType(l.mustType(e)),
+			}
+		}
+		if sym.Kind == typecheck.SymBuiltin {
+			return &ir.Prim{
+				Op:   primOf(sym.Builtin),
+				Args: l.lowerArgs(fn, locals, e.Args),
 			}
 		}
 	}
@@ -398,7 +425,7 @@ func (l *lowerer) lowerMatch(
 		} else {
 			result = l.lowerNestedMatch(fn, locals, e, s)
 		}
-	case types.IntType, types.BoolType:
+	case types.IntType, types.BoolType, types.StringType:
 		result = l.lowerValueMatch(fn, locals, e, s)
 	default:
 		panic(fmt.Sprintf("lower: cannot match on %T at %s", l.mustType(e.Scrutinee), e.Pos))
@@ -462,11 +489,7 @@ func (l *lowerer) lowerValueMatch(
 		}
 		then := l.armBody(fn, locals, arm, s)
 		return &ir.If{
-			Cond: &ir.Binary{
-				Op: ir.Eq,
-				X:  &ir.LocalGet{Local: s, T: scrutType},
-				Y:  patLiteral(arm.Pattern),
-			},
+			Cond: valueEqual(s, scrutType, arm.Pattern),
 			Then: then,
 			Else: chain(i + 1),
 			T:    matchType,
@@ -555,6 +578,8 @@ func (l *lowerer) patTest(
 			X:  &ir.LocalGet{Local: x, T: vt},
 			Y:  &ir.BoolConst{Value: p.Value},
 		}
+	case *ast.StrPat:
+		return strEqual(&ir.LocalGet{Local: x, T: vt}, p.Value)
 	case *ast.CtorPat:
 		ctor := l.info.CtorPats[p]
 		if ctor == nil {
@@ -616,7 +641,7 @@ func andExprs(tests []ir.Expr) ir.Expr {
 
 func patValType(p ast.Pattern) ir.ValType {
 	switch p.(type) {
-	case *ast.CtorPat:
+	case *ast.CtorPat, *ast.StrPat:
 		return ir.Ptr
 	case *ast.IntPat:
 		return ir.Int
@@ -702,7 +727,7 @@ func (l *lowerer) armBody(
 ) ir.Expr {
 	var lets []*ir.Let
 	switch pat := arm.Pattern.(type) {
-	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat:
+	case *ast.WildcardPat, *ast.IntPat, *ast.BoolPat, *ast.StrPat:
 	case *ast.VarPat:
 		sym := l.patVar(pat)
 		locals[sym] = s
@@ -747,6 +772,25 @@ func (l *lowerer) patVar(p *ast.VarPat) *typecheck.Symbol {
 		panic(fmt.Sprintf("lower: missing symbol for pattern '%s' at %s", p.Name, p.Pos))
 	}
 	return sym
+}
+
+// valueEqual reports whether the value in local s equals the literal pattern p.
+func valueEqual(s ir.LocalID, vt ir.ValType, p ast.Pattern) ir.Expr {
+	if sp, ok := p.(*ast.StrPat); ok {
+		return strEqual(&ir.LocalGet{Local: s, T: vt}, sp.Value)
+	}
+	return &ir.Binary{
+		Op: ir.Eq,
+		X:  &ir.LocalGet{Local: s, T: vt},
+		Y:  patLiteral(p),
+	}
+}
+
+func strEqual(x ir.Expr, value string) ir.Expr {
+	return &ir.Prim{
+		Op:   ir.StrEq,
+		Args: []ir.Expr{x, &ir.StrConst{Value: value}},
+	}
 }
 
 func patLiteral(p ast.Pattern) ir.Expr {
@@ -863,6 +907,58 @@ func (l *lowerer) refWrapper(id ir.FuncID) ir.FuncID {
 	return wid
 }
 
+// builtinRef returns the $ref wrapper for a built-in function. The wrapper
+// ignores its environment pointer and applies the built-in operation to its
+// arguments. One wrapper is shared by every use of that built-in.
+func (l *lowerer) builtinRef(sym *typecheck.Symbol) ir.FuncID {
+	if w, ok := l.builtinRefs[sym.Builtin]; ok {
+		return w
+	}
+	base := l.sigOf(sym.Type)
+	params := make([]ir.ValType, len(base.Params)+1)
+	copy(params, base.Params)
+	params[len(base.Params)] = ir.Ptr
+	sig := ir.Sig{Params: params, Result: base.Result}
+	wlocals := make([]ir.ValType, len(sig.Params))
+	copy(wlocals, sig.Params)
+	args := make([]ir.Expr, len(base.Params))
+	for i, t := range base.Params {
+		args[i] = &ir.LocalGet{Local: ir.LocalID(i), T: t}
+	}
+	body := &ir.Prim{Op: primOf(sym.Builtin), Args: args}
+	if body.Type() != base.Result {
+		panic(fmt.Sprintf("lower: built-in %s yields %s, signature result is %s", sym.Name, body.Type(), base.Result))
+	}
+	wid := ir.FuncID(len(l.module.Funcs))
+	l.module.Funcs = append(l.module.Funcs, &ir.Func{
+		Name:   sym.Name + "$ref",
+		Sig:    sig,
+		Locals: wlocals,
+		Body:   body,
+	})
+	l.builtinRefs[sym.Builtin] = wid
+	return wid
+}
+
+func primOf(b typecheck.Builtin) ir.PrimOp {
+	switch b {
+	case typecheck.BuiltinStringLength:
+		return ir.StrLength
+	case typecheck.BuiltinStringByteAt:
+		return ir.StrByteAt
+	case typecheck.BuiltinStringSlice:
+		return ir.StrSlice
+	case typecheck.BuiltinStringFromByte:
+		return ir.StrFromByte
+	case typecheck.BuiltinStringCompare:
+		return ir.StrCompare
+	case typecheck.BuiltinIntToString:
+		return ir.IntToString
+	default:
+		panic(fmt.Sprintf("lower: unknown built-in %d", int(b)))
+	}
+}
+
 func (l *lowerer) lowerArgs(
 	fn *ir.Func,
 	locals map[*typecheck.Symbol]ir.LocalID,
@@ -963,6 +1059,8 @@ func valTypeIn(env map[*types.TypeParam]ir.ValType, t types.Type) ir.ValType {
 		return ir.Int
 	case types.BoolType:
 		return ir.Bool
+	case types.StringType:
+		return ir.Ptr
 	case *types.Func:
 		return ir.FuncRef
 	case *types.Named:

@@ -1132,6 +1132,119 @@ fn main() -> Int {
 			),
 		},
 		{
+			name: "string literal",
+			src:  "fn main() -> Int { stringLength(\"hi\") }\n",
+			want: lines(
+				`(func 0 main (sig () Int) (locals) (prim string.length (str "hi")))`,
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "string concatenation is left associative",
+			src:  "fn main() -> Int { stringLength(\"a\" ++ \"b\" ++ \"c\") }\n",
+			want: lines(
+				`(func 0 main (sig () Int) (locals) (prim string.length (prim string.concat (prim string.concat (str "a") (str "b")) (str "c"))))`,
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "string equality and inequality",
+			src: `fn main() -> Int {
+    if "a" == "b" {
+        1
+    } else if "a" != "b" {
+        2
+    } else {
+        3
+    }
+}
+`,
+			want: lines(
+				`(func 0 main (sig () Int) (locals) (if (prim string.eq (str "a") (str "b")) 1 (if (not (prim string.eq (str "a") (str "b"))) 2 3)))`,
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "built-in calls",
+			src: `fn main() -> Int {
+    let s = stringFromByte(65) ++ intToString(1)
+    let t = stringSlice(s, 0, 1)
+    stringLength(t) + stringByteAt(t, 0) + stringCompare(s, t)
+}
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals Ptr Ptr) (block (let 0 (prim string.concat (prim string.from_byte 65) (prim int.to_string 1))) (let 1 (prim string.slice (local 0) 0 1)) (add (add (prim string.length (local 1)) (prim string.byte_at (local 1) 0)) (prim string.compare (local 0) (local 1)))))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "built-in used as a value shares one wrapper",
+			src: `fn apply(f: String -> Int, s: String) -> Int {
+    f(s)
+}
+
+fn main() -> Int {
+    apply(stringLength, "a") + apply(stringLength, "bb")
+}
+`,
+			want: lines(
+				"(func 0 apply (sig (FuncRef Ptr) Int) (locals FuncRef Ptr) (return.call.indirect (sig (Ptr) Int) (local 0) (local 1)))",
+				`(func 1 main (sig () Int) (locals) (add (call 0 (func.ref 2) (str "a")) (call 0 (func.ref 2) (str "bb"))))`,
+				"(func 2 stringLength$ref (sig (Ptr Ptr) Int) (locals Ptr Ptr) (prim string.length (local 0)))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "string match",
+			src: `fn classify(w: String) -> Int {
+    match w {
+        "fn" => 1,
+        "let" => 2,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    classify("fn")
+}
+`,
+			want: lines(
+				`(func 0 classify (sig (Ptr) Int) (locals Ptr Ptr) (block (let 1 (local 0)) (if (prim string.eq (local 1) (str "fn")) 1 (if (prim string.eq (local 1) (str "let")) 2 0))))`,
+				`(func 1 main (sig () Int) (locals) (return.call 0 (str "fn")))`,
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "nested string pattern",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn f(o: Option[String]) -> Int {
+    match o {
+        Some("hi") => 10,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				`(func 0 f (sig (Ptr) Int) (locals Ptr Ptr Ptr) (block (let 1 (local 0)) (if (if (switch.tag 1 (case 1 true) (default false)) (block (let 2 (field 1 0)) (prim string.eq (local 2) (str "hi"))) false) 10 0)))`,
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
 			name: "nested literal pattern",
 			src: `type Option[T] =
     | None
