@@ -39,3 +39,6 @@ jobs:
 
       - name: cero fmt
         run: make fmt-cero-check
+
+      - name: vscode extension
+        run: make vscode-test
