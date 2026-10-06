@@ -51,6 +51,11 @@ func TestFormatExpr(t *testing.T) {
 			want: "(div 1 2)",
 		},
 		{
+			name: "rem",
+			expr: &Binary{Op: Rem, X: &IntConst{Value: 7}, Y: &IntConst{Value: 3}},
+			want: "(rem 7 3)",
+		},
+		{
 			name: "eq",
 			expr: &Binary{Op: Eq, X: &IntConst{Value: 1}, Y: &IntConst{Value: 2}},
 			want: "(eq 1 2)",
@@ -204,6 +209,11 @@ func TestFormatExpr(t *testing.T) {
 			name: "string length",
 			expr: &Prim{Op: StrLength, Args: []Expr{&StrConst{Value: "ab"}}},
 			want: `(prim string.length (str "ab"))`,
+		},
+		{
+			name: "bit and",
+			expr: &Prim{Op: BitAnd, Args: []Expr{&IntConst{Value: 12}, &IntConst{Value: 10}}},
+			want: "(prim int.and 12 10)",
 		},
 		{
 			name: "string byte at",
@@ -477,6 +487,7 @@ func TestType(t *testing.T) {
 		{name: "sub", expr: &Binary{Op: Sub, X: intExpr, Y: intExpr}, want: Int},
 		{name: "mul", expr: &Binary{Op: Mul, X: intExpr, Y: intExpr}, want: Int},
 		{name: "div", expr: &Binary{Op: Div, X: intExpr, Y: intExpr}, want: Int},
+		{name: "rem", expr: &Binary{Op: Rem, X: intExpr, Y: intExpr}, want: Int},
 		{name: "eq", expr: &Binary{Op: Eq, X: intExpr, Y: intExpr}, want: Bool},
 		{name: "ne", expr: &Binary{Op: Ne, X: boolExpr, Y: boolExpr}, want: Bool},
 		{name: "lt", expr: &Binary{Op: Lt, X: intExpr, Y: intExpr}, want: Bool},
@@ -522,6 +533,12 @@ func TestType(t *testing.T) {
 		{name: "io arg count", expr: &Prim{Op: IOArgCount}, want: Int},
 		{name: "io arg at", expr: &Prim{Op: IOArgAt}, want: Ptr},
 		{name: "io exit", expr: &Prim{Op: IOExit}, want: Bool},
+		{name: "bit and", expr: &Prim{Op: BitAnd}, want: Int},
+		{name: "bit or", expr: &Prim{Op: BitOr}, want: Int},
+		{name: "bit xor", expr: &Prim{Op: BitXor}, want: Int},
+		{name: "shift left", expr: &Prim{Op: ShiftLeft}, want: Int},
+		{name: "shift right", expr: &Prim{Op: ShiftRight}, want: Int},
+		{name: "shift right unsigned", expr: &Prim{Op: ShiftRightUnsigned}, want: Int},
 	}
 
 	for _, tt := range tests {

@@ -185,6 +185,18 @@ func primName(op PrimOp) string {
 		return "io.arg_at"
 	case IOExit:
 		return "io.exit"
+	case BitAnd:
+		return "int.and"
+	case BitOr:
+		return "int.or"
+	case BitXor:
+		return "int.xor"
+	case ShiftLeft:
+		return "int.shl"
+	case ShiftRight:
+		return "int.shr_s"
+	case ShiftRightUnsigned:
+		return "int.shr_u"
 	default:
 		panic(fmt.Sprintf("ir.FormatExpr: unknown prim %d", int(op)))
 	}
@@ -200,6 +212,8 @@ func binaryName(op BinOp) string {
 		return "mul"
 	case Div:
 		return "div"
+	case Rem:
+		return "rem"
 	case Eq:
 		return "eq"
 	case Ne:

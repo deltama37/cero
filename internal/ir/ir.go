@@ -114,6 +114,7 @@ const (
 	Sub
 	Mul
 	Div
+	Rem
 	Eq // Int, Int -> Bool  or  Bool, Bool -> Bool
 	Ne
 	Lt // Int, Int -> Bool
@@ -229,7 +230,7 @@ func (e *Unary) Type() ValType {
 // Type returns Int for Add, Sub, Mul and Div, and Bool for every other operator.
 func (e *Binary) Type() ValType {
 	switch e.Op {
-	case Add, Sub, Mul, Div:
+	case Add, Sub, Mul, Div, Rem:
 		return Int
 	default:
 		return Bool
@@ -266,23 +267,29 @@ type StrConst struct{ Value string }
 type PrimOp int
 
 const (
-	StrLength    PrimOp = iota // (Ptr) -> Int
-	StrByteAt                  // (Ptr, Int) -> Int
-	StrSlice                   // (Ptr, Int, Int) -> Ptr
-	StrFromByte                // (Int) -> Ptr
-	StrCompare                 // (Ptr, Ptr) -> Int
-	IntToString                // (Int) -> Ptr
-	StrConcat                  // (Ptr, Ptr) -> Ptr
-	StrEq                      // (Ptr, Ptr) -> Bool
-	IOPrint                    // (Ptr) -> Bool
-	IOEPrint                   // (Ptr) -> Bool
-	IOReadStdin                // () -> Ptr
-	IOReadFile                 // (Ptr) -> Ptr
-	IOFileExists               // (Ptr) -> Bool
-	IOWriteFile                // (Ptr, Ptr) -> Bool
-	IOArgCount                 // () -> Int
-	IOArgAt                    // (Int) -> Ptr
-	IOExit                     // (Int) -> Bool
+	StrLength          PrimOp = iota // (Ptr) -> Int
+	StrByteAt                        // (Ptr, Int) -> Int
+	StrSlice                         // (Ptr, Int, Int) -> Ptr
+	StrFromByte                      // (Int) -> Ptr
+	StrCompare                       // (Ptr, Ptr) -> Int
+	IntToString                      // (Int) -> Ptr
+	StrConcat                        // (Ptr, Ptr) -> Ptr
+	StrEq                            // (Ptr, Ptr) -> Bool
+	IOPrint                          // (Ptr) -> Bool
+	IOEPrint                         // (Ptr) -> Bool
+	IOReadStdin                      // () -> Ptr
+	IOReadFile                       // (Ptr) -> Ptr
+	IOFileExists                     // (Ptr) -> Bool
+	IOWriteFile                      // (Ptr, Ptr) -> Bool
+	IOArgCount                       // () -> Int
+	IOArgAt                          // (Int) -> Ptr
+	IOExit                           // (Int) -> Bool
+	BitAnd                           // (Int, Int) -> Int
+	BitOr                            // (Int, Int) -> Int
+	BitXor                           // (Int, Int) -> Int
+	ShiftLeft                        // (Int, Int) -> Int
+	ShiftRight                       // (Int, Int) -> Int
+	ShiftRightUnsigned               // (Int, Int) -> Int
 )
 
 // Prim applies a built-in operation to Args.
@@ -297,7 +304,8 @@ func (*StrConst) Type() ValType { return Ptr }
 // Type returns the result type of the built-in operation.
 func (e *Prim) Type() ValType {
 	switch e.Op {
-	case StrLength, StrByteAt, StrCompare, IOArgCount:
+	case StrLength, StrByteAt, StrCompare, IOArgCount,
+		BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, ShiftRightUnsigned:
 		return Int
 	case StrSlice, StrFromByte, IntToString, StrConcat, IOReadStdin, IOReadFile, IOArgAt:
 		return Ptr
