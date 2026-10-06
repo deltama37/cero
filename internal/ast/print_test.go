@@ -140,6 +140,11 @@ func TestFormat(t *testing.T) {
 			want: "false",
 		},
 		{
+			name: "string literal",
+			got:  FormatExpr(&StringLit{Value: "a\n"}),
+			want: `"a\n"`,
+		},
+		{
 			name: "ident",
 			got:  FormatExpr(ident("x")),
 			want: "x",
@@ -398,6 +403,11 @@ func TestFormat(t *testing.T) {
 			name: "bool pattern false",
 			got:  FormatPattern(&BoolPat{Value: false}),
 			want: "false",
+		},
+		{
+			name: "string pattern",
+			got:  FormatPattern(&StrPat{Value: "a\n"}),
+			want: `"a\n"`,
 		},
 		{
 			name: "match expr",

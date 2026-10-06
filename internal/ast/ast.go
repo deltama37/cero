@@ -102,6 +102,17 @@ func (e *IntLit) Position() diag.Pos { return e.Pos }
 
 func (*IntLit) expr() {}
 
+// StringLit is a string literal. Value holds the decoded bytes.
+type StringLit struct {
+	Pos   diag.Pos
+	Value string
+}
+
+// Position returns the position of the literal.
+func (e *StringLit) Position() diag.Pos { return e.Pos }
+
+func (*StringLit) expr() {}
+
 // BoolLit is a boolean literal.
 type BoolLit struct {
 	Pos   diag.Pos
@@ -140,7 +151,7 @@ func (*UnaryExpr) expr() {}
 type BinaryExpr struct {
 	Pos   diag.Pos // X.Position()
 	OpPos diag.Pos
-	Op    token.Kind // Plus, Minus, Star, Slash, Eq, NotEq, Lt, LtEq, Gt, GtEq, AndAnd, OrOr
+	Op    token.Kind // Plus, PlusPlus, Minus, Star, Slash, Eq, NotEq, Lt, LtEq, Gt, GtEq, AndAnd, OrOr
 	X, Y  Expr
 }
 
@@ -280,6 +291,17 @@ func (p *IntPat) Position() diag.Pos { return p.Pos }
 
 func (*IntPat) pattern() {}
 
+// StrPat matches one string.
+type StrPat struct {
+	Pos   diag.Pos
+	Value string
+}
+
+// Position returns the position of the literal.
+func (p *StrPat) Position() diag.Pos { return p.Pos }
+
+func (*StrPat) pattern() {}
+
 // BoolPat matches true or false.
 type BoolPat struct {
 	Pos   diag.Pos
@@ -296,6 +318,7 @@ var (
 	_ TypeExpr = (*FuncType)(nil)
 
 	_ Expr = (*IntLit)(nil)
+	_ Expr = (*StringLit)(nil)
 	_ Expr = (*BoolLit)(nil)
 	_ Expr = (*Ident)(nil)
 	_ Expr = (*UnaryExpr)(nil)
@@ -310,5 +333,6 @@ var (
 	_ Pattern = (*VarPat)(nil)
 	_ Pattern = (*CtorPat)(nil)
 	_ Pattern = (*IntPat)(nil)
+	_ Pattern = (*StrPat)(nil)
 	_ Pattern = (*BoolPat)(nil)
 )
