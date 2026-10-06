@@ -872,12 +872,12 @@ fn main() -> Int { add(true, false) }
 		{
 			name: "main with parameter",
 			src:  "fn main(x: Int) -> Int { x }",
-			want: "1:4: function 'main' must have type () -> Int, found Int -> Int",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found Int -> Int",
 		},
 		{
 			name: "main returns bool",
 			src:  "fn main() -> Bool { true }",
-			want: "1:4: function 'main' must have type () -> Int, found () -> Bool",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found () -> Bool",
 		},
 		{
 			name: "body error before missing main",
@@ -2705,12 +2705,12 @@ fn main() { f(1) }
 		{
 			name: "main with a parameter",
 			src:  "fn main(x) { 1 }\n",
-			want: "1:4: function 'main' must have type () -> Int, found ?t1 -> ?t2",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found ?t1 -> ?t2",
 		},
 		{
 			name: "main returning Bool",
 			src:  "fn main() { true }\n",
-			want: "1:13: expected Int, found Bool",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found () -> Bool",
 		},
 		{
 			name: "argument type mismatch",
@@ -3325,6 +3325,326 @@ fn main() -> Int { 1 }
 	})
 }
 
+func TestCheckIOSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "unit literal",
+			src: `fn id(u: Unit) -> Unit { u }
+fn main() -> Int {
+    let u: Unit = ()
+    let v = ()
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				id := funcByName(t, file, "id")
+				if got := info.Params[id.Params[0]].Type.String(); got != "Unit" {
+					t.Errorf("parameter u = %s, want Unit", got)
+				}
+				wantType(t, info, id.Body.Result, "Unit")
+				lets := funcByName(t, file, "main").Body.Lets
+				wantType(t, info, lets[0].Value, "Unit")
+				wantType(t, info, lets[1].Value, "Unit")
+				if got := info.Defs[lets[0]].Type.String(); got != "Unit" {
+					t.Errorf("let u = %s, want Unit", got)
+				}
+				if got := info.Defs[lets[1]].Type.String(); got != "Unit" {
+					t.Errorf("let v = %s, want Unit", got)
+				}
+				if info.MainIO {
+					t.Error("MainIO = true, want false")
+				}
+			},
+		},
+		{
+			name: "pure of int",
+			src: `fn main() -> Int {
+    let m = pure(1)
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.CallExpr)
+				wantType(t, info, call, "IO[Int]")
+				id := call.Fn.(*ast.Ident)
+				wantTypeArgs(t, info, id, "Int")
+				sym := info.Uses[id]
+				if sym == nil || sym.Kind != SymBuiltin || sym.Builtin != BuiltinPure {
+					t.Fatalf("pure symbol = %+v", sym)
+				}
+				if sym.Type.String() != "T -> IO[T]" {
+					t.Errorf("pure type = %s, want T -> IO[T]", sym.Type)
+				}
+				if len(sym.TypeParams) != 1 || sym.TypeParams[0].Name != "T" {
+					t.Errorf("pure type params = %v", sym.TypeParams)
+				}
+			},
+		},
+		{
+			name: "bind infers the argument",
+			src: `fn main() -> IO[Unit] {
+    bind(readStdin(), fn(s) { print(s) })
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				wantType(t, info, call, "IO[Unit]")
+				wantTypeArgs(t, info, call.Fn.(*ast.Ident), "String", "Unit")
+				lit := call.Args[1].(*ast.FuncLit)
+				if got := info.Params[lit.Params[0]].Type.String(); got != "String" {
+					t.Errorf("s = %s, want String", got)
+				}
+				if !info.MainIO {
+					t.Error("MainIO = false, want true")
+				}
+			},
+		},
+		{
+			name: "built-in calls",
+			src: `fn main() -> Int {
+    let a = pure(1)
+    let b = bind(readStdin(), fn(s) { print(s) })
+    let c = print("x")
+    let d = eprint("x")
+    let e = readStdin()
+    let f = readFile("p")
+    let g = fileExists("p")
+    let h = writeFile("p", "x")
+    let i = argCount()
+    let j = argAt(0)
+    let k = exit(0)
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				want := []struct {
+					typ string
+					b   Builtin
+				}{
+					{"IO[Int]", BuiltinPure},
+					{"IO[Unit]", BuiltinBind},
+					{"IO[Unit]", BuiltinPrint},
+					{"IO[Unit]", BuiltinEPrint},
+					{"IO[String]", BuiltinReadStdin},
+					{"IO[String]", BuiltinReadFile},
+					{"IO[Bool]", BuiltinFileExists},
+					{"IO[Unit]", BuiltinWriteFile},
+					{"IO[Int]", BuiltinArgCount},
+					{"IO[String]", BuiltinArgAt},
+					{"IO[Unit]", BuiltinExit},
+				}
+				if len(lets) != len(want) {
+					t.Fatalf("lets = %d, want %d", len(lets), len(want))
+				}
+				for i, w := range want {
+					wantType(t, info, lets[i].Value, w.typ)
+					call := lets[i].Value.(*ast.CallExpr)
+					sym := info.Uses[call.Fn.(*ast.Ident)]
+					if sym == nil || sym.Kind != SymBuiltin || sym.Builtin != w.b {
+						t.Errorf("call %d symbol = %+v, want built-in %d", i, sym, w.b)
+					}
+				}
+				lit := lets[1].Value.(*ast.CallExpr).Args[1].(*ast.FuncLit)
+				if got := info.Params[lit.Params[0]].Type.String(); got != "String" {
+					t.Errorf("s = %s, want String", got)
+				}
+			},
+		},
+		{
+			name: "pure as a value",
+			src: `fn main() -> Int {
+    let p = pure
+    let a = p(1)
+    let b = p(true)
+    0
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				body := funcByName(t, file, "main").Body
+				pureID := body.Lets[0].Value.(*ast.Ident)
+				pureSym := info.Uses[pureID]
+				if pureSym == nil || pureSym.Kind != SymBuiltin || pureSym.Builtin != BuiltinPure {
+					t.Fatalf("pure symbol = %+v", pureSym)
+				}
+				p := info.Defs[body.Lets[0]]
+				if p.Kind != SymLocal || len(p.TypeParams) != 1 {
+					t.Fatalf("let p = %+v", p)
+				}
+				if p.Type.String() != "T -> IO[T]" {
+					t.Errorf("let p type = %s, want T -> IO[T]", p.Type)
+				}
+				wantType(t, info, body.Lets[1].Value, "IO[Int]")
+				wantType(t, info, body.Lets[2].Value, "IO[Bool]")
+				ids := findIdents(body, "p")
+				if len(ids) != 2 {
+					t.Fatalf("uses of p = %d, want 2", len(ids))
+				}
+				wantTypeArgs(t, info, ids[0], "Int")
+				wantTypeArgs(t, info, ids[1], "Bool")
+				if info.Uses[ids[0]] != p || info.Uses[ids[1]] != p {
+					t.Error("uses of p do not resolve to the let")
+				}
+			},
+		},
+		{
+			name: "annotated main returns IO",
+			src: `fn main() -> IO[Unit] {
+    print("hi")
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "main"), "() -> IO[Unit]")
+				if !info.MainIO {
+					t.Error("MainIO = false, want true")
+				}
+			},
+		},
+		{
+			name: "inferred main returns IO",
+			src:  "fn main() { print(\"hi\") }\n",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "main"), "() -> IO[Unit]")
+				if !info.MainIO {
+					t.Error("MainIO = false, want true")
+				}
+			},
+		},
+		{
+			name: "recursive IO function",
+			src: `fn loop(n: Int) -> IO[Unit] {
+    if n <= 0 {
+        pure(())
+    } else {
+        loop(n - 1)
+    }
+}
+fn main() -> IO[Unit] {
+    loop(1)
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "loop"), "Int -> IO[Unit]")
+				if !info.MainIO {
+					t.Error("MainIO = false, want true")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckIOError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "IO without a type argument",
+			src:  "fn f() -> IO { 1 }\n",
+			want: "1:11: wrong number of type arguments for 'IO': expected 1, found 0",
+		},
+		{
+			name: "IO with two type arguments",
+			src:  "fn f() -> IO[Int, Bool] { 1 }\n",
+			want: "1:11: wrong number of type arguments for 'IO': expected 1, found 2",
+		},
+		{
+			name: "type argument on Unit",
+			src:  "fn f(x: Unit[Int]) -> Int { 0 }\n",
+			want: "1:9: wrong number of type arguments for 'Unit': expected 0, found 1",
+		},
+		{
+			name: "redefine IO",
+			src:  "type IO = Mk\n",
+			want: "1:6: cannot redefine built-in type 'IO'",
+		},
+		{
+			name: "redefine Unit",
+			src:  "type Unit = U\n",
+			want: "1:6: cannot redefine built-in type 'Unit'",
+		},
+		{
+			name: "type parameter Unit",
+			src:  "fn f[Unit](x: Int) -> Int { x }\n",
+			want: "1:6: type parameter 'Unit' conflicts with type 'Unit'",
+		},
+		{
+			name: "type parameter IO",
+			src:  "fn f[IO](x: Int) -> Int { x }\n",
+			want: "1:6: type parameter 'IO' conflicts with type 'IO'",
+		},
+		{
+			name: "compare unit",
+			src:  "fn main() -> Int { () == () }\n",
+			want: "1:20: cannot compare values of type Unit",
+		},
+		{
+			name: "compare IO",
+			src:  "fn main() -> Int { pure(1) == pure(1) }\n",
+			want: "1:20: cannot compare values of type IO[Int]",
+		},
+		{
+			name: "match on IO",
+			src:  "fn main() -> Int { match pure(1) { _ => 0 } }\n",
+			want: "1:26: cannot match on values of type IO[Int]",
+		},
+		{
+			name: "main returns IO of Int",
+			src:  "fn main() -> IO[Int] { pure(1) }\n",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found () -> IO[Int]",
+		},
+		{
+			name: "main returns Bool",
+			src:  "fn main() -> Bool { true }\n",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found () -> Bool",
+		},
+		{
+			name: "inferred main returns Bool",
+			src:  "fn main() { true }\n",
+			want: "1:4: function 'main' must have type () -> Int or () -> IO[Unit], found () -> Bool",
+		},
+		{
+			name: "bind expects IO",
+			src: `fn f(x: Int) -> IO[Int] { pure(x) }
+fn main() -> IO[Unit] { bind(1, f) }
+`,
+			want: "2:30: expected IO[?A], found Int",
+		},
+		{
+			name: "print expects String",
+			src:  "fn main() -> IO[Unit] { print(1) }\n",
+			want: "1:31: expected String, found Int",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
 // wantFuncScheme checks that d's symbol has type want and type parameters
 // named names, in order. names is empty for a monomorphic function.
 func wantFuncScheme(
@@ -3500,7 +3820,7 @@ func visitExprs(e ast.Expr, fn func(ast.Expr)) {
 	}
 	fn(e)
 	switch e := e.(type) {
-	case *ast.IntLit, *ast.BoolLit, *ast.Ident:
+	case *ast.IntLit, *ast.BoolLit, *ast.StringLit, *ast.UnitLit, *ast.Ident:
 	case *ast.UnaryExpr:
 		visitExprs(e.X, fn)
 	case *ast.BinaryExpr:
@@ -3589,8 +3909,17 @@ func assertComplete(t *testing.T, file *ast.File, info *Info) {
 		}
 		if fn.Name == "main" {
 			mainFound = true
-			if sig.String() != "() -> Int" {
-				t.Errorf("main type = %s, want () -> Int", sig)
+			switch sig.String() {
+			case "() -> Int":
+				if info.MainIO {
+					t.Errorf("MainIO = true, want false")
+				}
+			case "() -> IO[Unit]":
+				if !info.MainIO {
+					t.Errorf("MainIO = false, want true")
+				}
+			default:
+				t.Errorf("main type = %s, want () -> Int or () -> IO[Unit]", sig)
 			}
 		}
 		params += checkParams(t, info, fn.Params, sig.Params)
@@ -3726,7 +4055,7 @@ func walkExpr(
 	*exprs++
 
 	switch e := e.(type) {
-	case *ast.IntLit, *ast.BoolLit, *ast.StringLit:
+	case *ast.IntLit, *ast.BoolLit, *ast.StringLit, *ast.UnitLit:
 	case *ast.Ident:
 		*idents++
 		sym := info.Uses[e]

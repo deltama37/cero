@@ -1294,6 +1294,140 @@ func lines(parts ...string) string {
 	return strings.Join(parts, "\n")
 }
 
+func TestLowerIO(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		src     string
+		want    string
+		command bool
+	}{
+		{
+			name: "print builds a func ref and an action",
+			src:  "fn main() -> IO[Unit] { print(\"x\") }\n",
+			want: lines(
+				`(func 0 main (sig () FuncRef) (locals) (func.ref 1 (construct 0 (str "x"))))`,
+				"(func 1 io.print (sig (Ptr) Bool) (locals Ptr) (prim io.print (field 0 0)))",
+				"(table 1)",
+				"(main 0)",
+			),
+			command: true,
+		},
+		{
+			name: "pure specializes twice",
+			src: `fn main() -> Int {
+    let a = pure(1)
+    let b = pure(true)
+    0
+}
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals FuncRef FuncRef) (block (let 0 (func.ref 1 (construct 0 1))) (let 1 (func.ref 2 (construct 0 true))) 0))",
+				"(func 1 io.pure[Int] (sig (Ptr) Int) (locals Ptr) (field 0 0))",
+				"(func 2 io.pure[Bool] (sig (Ptr) Bool) (locals Ptr) (field 0 0))",
+				"(table 1 2)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "bind tail-calls the next action",
+			src: `fn main() -> IO[Unit] {
+    bind(readStdin(), fn(s: String) -> IO[Unit] { print(s) })
+}
+`,
+			want: lines(
+				"(func 0 main (sig () FuncRef) (locals) (func.ref 4 (construct 0 (func.ref 1) (func.ref 2))))",
+				"(func 1 io.read_stdin (sig (Ptr) Ptr) (locals Ptr) (prim io.read_stdin))",
+				"(func 2 lambda$0 (sig (Ptr Ptr) FuncRef) (locals Ptr Ptr) (func.ref 3 (construct 0 (local 0))))",
+				"(func 3 io.print (sig (Ptr) Bool) (locals Ptr) (prim io.print (field 0 0)))",
+				"(func 4 io.bind[Ptr,Bool] (sig (Ptr) Bool) (locals Ptr Ptr) (block (let 1 (call.indirect (sig () Ptr) (field 0 0))) (return.call.indirect (sig () Bool) (call.indirect (sig (Ptr) FuncRef) (field 0 1) (local 1)))))",
+				"(table 1 3 2 4)",
+				"(main 0)",
+			),
+			command: true,
+		},
+		{
+			name: "one action per built-in",
+			src: `fn main() -> IO[Unit] {
+    let a = print("a")
+    print("b")
+}
+`,
+			want: lines(
+				`(func 0 main (sig () FuncRef) (locals FuncRef) (block (let 0 (func.ref 1 (construct 0 (str "a")))) (func.ref 1 (construct 0 (str "b")))))`,
+				"(func 1 io.print (sig (Ptr) Bool) (locals Ptr) (prim io.print (field 0 0)))",
+				"(table 1)",
+				"(main 0)",
+			),
+			command: true,
+		},
+		{
+			name: "pure used as a value gets one ref per specialization",
+			src: `fn main() -> Int {
+    let p = pure
+    let a = p(1)
+    let b = p(true)
+    0
+}
+`,
+			want: lines(
+				"(func 0 main (sig () Int) (locals FuncRef FuncRef) (block (let 0 (call.indirect (sig (Int) FuncRef) (func.ref 2) 1)) (let 1 (call.indirect (sig (Bool) FuncRef) (func.ref 4) true)) 0))",
+				"(func 1 io.pure[Int] (sig (Ptr) Int) (locals Ptr) (field 0 0))",
+				"(func 2 pure[Int]$ref (sig (Int Ptr) FuncRef) (locals Int Ptr) (func.ref 1 (construct 0 (local 0))))",
+				"(func 3 io.pure[Bool] (sig (Ptr) Bool) (locals Ptr) (field 0 0))",
+				"(func 4 pure[Bool]$ref (sig (Bool Ptr) FuncRef) (locals Bool Ptr) (func.ref 3 (construct 0 (local 0))))",
+				"(table 1 2 3 4)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "unit literal is false",
+			src: `fn f() -> Unit { () }
+
+fn main() -> Int { 0 }
+`,
+			want: lines(
+				"(func 0 f (sig () Bool) (locals) false)",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "int main is not a command",
+			src:  "fn main() -> Int { 0 }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 0)",
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := parser.ParseFile([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			info, err := typecheck.Check(file)
+			if err != nil {
+				t.Fatalf("typecheck: %v", err)
+			}
+			m := Lower(file, info)
+			if got := ir.Format(m); got != tt.want {
+				t.Errorf("Lower() =\n%s\nwant:\n%s", got, tt.want)
+			}
+			if m.Command != tt.command {
+				t.Errorf("Command = %v, want %v", m.Command, tt.command)
+			}
+		})
+	}
+}
+
 func TestLowerProgram(t *testing.T) {
 	t.Parallel()
 

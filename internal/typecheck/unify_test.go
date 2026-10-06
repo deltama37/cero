@@ -22,6 +22,22 @@ func TestUnify(t *testing.T) {
 			},
 		},
 		{
+			name: "unit and unit",
+			run: func(t *testing.T) {
+				if !unify(types.Unit, types.Unit) {
+					t.Fatal("unify(Unit, Unit) = false")
+				}
+			},
+		},
+		{
+			name: "unit and int",
+			run: func(t *testing.T) {
+				if unify(types.Unit, types.Int) {
+					t.Fatal("unify(Unit, Int) = true")
+				}
+			},
+		},
+		{
 			name: "int and bool",
 			run: func(t *testing.T) {
 				if unify(types.Int, types.Bool) {

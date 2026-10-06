@@ -65,7 +65,7 @@ func funcRefs(
 
 	walkExpr = func(e ast.Expr) {
 		switch e := e.(type) {
-		case *ast.IntLit, *ast.BoolLit, *ast.StringLit:
+		case *ast.IntLit, *ast.BoolLit, *ast.StringLit, *ast.UnitLit:
 		case *ast.Ident:
 			if !inScope(e.Name) && isFunc(e.Name) {
 				add(e.Name)

@@ -9,6 +9,7 @@ import (
 
 const (
 	secType     byte = 1
+	secImport   byte = 2
 	secFunction byte = 3
 	secTable    byte = 4
 	secMemory   byte = 5
@@ -19,6 +20,7 @@ const (
 	secData     byte = 11
 
 	opUnreachable        byte = 0x00
+	opDrop               byte = 0x1a
 	opBlock              byte = 0x02
 	opLoop               byte = 0x03
 	opEnd                byte = 0x0b
@@ -61,6 +63,7 @@ const (
 	opI64LeS             byte = 0x57
 	opI64GeS             byte = 0x59
 	opI64GeU             byte = 0x5a
+	opI32Mul             byte = 0x6c
 	opI32Add             byte = 0x6a
 	opI32Sub             byte = 0x6b
 	opI32And             byte = 0x71
@@ -100,6 +103,8 @@ var wasmHeader = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
 // Encode returns the WebAssembly binary module for m.
 func Encode(m *ir.Module) []byte {
+	io := collectIOUse(m)
+	wasi := m.Command || io.any()
 	mem := usesMemory(m)
 	var news [][]ir.ValType
 	var strs strUse
@@ -107,32 +112,71 @@ func Encode(m *ir.Module) []byte {
 	if mem {
 		news = collectNews(m)
 		strs = collectStrUse(m)
+		if io.readFile || io.writeFile {
+			strs.concat = true
+		}
 		lay = layoutStrings(m)
+		if io.readFile {
+			lay.add(errReadFile)
+		}
+		if io.writeFile {
+			lay.add(errWriteFile)
+		}
+		if io.readFile || io.writeFile {
+			lay.add(errNewline)
+		}
 	}
-	sigs, types := collectTypes(m, mem, news, strs)
+	sigs, types := collectTypes(m, mem, news, strs, io, wasi)
+	base := 0
+	if wasi {
+		base = wasiImportCount
+	}
+	voids := [][]ir.ValType{}
+	procExitType := -1
+	startType := -1
+	if wasi {
+		procExitType = len(sigs) + len(voids)
+		voids = append(voids, []ir.ValType{ir.Ptr})
+	}
+	if m.Command {
+		startType = len(sigs) + len(voids)
+		voids = append(voids, nil)
+	}
+	allocIdx := len(m.Funcs) + base
 	e := &encoder{
-		table:    m.Table,
-		types:    types,
-		allocIdx: len(m.Funcs),
-		newIdx:   newFuncIndex(len(m.Funcs), news),
-		scratch:  -1,
-		strAddr:  lay.addr,
-		strFn:    strFuncIndices(len(m.Funcs), len(news), strs),
+		table:        m.Table,
+		types:        types,
+		allocIdx:     allocIdx,
+		newIdx:       newFuncIndex(allocIdx, news),
+		scratch:      -1,
+		strAddr:      lay.addr,
+		strFn:        strFuncIndices(allocIdx, len(news), strs),
+		base:         base,
+		ioFn:         ioFuncIndices(allocIdx+1+len(news)+strs.count(), io, m.Command),
+		procExitType: procExitType,
+		startType:    startType,
 	}
 
 	out := append([]byte(nil), wasmHeader...)
-	out = append(out, encodeTypeSection(sigs)...)
-	out = append(out, encodeFunctionSection(m, types, mem, news, strs)...)
+	out = append(out, encodeTypeSection(sigs, voids)...)
+	if wasi {
+		out = append(out, encodeImportSection(types, procExitType)...)
+	}
+	out = append(out, encodeFunctionSection(m, types, mem, news, strs, io, startType)...)
 	out = append(out, encodeTableSection(m)...)
 	if mem {
 		out = append(out, encodeMemorySection(memoryMinPages(lay.heap))...)
 		out = append(out, encodeGlobalSection(lay.heap)...)
 	}
-	out = append(out, encodeExportSection(m)...)
-	if len(m.Table) > 0 {
-		out = append(out, encodeElementSection(m)...)
+	if m.Command {
+		out = append(out, encodeCommandExport(e.ioFn.start)...)
+	} else {
+		out = append(out, encodeExportSection(m, base)...)
 	}
-	out = append(out, e.encodeCodeSection(m, mem, news, strs)...)
+	if len(m.Table) > 0 {
+		out = append(out, encodeElementSection(m, base)...)
+	}
+	out = append(out, e.encodeCodeSection(m, mem, news, strs, io)...)
 	if len(lay.data) > 0 {
 		out = append(out, encodeDataSection(lay.data)...)
 	}
@@ -140,20 +184,28 @@ func Encode(m *ir.Module) []byte {
 }
 
 type encoder struct {
-	table    []ir.FuncID
-	types    map[string]int
-	buf      []byte
-	allocIdx int
-	newIdx   map[string]int
-	result   ir.ValType // result type of the function being encoded
-	scratch  int        // local index for call_indirect, or -1
-	strAddr  map[string]int
-	strFn    strFuncIdx
+	table        []ir.FuncID
+	types        map[string]int
+	buf          []byte
+	allocIdx     int
+	newIdx       map[string]int
+	result       ir.ValType // result type of the function being encoded
+	scratch      int        // local index for call_indirect, or -1
+	strAddr      map[string]int
+	strFn        strFuncIdx
+	base         int // number of imported functions; 0 when the module has no imports
+	ioFn         ioFuncIdx
+	procExitType int
+	startType    int
 }
 
 // usesMemory reports whether any function body contains a Construct,
-// Field, SwitchTag, StrConst or Prim node.
+// Field, SwitchTag, StrConst or Prim node. A WASI command always has
+// memory so _start can call alloc through the IO helpers.
 func usesMemory(m *ir.Module) bool {
+	if m.Command {
+		return true
+	}
 	for _, fn := range m.Funcs {
 		found := false
 		walk(fn.Body, func(e ir.Expr) {
@@ -183,6 +235,8 @@ func collectTypes(
 	mem bool,
 	news [][]ir.ValType,
 	strs strUse,
+	io ioUse,
+	wasi bool,
 ) ([]ir.Sig, map[string]int) {
 	var sigs []ir.Sig
 	index := make(map[string]int)
@@ -206,6 +260,14 @@ func collectTypes(
 	}
 	if mem {
 		for _, s := range auxiliarySigs(news, strs) {
+			add(s)
+		}
+	}
+	if wasi {
+		for _, s := range wasiSigs() {
+			add(s)
+		}
+		for _, s := range ioAuxSigs(io) {
 			add(s)
 		}
 	}
@@ -403,8 +465,8 @@ func section(id byte, content []byte) []byte {
 	return append(out, content...)
 }
 
-func encodeTypeSection(sigs []ir.Sig) []byte {
-	content := appendUleb128(nil, uint64(len(sigs)))
+func encodeTypeSection(sigs []ir.Sig, voids [][]ir.ValType) []byte {
+	content := appendUleb128(nil, uint64(len(sigs)+len(voids)))
 	for _, s := range sigs {
 		content = append(content, typeFunc)
 		content = appendUleb128(content, uint64(len(s.Params)))
@@ -413,6 +475,14 @@ func encodeTypeSection(sigs []ir.Sig) []byte {
 		}
 		content = appendUleb128(content, 1)
 		content = append(content, wasmValType(s.Result))
+	}
+	for _, params := range voids {
+		content = append(content, typeFunc)
+		content = appendUleb128(content, uint64(len(params)))
+		for _, p := range params {
+			content = append(content, wasmValType(p))
+		}
+		content = appendUleb128(content, 0)
 	}
 	return section(secType, content)
 }
@@ -423,12 +493,17 @@ func encodeFunctionSection(
 	mem bool,
 	news [][]ir.ValType,
 	strs strUse,
+	io ioUse,
+	startType int,
 ) []byte {
 	n := len(m.Funcs)
 	var aux []ir.Sig
 	if mem {
 		aux = auxiliarySigs(news, strs)
-		n += len(aux)
+		n += len(aux) + io.count()
+	}
+	if startType >= 0 {
+		n++
 	}
 	content := appendUleb128(nil, uint64(n))
 	for _, fn := range m.Funcs {
@@ -437,7 +512,23 @@ func encodeFunctionSection(
 	for _, s := range aux {
 		content = appendUleb128(content, uint64(types[sigKey(s)]))
 	}
+	if mem {
+		for _, s := range ioAuxSigs(io) {
+			content = appendUleb128(content, uint64(mustTypeIndex(types, s)))
+		}
+	}
+	if startType >= 0 {
+		content = appendUleb128(content, uint64(startType))
+	}
 	return section(secFunction, content)
+}
+
+func mustTypeIndex(types map[string]int, s ir.Sig) int {
+	i, ok := types[sigKey(s)]
+	if !ok {
+		panic(fmt.Sprintf("wasm: no type index for %d params", len(s.Params)))
+	}
+	return i
 }
 
 func encodeMemorySection(minPages int) []byte {
@@ -475,22 +566,22 @@ func encodeTableSection(m *ir.Module) []byte {
 	return section(secTable, content)
 }
 
-func encodeExportSection(m *ir.Module) []byte {
+func encodeExportSection(m *ir.Module, base int) []byte {
 	const name = "main"
 	content := appendUleb128(nil, 1)
 	content = appendUleb128(content, uint64(len(name)))
 	content = append(content, name...)
 	content = append(content, externalFunc)
-	content = appendUleb128(content, uint64(m.Main))
+	content = appendUleb128(content, uint64(int(m.Main)+base))
 	return section(secExport, content)
 }
 
-func encodeElementSection(m *ir.Module) []byte {
+func encodeElementSection(m *ir.Module, base int) []byte {
 	content := appendUleb128(nil, 1)
 	content = append(content, elemActiveFlags, opI32Const, 0x00, opEnd)
 	content = appendUleb128(content, uint64(len(m.Table)))
 	for _, id := range m.Table {
-		content = appendUleb128(content, uint64(id))
+		content = appendUleb128(content, uint64(int(id)+base))
 	}
 	return section(secElement, content)
 }
@@ -500,10 +591,14 @@ func (e *encoder) encodeCodeSection(
 	mem bool,
 	news [][]ir.ValType,
 	strs strUse,
+	io ioUse,
 ) []byte {
 	n := len(m.Funcs)
 	if mem {
-		n += 1 + len(news) + strs.count()
+		n += 1 + len(news) + strs.count() + io.count()
+	}
+	if e.startType >= 0 {
+		n++
 	}
 	content := appendUleb128(nil, uint64(n))
 	for _, fn := range m.Funcs {
@@ -521,6 +616,12 @@ func (e *encoder) encodeCodeSection(
 			content = append(content, body...)
 		}
 		content = e.appendStrHelpers(content, strs)
+		content = e.appendIOHelpers(content, io)
+	}
+	if e.startType >= 0 {
+		body := e.encodeStart(int(m.Main) + e.base)
+		content = appendUleb128(content, uint64(len(body)))
+		content = append(content, body...)
 	}
 	return section(secCode, content)
 }
@@ -703,7 +804,7 @@ func (e *encoder) expr(x ir.Expr) {
 		} else {
 			e.buf = append(e.buf, opCall)
 		}
-		e.buf = appendUleb128(e.buf, uint64(x.Func))
+		e.buf = appendUleb128(e.buf, uint64(int(x.Func)+e.base))
 	case *ir.CallIndirect:
 		for _, arg := range x.Args {
 			e.expr(arg)
@@ -801,6 +902,24 @@ func (e *encoder) primFunc(op ir.PrimOp) int {
 		idx = e.strFn.concat
 	case ir.StrEq:
 		idx = e.strFn.eq
+	case ir.IOPrint:
+		idx = e.ioFn.print
+	case ir.IOEPrint:
+		idx = e.ioFn.eprint
+	case ir.IOReadStdin:
+		idx = e.ioFn.readStdin
+	case ir.IOReadFile:
+		idx = e.ioFn.readFile
+	case ir.IOFileExists:
+		idx = e.ioFn.fileExists
+	case ir.IOWriteFile:
+		idx = e.ioFn.writeFile
+	case ir.IOArgCount:
+		idx = e.ioFn.argCount
+	case ir.IOArgAt:
+		idx = e.ioFn.argAt
+	case ir.IOExit:
+		idx = e.ioFn.exit
 	default:
 		panic(fmt.Sprintf("wasm: unknown prim %d", int(op)))
 	}

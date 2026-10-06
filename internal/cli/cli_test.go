@@ -30,6 +30,7 @@ fn main() -> Int {
 		name            string
 		args            []string
 		files           map[string]string
+		stdin           string
 		getenv          func(string) string
 		needsWasmtime   bool
 		wantExit        int
@@ -56,7 +57,7 @@ fn main() -> Int {
 			name:          "usage lists build and run",
 			args:          []string{"help"},
 			wantExit:      exitOK,
-			wantStdoutHas: "    ceroc build [-o output.wasm] <file.cero>\n    ceroc run <file.cero>\n",
+			wantStdoutHas: "    ceroc build [-o output.wasm] <file.cero>\n    ceroc run <file.cero> [args...]\n",
 		},
 		{
 			name:          "commands describe build and run",
@@ -153,10 +154,59 @@ fn main() -> Int {
 			wantStderrHas: `ceroc run: unknown flag "-z"`,
 		},
 		{
-			name:          "run too many arguments",
-			args:          []string{"run", "a.cero", "b.cero"},
+			name:          "run arguments on a non-command",
+			args:          []string{"run", "$DIR/main.cero", "extra"},
+			files:         map[string]string{"main.cero": mainSrc},
+			getenv:        func(string) string { return "" },
+			needsWasmtime: true,
 			wantExit:      exitUsageError,
-			wantStderrHas: "ceroc run: too many arguments",
+			wantStderrHas: "ceroc run: arguments are only passed to programs whose main returns IO[Unit]",
+		},
+		{
+			name: "run passes arguments to a command",
+			args: []string{"run", "$DIR/args.cero", "foo", "-n"},
+			files: map[string]string{"args.cero": `fn main() {
+    bind(argCount(), fn(n: Int) -> IO[Unit] {
+        bind(argAt(0), fn(a: String) -> IO[Unit] {
+            bind(argAt(1), fn(b: String) -> IO[Unit] {
+                print(intToString(n) ++ " " ++ a ++ " " ++ b)
+            })
+        })
+    })
+}
+`},
+			getenv:        func(string) string { return "" },
+			needsWasmtime: true,
+			wantExit:      exitOK,
+			checkStdout:   true,
+			wantStdout:    "2 foo -n",
+		},
+		{
+			name: "run returns the command exit code",
+			args: []string{"run", "$DIR/exit.cero"},
+			files: map[string]string{"exit.cero": `fn main() {
+    exit(3)
+}
+`},
+			getenv:        func(string) string { return "" },
+			needsWasmtime: true,
+			wantExit:      3,
+			checkStdout:   true,
+			wantStdout:    "",
+		},
+		{
+			name: "run passes standard input",
+			args: []string{"run", "$DIR/echo.cero"},
+			files: map[string]string{"echo.cero": `fn main() {
+    bind(readStdin(), fn(s: String) -> IO[Unit] { print(s) })
+}
+`},
+			stdin:         "hello in",
+			getenv:        func(string) string { return "" },
+			needsWasmtime: true,
+			wantExit:      exitOK,
+			checkStdout:   true,
+			wantStdout:    "hello in",
 		},
 		{
 			name: "run runtime not found",
@@ -243,7 +293,7 @@ fn main() -> Int {
 			}
 
 			var stdout, stderr bytes.Buffer
-			got := run(args, &stdout, &stderr, getenv)
+			got := run(args, strings.NewReader(tt.stdin), &stdout, &stderr, getenv)
 			if got != tt.wantExit {
 				t.Errorf("run(%v) exit code = %d, want %d\nstderr: %s", args, got, tt.wantExit, stderr.String())
 			}

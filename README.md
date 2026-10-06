@@ -78,6 +78,18 @@ with design documents in [`docs/design/`](docs/design/):
   `isAlpha`, `isSpace`)
   ([ADR-0011](docs/adr/0011-v0.9-modules.md);
   `examples/modules/main.cero`, `examples/stdlib.cero`)
+* v0.10: the `IO[T]` type and the value `()`. `pure` and `bind` build
+  actions; `print`, `eprint`, `readStdin`, `readFile`, `fileExists`,
+  `writeFile`, `argCount`, `argAt` and `exit` are the built-in actions.
+  A value of `IO[T]` does nothing until it is run, and the only way to run
+  one is for `main` to return it. `main: () -> IO[Unit]` is a WASI command:
+  the module imports `wasi_snapshot_preview1` and exports `_start` and
+  `memory`. `ceroc run file.cero args...` preopens the current directory
+  (`wasmtime run --dir=.`) and passes the arguments, standard input, standard
+  output, standard error and the exit code through. `std/io` adds `then`,
+  `mapIO`, `println`, `eprintln`, `forEach`, `args` and `unit`
+  ([ADR-0012](docs/adr/0012-v0.10-io.md);
+  `examples/io/hello.cero`, `examples/io/cat.cero`, `examples/io/wc.cero`)
 
 `ceroc fmt` is not implemented yet.
 

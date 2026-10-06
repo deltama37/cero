@@ -167,6 +167,24 @@ func primName(op PrimOp) string {
 		return "string.concat"
 	case StrEq:
 		return "string.eq"
+	case IOPrint:
+		return "io.print"
+	case IOEPrint:
+		return "io.eprint"
+	case IOReadStdin:
+		return "io.read_stdin"
+	case IOReadFile:
+		return "io.read_file"
+	case IOFileExists:
+		return "io.file_exists"
+	case IOWriteFile:
+		return "io.write_file"
+	case IOArgCount:
+		return "io.arg_count"
+	case IOArgAt:
+		return "io.arg_at"
+	case IOExit:
+		return "io.exit"
 	default:
 		panic(fmt.Sprintf("ir.FormatExpr: unknown prim %d", int(op)))
 	}

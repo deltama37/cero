@@ -22,6 +22,12 @@ const (
 	done      = 2
 )
 
+// Output is a compiled program.
+type Output struct {
+	Wasm    []byte
+	Command bool // a WASI command (main: () -> IO[Unit]); run without --invoke
+}
+
 // Compile compiles the program whose entry module is filename with source
 // src. Non-standard imports are read from disk relative to the directory of
 // filename.
@@ -36,6 +42,19 @@ func CompileWith(
 	src []byte,
 	read func(name string) ([]byte, error),
 ) ([]byte, error) {
+	out, err := CompileProgram(filename, src, read)
+	if err != nil {
+		return nil, err
+	}
+	return out.Wasm, nil
+}
+
+// CompileProgram is CompileWith that also reports how to run the result.
+func CompileProgram(
+	filename string,
+	src []byte,
+	read func(name string) ([]byte, error),
+) (*Output, error) {
 	mods, err := load(filename, src, read)
 	if err != nil {
 		return nil, err
@@ -44,7 +63,11 @@ func CompileWith(
 	if err != nil {
 		return nil, err
 	}
-	return wasm.Encode(lower.LowerProgram(mods, info)), nil
+	mod := lower.LowerProgram(mods, info)
+	return &Output{
+		Wasm:    wasm.Encode(mod),
+		Command: mod.Command,
+	}, nil
 }
 
 func load(

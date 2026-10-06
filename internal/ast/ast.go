@@ -134,6 +134,16 @@ func (e *BoolLit) Position() diag.Pos { return e.Pos }
 
 func (*BoolLit) expr() {}
 
+// UnitLit is `()`.
+type UnitLit struct {
+	Pos diag.Pos // '('
+}
+
+// Position returns the position of '('.
+func (e *UnitLit) Position() diag.Pos { return e.Pos }
+
+func (*UnitLit) expr() {}
+
 // Ident is an identifier expression.
 type Ident struct {
 	Pos  diag.Pos
@@ -330,6 +340,7 @@ var (
 	_ Expr = (*IntLit)(nil)
 	_ Expr = (*StringLit)(nil)
 	_ Expr = (*BoolLit)(nil)
+	_ Expr = (*UnitLit)(nil)
 	_ Expr = (*Ident)(nil)
 	_ Expr = (*UnaryExpr)(nil)
 	_ Expr = (*BinaryExpr)(nil)

@@ -81,6 +81,8 @@ func FormatExpr(e Expr) string {
 			return "true"
 		}
 		return "false"
+	case *UnitLit:
+		return "()"
 	case *Ident:
 		return e.Name
 	case *UnaryExpr:

@@ -256,6 +256,54 @@ func TestFormatExpr(t *testing.T) {
 			},
 			want: `(prim string.eq (local 0) (str "hi"))`,
 		},
+		{
+			name: "io print",
+			expr: &Prim{Op: IOPrint, Args: []Expr{&LocalGet{Local: 0, T: Ptr}}},
+			want: "(prim io.print (local 0))",
+		},
+		{
+			name: "io eprint",
+			expr: &Prim{Op: IOEPrint, Args: []Expr{&LocalGet{Local: 0, T: Ptr}}},
+			want: "(prim io.eprint (local 0))",
+		},
+		{
+			name: "io read stdin",
+			expr: &Prim{Op: IOReadStdin},
+			want: "(prim io.read_stdin)",
+		},
+		{
+			name: "io read file",
+			expr: &Prim{Op: IOReadFile, Args: []Expr{&LocalGet{Local: 0, T: Ptr}}},
+			want: "(prim io.read_file (local 0))",
+		},
+		{
+			name: "io file exists",
+			expr: &Prim{Op: IOFileExists, Args: []Expr{&LocalGet{Local: 0, T: Ptr}}},
+			want: "(prim io.file_exists (local 0))",
+		},
+		{
+			name: "io write file",
+			expr: &Prim{
+				Op:   IOWriteFile,
+				Args: []Expr{&LocalGet{Local: 0, T: Ptr}, &LocalGet{Local: 1, T: Ptr}},
+			},
+			want: "(prim io.write_file (local 0) (local 1))",
+		},
+		{
+			name: "io arg count",
+			expr: &Prim{Op: IOArgCount},
+			want: "(prim io.arg_count)",
+		},
+		{
+			name: "io arg at",
+			expr: &Prim{Op: IOArgAt, Args: []Expr{&IntConst{Value: 0}}},
+			want: "(prim io.arg_at 0)",
+		},
+		{
+			name: "io exit",
+			expr: &Prim{Op: IOExit, Args: []Expr{&IntConst{Value: 1}}},
+			want: "(prim io.exit 1)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -465,6 +513,15 @@ func TestType(t *testing.T) {
 		{name: "int to string", expr: &Prim{Op: IntToString}, want: Ptr},
 		{name: "string concat", expr: &Prim{Op: StrConcat}, want: Ptr},
 		{name: "string eq", expr: &Prim{Op: StrEq}, want: Bool},
+		{name: "io print", expr: &Prim{Op: IOPrint}, want: Bool},
+		{name: "io eprint", expr: &Prim{Op: IOEPrint}, want: Bool},
+		{name: "io read stdin", expr: &Prim{Op: IOReadStdin}, want: Ptr},
+		{name: "io read file", expr: &Prim{Op: IOReadFile}, want: Ptr},
+		{name: "io file exists", expr: &Prim{Op: IOFileExists}, want: Bool},
+		{name: "io write file", expr: &Prim{Op: IOWriteFile}, want: Bool},
+		{name: "io arg count", expr: &Prim{Op: IOArgCount}, want: Int},
+		{name: "io arg at", expr: &Prim{Op: IOArgAt}, want: Ptr},
+		{name: "io exit", expr: &Prim{Op: IOExit}, want: Bool},
 	}
 
 	for _, tt := range tests {

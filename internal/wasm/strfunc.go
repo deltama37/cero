@@ -119,6 +119,17 @@ type strLayout struct {
 	data []byte
 }
 
+// add appends value as a string block unless it is already present.
+func (lay *strLayout) add(value string) {
+	if _, seen := lay.addr[value]; seen {
+		return
+	}
+	lay.addr[value] = lay.heap
+	block := strBlock(value)
+	lay.data = append(lay.data, block...)
+	lay.heap += len(block)
+}
+
 func layoutStrings(m *ir.Module) strLayout {
 	lay := strLayout{
 		addr: make(map[string]int),

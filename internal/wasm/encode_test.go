@@ -1243,6 +1243,284 @@ func vecCount(t *testing.T, payload []byte) int {
 	return int(n)
 }
 
+func TestEncodeIO(t *testing.T) {
+	t.Parallel()
+
+	t.Run("module without IO is unchanged", func(t *testing.T) {
+		t.Parallel()
+
+		got := Encode(lowerModule(t, "fn main() -> Int { 42 }\n"))
+		want := []byte{
+			0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+			0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7e,
+			0x03, 0x02, 0x01, 0x00,
+			0x04, 0x05, 0x01, 0x70, 0x01, 0x00, 0x00,
+			0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00,
+			0x0a, 0x06, 0x01, 0x04, 0x00, 0x42, 0x2a, 0x0b,
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("Encode() =\n%s\nwant:\n%s", hex.Dump(got), hex.Dump(want))
+		}
+		if _, ok := moduleSections(t, got)[secImport]; ok {
+			t.Error("import section present")
+		}
+	})
+
+	t.Run("import section lists the WASI functions", func(t *testing.T) {
+		t.Parallel()
+
+		wasm := Encode(lowerModule(t, "fn main() -> IO[Unit] { print(\"x\") }\n"))
+		secs := moduleSections(t, wasm)
+		got := importFuncs(t, secs[secImport])
+		wantNames := []string{
+			"fd_write", "fd_read", "path_open", "fd_close",
+			"args_sizes_get", "args_get", "proc_exit",
+		}
+		if len(got) != len(wantNames) {
+			t.Fatalf("imports = %d, want %d", len(got), len(wantNames))
+		}
+		types := funcTypes(t, secs[secType])
+		for i, name := range wantNames {
+			if got[i].module != "wasi_snapshot_preview1" || got[i].name != name {
+				t.Errorf("import %d = %s.%s, want wasi_snapshot_preview1.%s", i, got[i].module, got[i].name, name)
+			}
+			if got[i].typeIndex < 0 || got[i].typeIndex >= len(types) {
+				t.Fatalf("import %s type index %d out of range", name, got[i].typeIndex)
+			}
+			if !funcTypeEqual(types[got[i].typeIndex], wasiFuncTypes[i]) {
+				t.Errorf("import %s type = %+v, want %+v", name, types[got[i].typeIndex], wasiFuncTypes[i])
+			}
+		}
+	})
+
+	t.Run("calls, elements and main shift by the import count", func(t *testing.T) {
+		t.Parallel()
+
+		m := lowerModule(t, `fn f() -> Int { 1 }
+
+fn main() -> IO[Unit] {
+    let n = f()
+    print("x")
+}
+`)
+		wasm := Encode(m)
+		secs := moduleSections(t, wasm)
+		bodies := functionBodies(t, wasm)
+		main := bodies[int(m.Main)]
+		// call f is call of IR function 0, which lives at index 7.
+		if !bytes.Contains(main, []byte{opCall, byte(int(0) + wasiImportCount)}) {
+			t.Errorf("main = %x, want a call of function %d", main, wasiImportCount)
+		}
+		gotElems := elementFuncIndices(t, secs[secElement])
+		wantElems := make([]int, len(m.Table))
+		for i, id := range m.Table {
+			wantElems[i] = int(id) + wasiImportCount
+		}
+		if !intSlicesEqual(gotElems, wantElems) {
+			t.Errorf("element functions = %v, want %v", gotElems, wantElems)
+		}
+		ex := exportMap(t, secs[secExport])
+		if _, ok := ex["main"]; ok {
+			t.Error("command exports main")
+		}
+		start, ok := ex["_start"]
+		if !ok || start.kind != externalFunc {
+			t.Fatalf("export _start = %+v, missing function export", start)
+		}
+		mem, ok := ex["memory"]
+		if !ok || mem.kind != 0x02 || mem.index != 0 {
+			t.Fatalf("export memory = %+v, want memory 0", mem)
+		}
+		if _, ok := secs[secMemory]; !ok {
+			t.Error("command has no memory section")
+		}
+	})
+
+	t.Run("non-command IO exports main and imports WASI", func(t *testing.T) {
+		t.Parallel()
+
+		m := lowerModule(t, `fn main() -> Int {
+    let x = print("x")
+    0
+}
+`)
+		if m.Command {
+			t.Fatal("Command = true, want false")
+		}
+		wasm := Encode(m)
+		secs := moduleSections(t, wasm)
+		if _, ok := secs[secImport]; !ok {
+			t.Fatal("missing import section")
+		}
+		if len(importFuncs(t, secs[secImport])) != wasiImportCount {
+			t.Fatalf("imports = %d, want %d", len(importFuncs(t, secs[secImport])), wasiImportCount)
+		}
+		ex := exportMap(t, secs[secExport])
+		if _, ok := ex["_start"]; ok {
+			t.Error("non-command exports _start")
+		}
+		main, ok := ex["main"]
+		if !ok || main.kind != externalFunc || main.index != int(m.Main)+wasiImportCount {
+			t.Fatalf("export main = %+v, want function %d", main, int(m.Main)+wasiImportCount)
+		}
+	})
+}
+
+type wasmFuncType struct {
+	params  []byte
+	results []byte
+}
+
+var wasiFuncTypes = []wasmFuncType{
+	{params: []byte{valI32, valI32, valI32, valI32}, results: []byte{valI32}},
+	{params: []byte{valI32, valI32, valI32, valI32}, results: []byte{valI32}},
+	{params: []byte{valI32, valI32, valI32, valI32, valI32, valI64, valI64, valI32, valI32}, results: []byte{valI32}},
+	{params: []byte{valI32}, results: []byte{valI32}},
+	{params: []byte{valI32, valI32}, results: []byte{valI32}},
+	{params: []byte{valI32, valI32}, results: []byte{valI32}},
+	{params: []byte{valI32}},
+}
+
+type wasmImport struct {
+	module    string
+	name      string
+	typeIndex int
+}
+
+type wasmExport struct {
+	kind  byte
+	index int
+}
+
+func funcTypes(t *testing.T, payload []byte) []wasmFuncType {
+	t.Helper()
+
+	n, width, ok := readUleb(payload)
+	if !ok {
+		t.Fatal("truncated type section")
+	}
+	rest := payload[width:]
+	out := make([]wasmFuncType, 0, n)
+	for i := uint64(0); i < n; i++ {
+		if len(rest) == 0 || rest[0] != typeFunc {
+			t.Fatalf("type %d form = %v", i, rest)
+		}
+		rest = rest[1:]
+		np, w, ok := readUleb(rest)
+		if !ok || uint64(len(rest)) < uint64(w)+np {
+			t.Fatalf("truncated type %d params", i)
+		}
+		rest = rest[w:]
+		params := append([]byte(nil), rest[:np]...)
+		rest = rest[np:]
+		nr, w, ok := readUleb(rest)
+		if !ok || uint64(len(rest)) < uint64(w)+nr {
+			t.Fatalf("truncated type %d results", i)
+		}
+		rest = rest[w:]
+		results := append([]byte(nil), rest[:nr]...)
+		rest = rest[nr:]
+		out = append(out, wasmFuncType{params: params, results: results})
+	}
+	return out
+}
+
+func funcTypeEqual(a, b wasmFuncType) bool {
+	return bytes.Equal(a.params, b.params) && bytes.Equal(a.results, b.results)
+}
+
+func importFuncs(t *testing.T, payload []byte) []wasmImport {
+	t.Helper()
+
+	n, width, ok := readUleb(payload)
+	if !ok {
+		t.Fatal("truncated import section")
+	}
+	rest := payload[width:]
+	out := make([]wasmImport, 0, n)
+	for i := uint64(0); i < n; i++ {
+		module, rest2 := readName(t, rest)
+		name, rest2 := readName(t, rest2)
+		rest = rest2
+		if len(rest) == 0 || rest[0] != externalFunc {
+			t.Fatalf("import %d kind = %v", i, rest)
+		}
+		rest = rest[1:]
+		idx, w, ok := readUleb(rest)
+		if !ok {
+			t.Fatalf("truncated import %d type", i)
+		}
+		rest = rest[w:]
+		out = append(out, wasmImport{module: module, name: name, typeIndex: int(idx)})
+	}
+	return out
+}
+
+func exportMap(t *testing.T, payload []byte) map[string]wasmExport {
+	t.Helper()
+
+	n, width, ok := readUleb(payload)
+	if !ok {
+		t.Fatal("truncated export section")
+	}
+	rest := payload[width:]
+	out := make(map[string]wasmExport, n)
+	for i := uint64(0); i < n; i++ {
+		name, rest2 := readName(t, rest)
+		rest = rest2
+		if len(rest) == 0 {
+			t.Fatalf("truncated export %d", i)
+		}
+		kind := rest[0]
+		rest = rest[1:]
+		idx, w, ok := readUleb(rest)
+		if !ok {
+			t.Fatalf("truncated export %d index", i)
+		}
+		rest = rest[w:]
+		out[name] = wasmExport{kind: kind, index: int(idx)}
+	}
+	return out
+}
+
+func elementFuncIndices(t *testing.T, payload []byte) []int {
+	t.Helper()
+
+	prefix := []byte{0x01, 0x00, opI32Const, 0x00, opEnd}
+	if !bytes.HasPrefix(payload, prefix) {
+		t.Fatalf("element payload = %x, want prefix %x", payload, prefix)
+	}
+	rest := payload[len(prefix):]
+	n, width, ok := readUleb(rest)
+	if !ok {
+		t.Fatal("truncated element functions")
+	}
+	rest = rest[width:]
+	out := make([]int, 0, n)
+	for i := uint64(0); i < n; i++ {
+		v, w, ok := readUleb(rest)
+		if !ok {
+			t.Fatalf("truncated element function %d", i)
+		}
+		rest = rest[w:]
+		out = append(out, int(v))
+	}
+	if len(rest) != 0 {
+		t.Fatalf("element section has %d trailing bytes", len(rest))
+	}
+	return out
+}
+
+func readName(t *testing.T, b []byte) (string, []byte) {
+	t.Helper()
+
+	n, width, ok := readUleb(b)
+	if !ok || uint64(len(b)) < uint64(width)+n {
+		t.Fatal("truncated name")
+	}
+	return string(b[width : width+int(n)]), b[width+int(n):]
+}
+
 func readUleb(b []byte) (uint64, int, bool) {
 	var v uint64
 	var shift uint
