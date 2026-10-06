@@ -18,6 +18,9 @@ type BoolType struct{}
 // StringType is the built-in String type.
 type StringType struct{}
 
+// UnitType is the built-in Unit type.
+type UnitType struct{}
+
 // Func is a function type. Function types are always represented as *Func.
 type Func struct {
 	Params []Type
@@ -72,10 +75,17 @@ var Bool Type = BoolType{}
 // String is the String type.
 var String Type = StringType{}
 
+// Unit is the Unit type.
+var Unit Type = UnitType{}
+
+// IO is the built-in data type IO[T] (ADR-0012). It has no constructors.
+var IO = &Data{Name: "IO", Params: []*TypeParam{{Name: "T"}}}
+
 var (
 	_ Type = IntType{}
 	_ Type = BoolType{}
 	_ Type = StringType{}
+	_ Type = UnitType{}
 	_ Type = (*Func)(nil)
 	_ Type = (*Named)(nil)
 	_ Type = (*TypeParam)(nil)
@@ -96,6 +106,22 @@ func (BoolType) isType() {}
 func (StringType) String() string { return "String" }
 
 func (StringType) isType() {}
+
+// String returns "Unit".
+func (UnitType) String() string { return "Unit" }
+
+func (UnitType) isType() {}
+
+// IOOf returns IO[t].
+func IOOf(t Type) Type {
+	return &Named{Data: IO, Args: []Type{t}}
+}
+
+// IsIO reports whether t (after Prune) is IO applied to an argument.
+func IsIO(t Type) bool {
+	n, ok := Prune(t).(*Named)
+	return ok && n.Data == IO && len(n.Args) == 1
+}
 
 // String formats a function type.
 //
@@ -332,6 +358,9 @@ func Equal(a, b Type) bool {
 		return ok
 	case StringType:
 		_, ok := b.(StringType)
+		return ok
+	case UnitType:
+		_, ok := b.(UnitType)
 		return ok
 	case *Func:
 		fb, ok := b.(*Func)

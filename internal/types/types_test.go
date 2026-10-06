@@ -14,6 +14,8 @@ func TestString(t *testing.T) {
 		{name: "Int", typ: Int, want: "Int"},
 		{name: "Bool", typ: Bool, want: "Bool"},
 		{name: "String", typ: String, want: "String"},
+		{name: "Unit", typ: Unit, want: "Unit"},
+		{name: "IO of Int", typ: IOOf(Int), want: "IO[Int]"},
 		{
 			name: "String to String",
 			typ:  &Func{Params: []Type{String}, Result: String},
@@ -158,6 +160,41 @@ func TestString(t *testing.T) {
 	}
 }
 
+func TestIsIO(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  Type
+		want bool
+	}{
+		{name: "IO of Int", typ: IOOf(Int), want: true},
+		{name: "IO of IO of Bool", typ: IOOf(IOOf(Bool)), want: true},
+		{name: "IO of Unit", typ: IOOf(Unit), want: true},
+		{name: "Int", typ: Int, want: false},
+		{name: "Unit", typ: Unit, want: false},
+		{name: "function", typ: &Func{Result: Int}, want: false},
+		{
+			name: "same name different data",
+			typ:  &Named{Data: &Data{Name: "IO", Params: []*TypeParam{{Name: "T"}}}, Args: []Type{Int}},
+			want: false,
+		},
+		{name: "IO without arguments", typ: &Named{Data: IO}, want: false},
+		{name: "meta solved to IO of Int", typ: &Meta{Name: "a", Solution: IOOf(Int)}, want: true},
+		{name: "unsolved meta", typ: &Meta{Name: "a"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := IsIO(tt.typ); got != tt.want {
+				t.Errorf("IsIO(%s) = %v, want %v", tt.typ, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEqual(t *testing.T) {
 	t.Parallel()
 
@@ -215,6 +252,10 @@ func TestEqual(t *testing.T) {
 		{name: "Int", a: Int, b: Int, want: true},
 		{name: "Bool", a: Bool, b: Bool, want: true},
 		{name: "String", a: String, b: String, want: true},
+		{name: "Unit", a: Unit, b: Unit, want: true},
+		{name: "Unit and Int", a: Unit, b: Int, want: false},
+		{name: "IO of Int", a: IOOf(Int), b: IOOf(Int), want: true},
+		{name: "IO of Int and IO of Bool", a: IOOf(Int), b: IOOf(Bool), want: false},
 		{name: "Int and Bool", a: Int, b: Bool, want: false},
 		{name: "String and Int", a: String, b: Int, want: false},
 		{name: "String and Bool", a: String, b: Bool, want: false},
