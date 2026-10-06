@@ -1,0 +1,1135 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "std/string"
+import "syntax/ast"
+import "syntax/diag"
+import "types/types"
+import "util/intmap"
+import "util/strmap"
+import "driver/load"
+import "check/state"
+import "check/expr"
+import "check/deps"
+
+type CkExports = | CkExports(String, StrMap[Int], StrMap[Int])
+
+type CkSeen = | CkSeen(IntMap[Bool], IntMap[Bool], List[Type])
+
+fn fileOf(m: Module) -> String {
+    let Module(_, file, _, _) = m
+    file
+}
+
+fn pathOf(m: Module) -> String {
+    let Module(path, _, _, _) = m
+    path
+}
+
+fn astOf(m: Module) -> File {
+    let Module(_, _, ast, _) = m
+    ast
+}
+
+fn importsOf(m: Module) -> List[String] {
+    let Module(_, _, _, files) = m
+    files
+}
+
+pub fn checkProgram(mods: List[Module]) -> Result[Info] {
+    match ckRun(checkAll(mods, 0, smEmpty()), ckInitial()) {
+        CkErr(e) => Err(e),
+        CkOk(_, st) => Ok(ckToInfo(st)),
+    }
+}
+
+fn checkAll(mods: List[Module], i: Int, exp: StrMap[CkExports]) -> Check[Unit] {
+    match mods {
+        Nil => pure(()),
+        Cons(m, rest) => {
+            let! exp2 = checkOne(m, i, exp, rest)
+            checkAll(rest, i + 1, exp2)
+        },
+    }
+}
+
+fn checkOne(m: Module, i: Int, exp: StrMap[CkExports], rest: List[Module]) -> Check[StrMap[CkExports]] {
+    let isLast = match rest {
+        Nil => true,
+        Cons(_, _) => false,
+    }
+    Check(fn(st: CkState) -> CkResult[StrMap[CkExports]] {
+        match ckRun(checkInner(m, i, exp, isLast), st) {
+            CkErr(e) => CkErr(errorWithFile(e, fileOf(m))),
+            CkOk(v, st2) => CkOk(v, st2),
+        }
+    })
+}
+
+fn checkInner(m: Module, i: Int, exp: StrMap[CkExports], isLast: Bool) -> Check[StrMap[CkExports]] {
+    let! _ = ckBeginModule(isLast)
+    let! _ = bindImports(m, exp)
+    let! _ = checkModule(astOf(m), isLast)
+    let! exp2 = moduleExports(m, exp)
+    let File(_, _, fns) = astOf(m)
+    let! _ = setFuncMods(fns, i)
+    let! _ = ckResolveInfo()
+    pure(exp2)
+}
+
+fn bindImports(m: Module, exp: StrMap[CkExports]) -> Check[Unit] {
+    let File(imps, _, _) = astOf(m)
+    bindImps(imps, importsOf(m), exp, smEmpty())
+}
+
+fn bindImps(imps: List[Import], files: List[String], exp: StrMap[CkExports], seen: StrMap[Bool]) -> Check[Unit] {
+    match imps {
+        Nil => pure(()),
+        Cons(imp, irest) => match files {
+            Nil => pure(()),
+            Cons(file, frest) => {
+                let Import(pos, path, _) = imp
+                if smMember(seen, file) {
+                    ckFail(errorf(pos, "duplicate import '" ++ path ++ "'"))
+                } else {
+                    match smLookup(exp, file) {
+                        None => ckFail(errorf(pos, "duplicate import '" ++ path ++ "'")),
+                        Some(ex) => {
+                            let CkExports(depPath, vals, datas) = ex
+                            let! _ = bindVals(smToList(vals), pos, depPath)
+                            let! _ = bindDatas(smToList(datas), pos, depPath)
+                            bindImps(irest, frest, exp, smInsert(seen, file, true))
+                        },
+                    }
+                }
+            },
+        },
+    }
+}
+
+fn bindVals(pairs: List[Pair[String, Int]], pos: Pos, dep: String) -> Check[Unit] {
+    match pairs {
+        Nil => pure(()),
+        Cons(p, rest) => match p {
+            Pair(name, symId) => {
+                let! st = ckGet()
+                match ckImportVal(st, name) {
+                    Some(prev) => match prev {
+                        CkImport(_, prevPath) => if prevPath != dep {
+                            ckFail(errorf(pos, "'" ++ name ++ "' is imported from both '" ++ prevPath ++ "' and '" ++ dep ++ "'"))
+                        } else {
+                            let! _ = ckPutImportVal(name, CkImport(symId, dep))
+                            bindVals(rest, pos, dep)
+                        },
+                    },
+                    None => {
+                        let! _ = ckPutImportVal(name, CkImport(symId, dep))
+                        bindVals(rest, pos, dep)
+                    },
+                }
+            },
+        },
+    }
+}
+
+fn bindDatas(pairs: List[Pair[String, Int]], pos: Pos, dep: String) -> Check[Unit] {
+    match pairs {
+        Nil => pure(()),
+        Cons(p, rest) => match p {
+            Pair(name, dataId) => {
+                let! st = ckGet()
+                match ckImportData(st, name) {
+                    Some(prev) => match prev {
+                        CkImport(_, prevPath) => if prevPath != dep {
+                            ckFail(errorf(pos, "'" ++ name ++ "' is imported from both '" ++ prevPath ++ "' and '" ++ dep ++ "'"))
+                        } else {
+                            let! _ = ckPutImportData(name, CkImport(dataId, dep))
+                            bindDatas(rest, pos, dep)
+                        },
+                    },
+                    None => {
+                        let! _ = ckPutImportData(name, CkImport(dataId, dep))
+                        bindDatas(rest, pos, dep)
+                    },
+                }
+            },
+        },
+    }
+}
+
+fn isBuiltinType(name: String) -> Bool {
+    name == "Int" || name == "Bool" || name == "String" || name == "Unit" || name == "IO"
+}
+
+fn allTyped(ps: List[Param]) -> Bool {
+    match ps {
+        Nil => true,
+        Cons(p, rest) => match p {
+            Param(_, _, _, ann) => match ann {
+                None => false,
+                Some(_) => allTyped(rest),
+            },
+        },
+    }
+}
+
+fn isAnnotated(params: List[Param], result: Option[TypeExpr]) -> Bool {
+    match result {
+        None => false,
+        Some(_) => allTyped(params),
+    }
+}
+
+fn declTPs(ps: List[TypeParam], seen: StrMap[Bool], acc: List[Type]) -> Check[List[Type]] {
+    match ps {
+        Nil => pure(reverse(acc)),
+        Cons(p, rest) => match p {
+            TypeParam(pos, name) => {
+                let! st = ckGet()
+                if isBuiltinType(name) || isSome(ckLookupData(st, name)) {
+                    ckFail(errorf(pos, "type parameter '" ++ name ++ "' conflicts with type '" ++ name ++ "'"))
+                } else if smMember(seen, name) {
+                    ckFail(errorf(pos, "duplicate type parameter '" ++ name ++ "'"))
+                } else {
+                    let! tp = ckAllocTyParam(name)
+                    declTPs(rest, smInsert(seen, name, true), Cons(tp, acc))
+                }
+            },
+        },
+    }
+}
+
+fn scopeAcc(tps: List[Type], acc: StrMap[Type]) -> StrMap[Type] {
+    match tps {
+        Nil => acc,
+        Cons(tp, rest) => match tp {
+            TyParam(_, name) => scopeAcc(rest, smInsert(acc, name, tp)),
+            _ => scopeAcc(rest, acc),
+        },
+    }
+}
+
+fn scopeOf(tps: List[Type]) -> StrMap[Type] {
+    match tps {
+        Nil => smEmpty(),
+        _ => scopeAcc(tps, smEmpty()),
+    }
+}
+
+fn checkModule(file: File, isEntry: Bool) -> Check[Unit] {
+    let File(_, tys, fns) = file
+    let! _ = registerTypes(tys)
+    let! _ = setTypeParams(tys)
+    let! _ = declareCtors(tys)
+    let! _ = declareFuncs(fns)
+    let inferred = inferredFns(fns, Nil)
+    let! st = ckGet()
+    let edges = buildEdges(st, inferred, indexOf(inferred, 0, smEmpty()), 0, imEmpty())
+    let! _ = checkComps(inferred, ckSccs(length(inferred), edges))
+    let! _ = checkAnnotated(fns)
+    let! _ = ckSetCurrent(-1)
+    let! _ = ckSetTParams(smEmpty())
+    if isEntry {
+        checkMain()
+    } else {
+        pure(())
+    }
+}
+
+fn registerTypes(ds: List[TypeDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = registerOne(d)
+            registerTypes(rest)
+        },
+    }
+}
+
+fn registerOne(d: TypeDecl) -> Check[Unit] {
+    let TypeDecl(id, _, _, name, namePos, _, _) = d
+    if isBuiltinType(name) {
+        ckFail(errorf(namePos, "cannot redefine built-in type '" ++ name ++ "'"))
+    } else {
+        let! st = ckGet()
+        match ckLookupOwnData(st, name) {
+            Some(_) => ckFail(errorf(namePos, "duplicate type '" ++ name ++ "'")),
+            None => {
+                let! dataId = ckAlloc()
+                let! _ = ckPutDataInfo(dataId, DataInfo(name, Nil, Nil))
+                let! _ = ckPutDataName(name, dataId)
+                ckSetData(id, dataId)
+            },
+        }
+    }
+}
+
+fn setTypeParams(ds: List[TypeDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let TypeDecl(_, _, _, name, _, tps, _) = d
+            let! params = declTPs(tps, smEmpty(), Nil)
+            let! _ = setParams(name, params)
+            setTypeParams(rest)
+        },
+    }
+}
+
+fn setParams(name: String, params: List[Type]) -> Check[Unit] {
+    let! st = ckGet()
+    match ckLookupOwnData(st, name) {
+        None => pure(()),
+        Some(id) => match ckDataInfo(st, id) {
+            Some(info) => match info {
+                DataInfo(n, _, ctors) => ckPutDataInfo(id, DataInfo(n, params, ctors)),
+            },
+            None => pure(()),
+        },
+    }
+}
+
+fn declareCtors(ds: List[TypeDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = ctorsOf(d)
+            declareCtors(rest)
+        },
+    }
+}
+
+fn ctorsOf(d: TypeDecl) -> Check[Unit] {
+    let TypeDecl(_, _, _, name, _, _, ctors) = d
+    let! st = ckGet()
+    match ckLookupOwnData(st, name) {
+        None => pure(()),
+        Some(dataId) => {
+            let params = match ckDataInfo(st, dataId) {
+                Some(info) => match info {
+                    DataInfo(_, ps, _) => ps,
+                },
+                None => Nil,
+            }
+            let! _ = ckSetTParams(scopeOf(params))
+            let! _ = addCtors(dataId, params, ctors, 0, Nil)
+            ckSetTParams(smEmpty())
+        },
+    }
+}
+
+fn selfType(dataId: Int, params: List[Type]) -> Type {
+    match params {
+        Nil => TyNamed(dataId, Nil),
+        _ => TyNamed(dataId, params),
+    }
+}
+
+fn ctorType(dataId: Int, params: List[Type], fields: List[Type]) -> Type {
+    let result = selfType(dataId, params)
+    match fields {
+        Nil => result,
+        _ => TyFunc(fields, result),
+    }
+}
+
+fn addCtors(dataId: Int, params: List[Type], ctors: List[CtorDecl], tag: Int, acc: List[CtorInfo]) -> Check[Unit] {
+    match ctors {
+        Nil => setCtors(dataId, reverse(acc)),
+        Cons(c, rest) => match c {
+            CtorDecl(pos, name, fields) => {
+                let! st = ckGet()
+                match ckLookupOwn(st, name) {
+                    Some(_) => ckFail(errorf(pos, "duplicate constructor '" ++ name ++ "'")),
+                    None => {
+                        let! fts = resolveFields(fields, Nil)
+                        let info = CtorInfo(name, tag, fts, dataId)
+                        let! sym = ckNewSym(CkSymCtor, name, ctorType(dataId, params, fts), pos, -1, Some(Pair(dataId, tag)), params, -1)
+                        let! _ = ckBindGlobal(name, sym)
+                        addCtors(dataId, params, rest, tag + 1, Cons(info, acc))
+                    },
+                }
+            },
+        },
+    }
+}
+
+fn resolveFields(fs: List[TypeExpr], acc: List[Type]) -> Check[List[Type]] {
+    match fs {
+        Nil => pure(reverse(acc)),
+        Cons(f, rest) => {
+            let! t = ckResolveType(f)
+            resolveFields(rest, Cons(t, acc))
+        },
+    }
+}
+
+fn setCtors(dataId: Int, ctors: List[CtorInfo]) -> Check[Unit] {
+    let! st = ckGet()
+    match ckDataInfo(st, dataId) {
+        None => pure(()),
+        Some(info) => match info {
+            DataInfo(n, ps, _) => ckPutDataInfo(dataId, DataInfo(n, ps, ctors)),
+        },
+    }
+}
+
+fn declareFuncs(fs: List[FuncDecl]) -> Check[Unit] {
+    match fs {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = declareFunc(d)
+            declareFuncs(rest)
+        },
+    }
+}
+
+fn annTypes(ps: List[Param], acc: List[Type]) -> Check[List[Type]] {
+    match ps {
+        Nil => pure(reverse(acc)),
+        Cons(p, rest) => match p {
+            Param(_, _, _, ann) => match ann {
+                Some(ty) => {
+                    let! t = ckResolveType(ty)
+                    annTypes(rest, Cons(t, acc))
+                },
+                None => annTypes(rest, acc),
+            },
+        },
+    }
+}
+
+fn checkUsed(atps: List[TypeParam], tps: List[Type], sig: Type, name: String) -> Check[Unit] {
+    match atps {
+        Nil => pure(()),
+        Cons(ap, arest) => match tps {
+            Nil => pure(()),
+            Cons(tp, trest) => {
+                let! env = ckEnv()
+                if tyMentions(env, sig, tp) {
+                    checkUsed(arest, trest, sig, name)
+                } else {
+                    let TypeParam(pos, _) = ap
+                    match tp {
+                        TyParam(_, tn) => ckFail(errorf(pos, "type parameter '" ++ tn ++ "' is not used in the signature of '" ++ name ++ "'")),
+                        _ => checkUsed(arest, trest, sig, name),
+                    }
+                }
+            },
+        },
+    }
+}
+
+fn declareFunc(d: FuncDecl) -> Check[Unit] {
+    let FuncDecl(id, _, _, name, namePos, tps, params, result, _) = d
+    let! st = ckGet()
+    match ckLookupOwn(st, name) {
+        Some(prev) => {
+            let Symbol(k, _, _, _, _, _, _, _) = ckSym(st, prev)
+            match k {
+                CkSymCtor => ckFail(errorf(namePos, "function '" ++ name ++ "' conflicts with constructor '" ++ name ++ "'")),
+                _ => ckFail(errorf(namePos, "duplicate function '" ++ name ++ "'")),
+            }
+        },
+        None => if !isAnnotated(params, result) {
+            match tps {
+                Cons(tp, _) => match tp {
+                    TypeParam(pos, _) => ckFail(errorf(pos, "function '" ++ name ++ "' declares type parameters, so every parameter and its result need a type annotation")),
+                },
+                Nil => {
+                    let! sym = ckNewSym(CkSymFunc, name, TyUnit, namePos, id, None, Nil, -1)
+                    let! _ = ckBindGlobal(name, sym)
+                    ckSetFunc(id, sym)
+                },
+            }
+        } else {
+            let! ptyps = declTPs(tps, smEmpty(), Nil)
+            let! _ = ckSetTParams(scopeOf(ptyps))
+            let! pts = annTypes(params, Nil)
+            let! rt = match result {
+                Some(ty) => ckResolveType(ty),
+                None => pure(TyUnit),
+            }
+            let sig = TyFunc(pts, rt)
+            let! _ = checkUsed(tps, ptyps, sig, name)
+            let! _ = ckSetTParams(smEmpty())
+            let! sym = ckNewSym(CkSymFunc, name, sig, namePos, id, None, ptyps, -1)
+            let! _ = ckBindGlobal(name, sym)
+            ckSetFunc(id, sym)
+        },
+    }
+}
+
+fn inferredFns(fs: List[FuncDecl], acc: List[FuncDecl]) -> List[FuncDecl] {
+    match fs {
+        Nil => reverse(acc),
+        Cons(d, rest) => {
+            let FuncDecl(_, _, _, _, _, _, params, result, _) = d
+            if isAnnotated(params, result) {
+                inferredFns(rest, acc)
+            } else {
+                inferredFns(rest, Cons(d, acc))
+            }
+        },
+    }
+}
+
+fn indexOf(ds: List[FuncDecl], i: Int, acc: StrMap[Int]) -> StrMap[Int] {
+    match ds {
+        Nil => acc,
+        Cons(d, rest) => {
+            let FuncDecl(_, _, _, name, _, _, _, _, _) = d
+            indexOf(rest, i + 1, smInsert(acc, name, i))
+        },
+    }
+}
+
+fn isTop(st: CkState, name: String) -> Bool {
+    match ckLookupOwn(st, name) {
+        None => false,
+        Some(id) => {
+            let Symbol(k, _, _, _, _, _, _, _) = ckSym(st, id)
+            match k {
+                CkSymFunc => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+fn addEdge(edges: IntMap[List[Int]], i: Int, j: Int) -> IntMap[List[Int]] {
+    let old = withDefault(imLookup(edges, i), Nil)
+    imInsert(edges, i, append(old, Cons(j, Nil)))
+}
+
+fn addRefs(edges: IntMap[List[Int]], i: Int, refs: List[String], index: StrMap[Int]) -> IntMap[List[Int]] {
+    match refs {
+        Nil => edges,
+        Cons(name, rest) => match smLookup(index, name) {
+            Some(j) => addRefs(addEdge(edges, i, j), i, rest, index),
+            None => addRefs(edges, i, rest, index),
+        },
+    }
+}
+
+fn buildEdges(st: CkState, ds: List[FuncDecl], index: StrMap[Int], i: Int, edges: IntMap[List[Int]]) -> IntMap[List[Int]] {
+    match ds {
+        Nil => edges,
+        Cons(d, rest) => {
+            let FuncDecl(_, _, _, _, _, _, params, _, body) = d
+            let refs = ckFuncRefs(params, body, fn(name: String) -> Bool { isTop(st, name) })
+            buildEdges(st, rest, index, i + 1, addRefs(edges, i, refs, index))
+        },
+    }
+}
+
+fn nthDecl(ds: List[FuncDecl], i: Int) -> Option[FuncDecl] {
+    match ds {
+        Nil => None,
+        Cons(d, rest) => if i == 0 {
+            Some(d)
+        } else {
+            nthDecl(rest, i - 1)
+        },
+    }
+}
+
+fn pick(ds: List[FuncDecl], idxs: List[Int], acc: List[FuncDecl]) -> List[FuncDecl] {
+    match idxs {
+        Nil => reverse(acc),
+        Cons(i, rest) => match nthDecl(ds, i) {
+            Some(d) => pick(ds, rest, Cons(d, acc)),
+            None => pick(ds, rest, acc),
+        },
+    }
+}
+
+fn checkComps(ds: List[FuncDecl], comps: List[List[Int]]) -> Check[Unit] {
+    match comps {
+        Nil => pure(()),
+        Cons(comp, rest) => {
+            let! _ = checkComponent(pick(ds, comp, Nil))
+            checkComps(ds, rest)
+        },
+    }
+}
+
+fn sigParams(ps: List[Param], acc: List[Type]) -> Check[List[Type]] {
+    match ps {
+        Nil => pure(reverse(acc)),
+        Cons(p, rest) => match p {
+            Param(_, pos, name, ann) => match ann {
+                Some(ty) => {
+                    let! t = ckResolveType(ty)
+                    sigParams(rest, Cons(t, acc))
+                },
+                None => {
+                    let! n = ckFreshName()
+                    let! t = ckNewMeta(n, pos, "cannot infer the type of parameter '" ++ name ++ "'; add a type annotation")
+                    sigParams(rest, Cons(t, acc))
+                },
+            },
+        },
+    }
+}
+
+fn mainMsg(env: TyEnv, t: Type) -> String {
+    "function 'main' must have type () -> Int or () -> IO[Unit], found " ++ tyString(env, t)
+}
+
+fn sigOne(d: FuncDecl) -> Check[Unit] {
+    let FuncDecl(id, _, _, name, namePos, _, params, result, _) = d
+    let! st0 = ckGet()
+    let symId = ckFuncSym(st0, id)
+    let! _ = ckSetCurrent(symId)
+    let! pts = sigParams(params, Nil)
+    let! rt = match result {
+        Some(ty) => ckResolveType(ty),
+        None => {
+            let! n = ckFreshName()
+            ckNewMeta(n, namePos, "cannot infer the result type of '" ++ name ++ "'; add a type annotation")
+        },
+    }
+    let sig = TyFunc(pts, rt)
+    let! st = ckGet()
+    let Symbol(_, _, _, pos, _, _, _, _) = ckSym(st, symId)
+    if ckIsEntry(st) && name == "main" && length(params) > 0 {
+        let! env = ckEnv()
+        ckFail(errorf(pos, mainMsg(env, sig)))
+    } else {
+        let! _ = ckSetSymType(symId, sig, Nil)
+        let! _ = ckAddComp(symId)
+        pure(())
+    }
+}
+
+fn sigLoop(ds: List[FuncDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = sigOne(d)
+            sigLoop(rest)
+        },
+    }
+}
+
+fn bodyOne(d: FuncDecl) -> Check[Unit] {
+    let FuncDecl(id, _, _, _, _, _, params, _, body) = d
+    let! st = ckGet()
+    let symId = ckFuncSym(st, id)
+    let Symbol(_, _, typ, _, _, _, _, _) = ckSym(st, symId)
+    let! _ = ckSetCurrent(symId)
+    match typ {
+        TyFunc(pts, rt) => {
+            let! _ = ckCheckFunc(ckEmptyCtx(), params, pts, Some(rt), body)
+            pure(())
+        },
+        _ => pure(()),
+    }
+}
+
+fn bodyLoop(ds: List[FuncDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = bodyOne(d)
+            bodyLoop(rest)
+        },
+    }
+}
+
+fn defaultOne(d: FuncDecl) -> Check[Unit] {
+    let FuncDecl(id, _, _, name, _, _, _, _, _) = d
+    let! st = ckGet()
+    if ckIsEntry(st) && name == "main" {
+        let symId = ckFuncSym(st, id)
+        let Symbol(_, _, typ, pos, _, _, _, _) = ckSym(st, symId)
+        match typ {
+            TyFunc(_, rt) => {
+                let! env = ckEnv()
+                match tyPrune(env, rt) {
+                    TyMeta(_) => {
+                        let! ok = ckUnifyM(rt, TyInt)
+                        if ok {
+                            pure(())
+                        } else {
+                            let! env2 = ckEnv()
+                            ckFail(errorf(pos, mainMsg(env2, typ)))
+                        }
+                    },
+                    _ => pure(()),
+                }
+            },
+            _ => pure(()),
+        }
+    } else {
+        pure(())
+    }
+}
+
+fn defaultMains(ds: List[FuncDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = defaultOne(d)
+            defaultMains(rest)
+        },
+    }
+}
+
+fn genWalkList(ts: List[Type], seen: CkSeen) -> Check[CkSeen] {
+    match ts {
+        Nil => pure(seen),
+        Cons(t, rest) => {
+            let! seen2 = genWalk(t, seen)
+            genWalkList(rest, seen2)
+        },
+    }
+}
+
+fn genWalk(t: Type, seen: CkSeen) -> Check[CkSeen] {
+    let! env = ckEnv()
+    match tyPrune(env, t) {
+        TyMeta(id) => {
+            let CkSeen(metas, tps, acc) = seen
+            if imMember(metas, id) {
+                pure(seen)
+            } else {
+                let! st = ckGet()
+                let! tp = ckAllocTyParam(ckMetaName(st, id))
+                let! _ = ckSolve(id, tp)
+                match tp {
+                    TyParam(pid, _) => {
+                        let! _ = ckAddCompTP(pid)
+                        pure(CkSeen(imInsert(metas, id, true), imInsert(tps, pid, true), Cons(tp, acc)))
+                    },
+                    _ => pure(seen),
+                }
+            }
+        },
+        TyParam(id, name) => {
+            let! st = ckGet()
+            let CkSeen(metas, tps, acc) = seen
+            if ckHasCompTP(st, id) && !imMember(tps, id) {
+                pure(CkSeen(metas, imInsert(tps, id, true), Cons(TyParam(id, name), acc)))
+            } else {
+                pure(seen)
+            }
+        },
+        TyFunc(ps, r) => {
+            let! seen2 = genWalkList(ps, seen)
+            genWalk(r, seen2)
+        },
+        TyNamed(_, args) => genWalkList(args, seen),
+        _ => pure(seen),
+    }
+}
+
+fn genOne(d: FuncDecl) -> Check[Unit] {
+    let FuncDecl(id, _, _, _, _, _, _, _, _) = d
+    let! st = ckGet()
+    let symId = ckFuncSym(st, id)
+    let Symbol(_, _, typ, _, _, _, _, _) = ckSym(st, symId)
+    let! seen = genWalk(typ, CkSeen(imEmpty(), imEmpty(), Nil))
+    let CkSeen(_, _, acc) = seen
+    let! env = ckEnv()
+    let tps = reverse(acc)
+    ckSetSymType(symId, tyResolve(env, typ), tps)
+}
+
+fn genAll(ds: List[FuncDecl]) -> Check[Unit] {
+    match ds {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = genOne(d)
+            genAll(rest)
+        },
+    }
+}
+
+fn symTPs(sym: Symbol) -> List[Type] {
+    let Symbol(_, _, _, _, _, _, tps, _) = sym
+    tps
+}
+
+fn containsID(tps: List[Type], id: Int) -> Bool {
+    match tps {
+        Nil => false,
+        Cons(t, rest) => match t {
+            TyParam(i, _) => if i == id {
+                true
+            } else {
+                containsID(rest, id)
+            },
+            _ => containsID(rest, id),
+        },
+    }
+}
+
+fn mentionsTPs(st: CkState, env: TyEnv, resolved: Type, owner: Int, tps: List[Type]) -> Bool {
+    match tps {
+        Nil => false,
+        Cons(tp, rest) => {
+            let ownerTps = if owner < 0 {
+                Nil
+            } else {
+                symTPs(ckSym(st, owner))
+            }
+            let hit = tyMentions(env, resolved, tp)
+            let owned = match tp {
+                TyParam(id, _) => containsID(ownerTps, id),
+                _ => false,
+            }
+            if hit && !owned {
+                true
+            } else {
+                mentionsTPs(st, env, resolved, owner, rest)
+            }
+        },
+    }
+}
+
+fn mentionsAny(st: CkState, env: TyEnv, resolved: Type, owner: Int, pairs: List[Pair[Int, Bool]]) -> Bool {
+    match pairs {
+        Nil => false,
+        Cons(p, rest) => match p {
+            Pair(id, _) => if mentionsTPs(st, env, resolved, owner, symTPs(ckSym(st, id))) {
+                true
+            } else {
+                mentionsAny(st, env, resolved, owner, rest)
+            },
+        },
+    }
+}
+
+fn checkPendings(ps: List[CkPending]) -> Check[Unit] {
+    match ps {
+        Nil => pure(()),
+        Cons(p, rest) => match p {
+            CkPending(id, pos, msg, owner) => {
+                let! env = ckEnv()
+                match tyPrune(env, TyMeta(id)) {
+                    TyMeta(_) => ckFail(errorf(pos, msg)),
+                    _ => {
+                        let resolved = tyResolve(env, TyMeta(id))
+                        let! st = ckGet()
+                        if mentionsAny(st, env, resolved, owner, ckCompPairs(st)) {
+                            ckFail(errorf(pos, msg))
+                        } else {
+                            checkPendings(rest)
+                        }
+                    },
+                }
+            },
+        },
+    }
+}
+
+fn checkEscape(tps: List[Type], owner: Int, name: String, pos: Pos) -> Check[Unit] {
+    match tps {
+        Nil => pure(()),
+        Cons(tp, rest) => {
+            let! st = ckGet()
+            let ownerTps = if owner < 0 { Nil } else { symTPs(ckSym(st, owner)) }
+            let owned = match tp {
+                TyParam(id, _) => containsID(ownerTps, id),
+                _ => false,
+            }
+            if owned {
+                checkEscape(rest, owner, name, pos)
+            } else {
+                match tp {
+                    TyParam(_, tn) => ckFail(errorf(pos, "cannot infer type argument '" ++ tn ++ "' of '" ++ name ++ "'; add a type annotation")),
+                    _ => checkEscape(rest, owner, name, pos),
+                }
+            }
+        },
+    }
+}
+
+fn checkRefs(refs: List[CkCompRef]) -> Check[Unit] {
+    match refs {
+        Nil => pure(()),
+        Cons(r, rest) => match r {
+            CkCompRef(ident, symId, owner, pos) => {
+                let! st = ckGet()
+                let sym = ckSym(st, symId)
+                let Symbol(_, name, _, _, _, _, tps, _) = sym
+                let! _ = match tps {
+                    Nil => pure(()),
+                    _ => ckSetTypeArgs(ident, tps),
+                }
+                let! _ = checkEscape(tps, owner, name, pos)
+                checkRefs(rest)
+            },
+        },
+    }
+}
+
+fn checkComponent(ds: List[FuncDecl]) -> Check[Unit] {
+    let! _ = ckResetMetas()
+    let! _ = ckClearComp()
+    let! _ = sigLoop(ds)
+    let! _ = bodyLoop(ds)
+    let! _ = defaultMains(ds)
+    let! _ = genAll(ds)
+    let! st = ckGet()
+    let! _ = checkPendings(ckPendings(st))
+    let! st2 = ckGet()
+    let! _ = checkRefs(ckCompRefs(st2))
+    let! _ = ckClearComp()
+    ckSetCurrent(-1)
+}
+
+fn checkAnnotated(fs: List[FuncDecl]) -> Check[Unit] {
+    match fs {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let FuncDecl(_, _, _, _, _, _, params, result, _) = d
+            if isAnnotated(params, result) {
+                let! _ = checkAnn(d)
+                checkAnnotated(rest)
+            } else {
+                checkAnnotated(rest)
+            }
+        },
+    }
+}
+
+fn checkAnn(d: FuncDecl) -> Check[Unit] {
+    let FuncDecl(id, _, _, _, _, _, params, _, body) = d
+    let! st = ckGet()
+    let symId = ckFuncSym(st, id)
+    let Symbol(_, _, typ, _, _, _, tps, _) = ckSym(st, symId)
+    let! _ = ckSetTParams(scopeOf(tps))
+    let! _ = ckResetMetas()
+    let! _ = ckSetCurrent(symId)
+    match typ {
+        TyFunc(pts, rt) => {
+            let! _ = ckCheckFunc(ckEmptyCtx(), params, pts, Some(rt), body)
+            let! st2 = ckGet()
+            checkAnnMetas(ckPendings(st2))
+        },
+        _ => pure(()),
+    }
+}
+
+fn checkAnnMetas(ps: List[CkPending]) -> Check[Unit] {
+    match ps {
+        Nil => pure(()),
+        Cons(p, rest) => match p {
+            CkPending(id, pos, msg, _) => {
+                let! env = ckEnv()
+                match tyPrune(env, TyMeta(id)) {
+                    TyMeta(_) => ckFail(errorf(pos, msg)),
+                    _ => checkAnnMetas(rest),
+                }
+            },
+        },
+    }
+}
+
+fn isIOUnit(env: TyEnv, t: Type) -> Bool {
+    tyEqual(env, t, TyNamed(tyIOData(), Cons(TyUnit, Nil)))
+}
+
+fn isMainType(env: TyEnv, t: Type) -> Bool {
+    match t {
+        TyFunc(ps, r) => match ps {
+            Nil => tyEqual(env, r, TyInt) || isIOUnit(env, r),
+            Cons(_, _) => false,
+        },
+        _ => false,
+    }
+}
+
+fn isMainIO(env: TyEnv, t: Type) -> Bool {
+    match t {
+        TyFunc(ps, r) => match ps {
+            Nil => isIOUnit(env, r),
+            Cons(_, _) => false,
+        },
+        _ => false,
+    }
+}
+
+fn checkMain() -> Check[Unit] {
+    let! st = ckGet()
+    match ckLookupOwn(st, "main") {
+        None => ckFail(errorf(Pos(1, 1), "missing function 'main'")),
+        Some(symId) => {
+            let Symbol(_, _, typ, pos, _, _, tps, _) = ckSym(st, symId)
+            match tps {
+                Cons(_, _) => ckFail(errorf(pos, "function 'main' cannot have type parameters")),
+                Nil => {
+                    let! env = ckEnv()
+                    if isMainType(env, typ) {
+                        ckSetMain(symId, isMainIO(env, typ))
+                    } else {
+                        ckFail(errorf(pos, mainMsg(env, typ)))
+                    }
+                },
+            }
+        },
+    }
+}
+
+fn exportFns(fs: List[FuncDecl], acc: StrMap[Int]) -> Check[StrMap[Int]] {
+    match fs {
+        Nil => pure(acc),
+        Cons(d, rest) => {
+            let FuncDecl(id, _, isPub, name, _, _, _, _, _) = d
+            if isPub {
+                let! st = ckGet()
+                exportFns(rest, smInsert(acc, name, ckFuncSym(st, id)))
+            } else {
+                exportFns(rest, acc)
+            }
+        },
+    }
+}
+
+fn exportDatas(ds: List[TypeDecl], acc: StrMap[Int]) -> Check[StrMap[Int]] {
+    match ds {
+        Nil => pure(acc),
+        Cons(d, rest) => {
+            let TypeDecl(id, _, isPub, name, _, _, _) = d
+            if isPub {
+                let! st = ckGet()
+                let CkMaps(_, _, _, _, _, _, datas, _, _, _, _, _, _, _) = mapsOfExport(st)
+                let dataId = withDefault(imLookup(datas, id), -1)
+                exportDatas(rest, smInsert(acc, name, dataId))
+            } else {
+                exportDatas(rest, acc)
+            }
+        },
+    }
+}
+
+fn mapsOfExport(st: CkState) -> CkMaps {
+    let CkState(maps, _, _, _) = st
+    maps
+}
+
+fn exportCtorList(ctors: List[CtorInfo], acc: StrMap[Int]) -> Check[StrMap[Int]] {
+    match ctors {
+        Nil => pure(acc),
+        Cons(c, rest) => match c {
+            CtorInfo(name, _, _, _) => {
+                let! st = ckGet()
+                match ckLookupOwn(st, name) {
+                    Some(id) => exportCtorList(rest, smInsert(acc, name, id)),
+                    None => exportCtorList(rest, acc),
+                }
+            },
+        },
+    }
+}
+
+fn exportCtors(ds: List[TypeDecl], acc: StrMap[Int]) -> Check[StrMap[Int]] {
+    match ds {
+        Nil => pure(acc),
+        Cons(d, rest) => {
+            let TypeDecl(_, _, isPub, name, _, _, _) = d
+            if isPub {
+                let! st = ckGet()
+                match ckLookupOwnData(st, name) {
+                    None => exportCtors(rest, acc),
+                    Some(dataId) => match ckDataInfo(st, dataId) {
+                        Some(info) => match info {
+                            DataInfo(_, _, ctors) => {
+                                let! acc2 = exportCtorList(ctors, acc)
+                                exportCtors(rest, acc2)
+                            },
+                        },
+                        None => exportCtors(rest, acc),
+                    },
+                }
+            } else {
+                exportCtors(rest, acc)
+            }
+        },
+    }
+}
+
+fn moduleExports(m: Module, exp: StrMap[CkExports]) -> Check[StrMap[CkExports]] {
+    let File(_, tys, fns) = astOf(m)
+    let! vals = exportFns(fns, smEmpty())
+    let! vals2 = exportCtors(tys, vals)
+    let! datas = exportDatas(tys, smEmpty())
+    pure(smInsert(exp, fileOf(m), CkExports(pathOf(m), vals2, datas)))
+}
+
+fn setFuncMods(fs: List[FuncDecl], i: Int) -> Check[Unit] {
+    match fs {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let FuncDecl(id, _, _, _, _, _, _, _, _) = d
+            let! _ = ckSetFuncMod(id, i)
+            setFuncMods(rest, i)
+        },
+    }
+}
+
+fn tpShow(t: Type) -> String {
+    match t {
+        TyParam(_, name) => name,
+        _ => "",
+    }
+}
+
+fn joinRest(tps: List[Type], acc: String) -> String {
+    match tps {
+        Nil => acc,
+        Cons(t, rest) => joinRest(rest, acc ++ ", " ++ tpShow(t)),
+    }
+}
+
+fn joinTPs(tps: List[Type]) -> String {
+    match tps {
+        Nil => "",
+        Cons(t, rest) => joinRest(rest, tpShow(t)),
+    }
+}
+
+fn formatSym(name: String, sym: Symbol, env: TyEnv) -> String {
+    let Symbol(_, _, typ, _, _, _, tps, _) = sym
+    let ty = tyString(env, typ)
+    match tps {
+        Nil => name ++ " : " ++ ty ++ "\n",
+        _ => name ++ " : forall " ++ joinTPs(tps) ++ ". " ++ ty ++ "\n",
+    }
+}
+
+fn formatFns(fs: List[FuncDecl], info: Info, env: TyEnv, acc: String) -> String {
+    match fs {
+        Nil => acc,
+        Cons(d, rest) => {
+            let FuncDecl(id, _, _, name, _, _, _, _, _) = d
+            let line = match imLookup(infoFuncs(info), id) {
+                None => "",
+                Some(symId) => match imLookup(infoSymbols(info), symId) {
+                    None => "",
+                    Some(sym) => formatSym(name, sym, env),
+                },
+            }
+            formatFns(rest, info, env, acc ++ line)
+        },
+    }
+}
+
+fn formatMods(mods: List[Module], info: Info, env: TyEnv, acc: String) -> String {
+    match mods {
+        Nil => acc,
+        Cons(m, rest) => {
+            let File(_, _, fns) = astOf(m)
+            let chunk = "== " ++ fileOf(m) ++ "\n" ++ formatFns(fns, info, env, "")
+            formatMods(rest, info, env, acc ++ chunk)
+        },
+    }
+}
+
+pub fn ckFormatTypes(mods: List[Module], info: Info) -> String {
+    let env = TyEnv(infoDataInfos(info), imEmpty(), imEmpty())
+    formatMods(mods, info, env, "")
+}
