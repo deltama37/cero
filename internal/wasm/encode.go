@@ -27,6 +27,7 @@ const (
 	opReturnCallIndirect byte = 0x13
 	opLocalGet           byte = 0x20
 	opLocalSet           byte = 0x21
+	opLocalTee           byte = 0x22
 	opGlobalGet          byte = 0x23
 	opGlobalSet          byte = 0x24
 	opI32Load            byte = 0x28
@@ -55,6 +56,11 @@ const (
 	opI64Sub             byte = 0x7d
 	opI64Mul             byte = 0x7e
 	opI64DivS            byte = 0x7f
+	opI64Or              byte = 0x84
+	opI64Shl             byte = 0x86
+	opI64ShrU            byte = 0x88
+	opI32WrapI64         byte = 0xa7
+	opI64ExtendI32U      byte = 0xad
 	valI32               byte = 0x7f
 	valI64               byte = 0x7e
 	typeFunc             byte = 0x60
@@ -88,6 +94,7 @@ func Encode(m *ir.Module) []byte {
 		types:    types,
 		allocIdx: len(m.Funcs),
 		newIdx:   newFuncIndex(len(m.Funcs), news),
+		scratch:  -1,
 	}
 
 	out := append([]byte(nil), wasmHeader...)
@@ -113,6 +120,7 @@ type encoder struct {
 	allocIdx int
 	newIdx   map[string]int
 	result   ir.ValType // result type of the function being encoded
+	scratch  int        // local index for call_indirect, or -1
 }
 
 // usesMemory reports whether any function body contains a Construct,
@@ -136,9 +144,11 @@ func usesMemory(m *ir.Module) bool {
 // collectTypes assigns type indices in first-seen order.
 // Function signatures are scanned first, then each body in preorder
 // so that CallIndirect signatures share indices with matching functions.
-// Bool, FuncRef and Ptr are all i32, so they collapse to one wasm type.
-// When the module uses memory, alloc's type and each new's type are added
-// after the v0.1 scan, in auxiliary-function order.
+// A CallIndirect is registered with an environment pointer appended, the
+// same signature as the function in the table. Bool and Ptr are both i32,
+// so they collapse to one wasm type. FuncRef is i64, so it collapses with
+// Int. When the module uses memory, alloc's type and each new's type are
+// added after that scan, in auxiliary-function order.
 func collectTypes(m *ir.Module, mem bool, news [][]ir.ValType) ([]ir.Sig, map[string]int) {
 	var sigs []ir.Sig
 	index := make(map[string]int)
@@ -156,7 +166,7 @@ func collectTypes(m *ir.Module, mem bool, news [][]ir.ValType) ([]ir.Sig, map[st
 	for _, fn := range m.Funcs {
 		walk(fn.Body, func(e ir.Expr) {
 			if c, ok := e.(*ir.CallIndirect); ok {
-				add(c.Sig)
+				add(callIndirectSig(c.Sig))
 			}
 		})
 	}
@@ -197,7 +207,8 @@ func collectNews(m *ir.Module) [][]ir.ValType {
 
 // auxiliarySigs is alloc's signature followed by each new's signature.
 // i32 is represented as ir.Ptr and i64 as ir.Int; sigKey compares wasm
-// value types, so a Bool or FuncRef parameter shares an index with Ptr.
+// value types, so a Bool parameter shares an index with Ptr and a FuncRef
+// parameter shares an index with Int.
 func auxiliarySigs(news [][]ir.ValType) []ir.Sig {
 	out := make([]ir.Sig, 0, 1+len(news))
 	out = append(out, ir.Sig{Params: []ir.ValType{ir.Ptr}, Result: ir.Ptr})
@@ -231,12 +242,21 @@ func fieldTypesKey(fields []ir.ValType) string {
 }
 
 // wasmAsIR maps a field's wasm value type back to an IR type for sigKey:
-// i64 stays Int, every i32 becomes Ptr.
+// i64 (Int and FuncRef) stays Int, every i32 becomes Ptr.
 func wasmAsIR(t ir.ValType) ir.ValType {
-	if t == ir.Int {
+	if wasmValType(t) == valI64 {
 		return ir.Int
 	}
 	return ir.Ptr
+}
+
+// callIndirectSig is s with the environment pointer appended. It is the
+// signature of the function in the table.
+func callIndirectSig(s ir.Sig) ir.Sig {
+	params := make([]ir.ValType, len(s.Params)+1)
+	copy(params, s.Params)
+	params[len(s.Params)] = ir.Ptr
+	return ir.Sig{Params: params, Result: s.Result}
 }
 
 // walk visits e in preorder (the node, then children left to right).
@@ -248,7 +268,11 @@ func walk(e ir.Expr, visit func(ir.Expr)) {
 	}
 	visit(e)
 	switch e := e.(type) {
-	case *ir.IntConst, *ir.BoolConst, *ir.LocalGet, *ir.FuncValue:
+	case *ir.IntConst, *ir.BoolConst, *ir.LocalGet:
+	case *ir.FuncValue:
+		if e.Env != nil {
+			walk(e.Env, visit)
+		}
 	case *ir.Unary:
 		walk(e.X, visit)
 	case *ir.Binary:
@@ -302,8 +326,10 @@ func wasmValType(t ir.ValType) byte {
 	switch t {
 	case ir.Int:
 		return valI64
-	case ir.Bool, ir.FuncRef, ir.Ptr:
+	case ir.Bool, ir.Ptr:
 		return valI32
+	case ir.FuncRef:
+		return valI64
 	default:
 		panic(fmt.Sprintf("wasm: unknown value type %d", int(t)))
 	}
@@ -476,7 +502,7 @@ func encodeNewBody(allocIdx int, fields []ir.ValType) []byte {
 		buf = appendUleb128(buf, uint64(p))
 		buf = append(buf, opLocalGet)
 		buf = appendUleb128(buf, uint64(i+1))
-		if ft == ir.Int {
+		if wasmValType(ft) == valI64 {
 			buf = append(buf, opI64Store, alignI64)
 		} else {
 			buf = append(buf, opI32Store, alignI32)
@@ -491,10 +517,24 @@ func encodeNewBody(allocIdx int, fields []ir.ValType) []byte {
 
 func (e *encoder) encodeBody(fn *ir.Func) []byte {
 	e.result = fn.Sig.Result
-	e.buf = encodeLocals(fn)
+	e.scratch = -1
+	if usesCallIndirect(fn.Body) {
+		e.scratch = len(fn.Locals)
+	}
+	e.buf = encodeLocals(fn, e.scratch >= 0)
 	e.expr(fn.Body)
 	e.buf = append(e.buf, opEnd)
 	return e.buf
+}
+
+func usesCallIndirect(e ir.Expr) bool {
+	found := false
+	walk(e, func(x ir.Expr) {
+		if _, ok := x.(*ir.CallIndirect); ok {
+			found = true
+		}
+	})
+	return found
 }
 
 // checkTail panics unless a tail call returning t can replace the frame of
@@ -507,7 +547,9 @@ func (e *encoder) checkTail(t ir.ValType) {
 
 // encodeLocals groups non-parameter locals into runs of the same wasm type.
 // No extra locals is a vector of length 0, the single byte 0x00.
-func encodeLocals(fn *ir.Func) []byte {
+// scratch adds one i64 local after fn.Locals when the body contains a
+// CallIndirect. fn.Locals itself is left unchanged.
+func encodeLocals(fn *ir.Func, scratch bool) []byte {
 	extras := fn.Locals[len(fn.Sig.Params):]
 	type group struct {
 		n int
@@ -521,6 +563,13 @@ func encodeLocals(fn *ir.Func) []byte {
 			continue
 		}
 		groups = append(groups, group{n: 1, t: wt})
+	}
+	if scratch {
+		if len(groups) > 0 && groups[len(groups)-1].t == valI64 {
+			groups[len(groups)-1].n++
+		} else {
+			groups = append(groups, group{n: 1, t: valI64})
+		}
 	}
 	content := appendUleb128(nil, uint64(len(groups)))
 	for _, g := range groups {
@@ -545,8 +594,7 @@ func (e *encoder) expr(x ir.Expr) {
 		e.buf = append(e.buf, opLocalGet)
 		e.buf = appendUleb128(e.buf, uint64(x.Local))
 	case *ir.FuncValue:
-		e.buf = append(e.buf, opI32Const)
-		e.buf = appendSleb128(e.buf, e.tableIndex(x.Func))
+		e.funcValue(x)
 	case *ir.Unary:
 		e.unary(x)
 	case *ir.Binary:
@@ -581,13 +629,24 @@ func (e *encoder) expr(x ir.Expr) {
 			e.expr(arg)
 		}
 		e.expr(x.Callee)
+		if e.scratch < 0 {
+			panic("wasm: call_indirect without a scratch local")
+		}
+		e.buf = append(e.buf, opLocalTee)
+		e.buf = appendUleb128(e.buf, uint64(e.scratch))
+		e.buf = append(e.buf, opI64Const)
+		e.buf = appendSleb128(e.buf, 32)
+		e.buf = append(e.buf, opI64ShrU, opI32WrapI64)
+		e.buf = append(e.buf, opLocalGet)
+		e.buf = appendUleb128(e.buf, uint64(e.scratch))
+		e.buf = append(e.buf, opI32WrapI64)
 		if x.Tail {
 			e.checkTail(x.Sig.Result)
 			e.buf = append(e.buf, opReturnCallIndirect)
 		} else {
 			e.buf = append(e.buf, opCallIndirect)
 		}
-		e.buf = appendUleb128(e.buf, e.typeIndex(x.Sig))
+		e.buf = appendUleb128(e.buf, e.typeIndex(callIndirectSig(x.Sig)))
 		e.buf = append(e.buf, 0x00)
 	case *ir.Construct:
 		e.buf = append(e.buf, opI32Const)
@@ -607,7 +666,7 @@ func (e *encoder) expr(x ir.Expr) {
 		e.buf = append(e.buf, opLocalGet)
 		e.buf = appendUleb128(e.buf, uint64(x.Local))
 		offset := uint64(8 + 8*x.Index)
-		if x.T == ir.Int {
+		if wasmValType(x.T) == valI64 {
 			e.buf = append(e.buf, opI64Load, alignI64)
 		} else {
 			e.buf = append(e.buf, opI32Load, alignI32)
@@ -618,6 +677,22 @@ func (e *encoder) expr(x ir.Expr) {
 	default:
 		panic(fmt.Sprintf("wasm: unhandled expr %T", x))
 	}
+}
+
+func (e *encoder) funcValue(x *ir.FuncValue) {
+	if x.Env != nil {
+		e.expr(x.Env)
+		e.buf = append(e.buf, opI64ExtendI32U)
+		e.buf = append(e.buf, opI64Const)
+		e.buf = appendSleb128(e.buf, 32)
+		e.buf = append(e.buf, opI64Shl)
+		e.buf = append(e.buf, opI64Const)
+		e.buf = appendSleb128(e.buf, e.tableIndex(x.Func))
+		e.buf = append(e.buf, opI64Or)
+		return
+	}
+	e.buf = append(e.buf, opI64Const)
+	e.buf = appendSleb128(e.buf, e.tableIndex(x.Func))
 }
 
 func (e *encoder) switchTag(x *ir.SwitchTag, i int) {

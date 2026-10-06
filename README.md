@@ -55,6 +55,9 @@ with design documents in [`docs/design/`](docs/design/):
 * v0.5: type inference for top-level functions, such as `fn identity(x) { x }`
   ([ADR-0007](docs/adr/0007-v0.5-top-level-type-inference.md);
   `examples/toplevel_inference.cero`)
+* v0.6: closures that capture outer variables, such as `fn(x) { x + n }`
+  ([ADR-0008](docs/adr/0008-v0.6-closures.md);
+  `examples/closures.cero`)
 
 `ceroc fmt` is not implemented yet.
 

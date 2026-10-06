@@ -212,8 +212,9 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 double (sig (Int) Int) (locals Int) (mul (local 0) 2))",
 				"(func 1 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 2 main (sig () Int) (locals) (return.call 1 (func.ref 0) 3))",
-				"(table 0)",
+				"(func 2 main (sig () Int) (locals) (return.call 1 (func.ref 3) 3))",
+				"(func 3 double$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 0 (local 0)))",
+				"(table 3)",
 				"(main 2)",
 			),
 		},
@@ -234,8 +235,9 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 double (sig (Int) Int) (locals Int) (mul (local 0) 2))",
 				"(func 1 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 2 main (sig () Int) (locals) (return.call 1 (func.ref 0) (call 1 (func.ref 0) 3)))",
-				"(table 0)",
+				"(func 2 main (sig () Int) (locals) (return.call 1 (func.ref 3) (call 1 (func.ref 3) 3)))",
+				"(func 3 double$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 0 (local 0)))",
+				"(table 3)",
 				"(main 2)",
 			),
 		},
@@ -252,7 +254,7 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
 				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 3))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (mul (local 0) 2))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr) (mul (local 0) 2))",
 				"(table 2)",
 				"(main 1)",
 			),
@@ -272,8 +274,8 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
 				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 1))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (return.call 0 (func.ref 3) (local 0)))",
-				"(func 3 lambda$1 (sig (Int) Int) (locals Int) (add (local 0) 1))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr) (return.call 0 (func.ref 3) (local 0)))",
+				"(func 3 lambda$1 (sig (Int Ptr) Int) (locals Int Ptr) (add (local 0) 1))",
 				"(table 3 2)",
 				"(main 1)",
 			),
@@ -316,9 +318,11 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 inc (sig (Int) Int) (locals Int) (add (local 0) 1))",
 				"(func 1 dec (sig (Int) Int) (locals Int) (sub (local 0) 1))",
-				"(func 2 pick (sig (Bool) FuncRef) (locals Bool) (if (local 0) (func.ref 0) (func.ref 1)))",
+				"(func 2 pick (sig (Bool) FuncRef) (locals Bool) (if (local 0) (func.ref 4) (func.ref 5)))",
 				"(func 3 main (sig () Int) (locals) (return.call.indirect (sig (Int) Int) (call 2 true) 3))",
-				"(table 0 1)",
+				"(func 4 inc$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 0 (local 0)))",
+				"(func 5 dec$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 1 (local 0)))",
+				"(table 4 5)",
 				"(main 3)",
 			),
 		},
@@ -366,7 +370,7 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 inc (sig (Int) Int) (locals Int) (add (local 0) 1))",
 				"(func 1 main (sig () Int) (locals FuncRef) (block (let 0 (func.ref 2)) (return.call.indirect (sig (Int) Int) (local 0) 1)))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (return.call 0 (local 0)))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr) (return.call 0 (local 0)))",
 				"(table 2)",
 				"(main 1)",
 			),
@@ -582,7 +586,7 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
 				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 0))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int Int) (block (let 1 (local 0)) (if (eq (local 1) 0) 1 (local 0))))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr Int) (block (let 2 (local 0)) (if (eq (local 2) 0) 1 (local 0))))",
 				"(table 2)",
 				"(main 1)",
 			),
@@ -773,7 +777,7 @@ fn main() -> Int {
 			want: lines(
 				"(func 0 f (sig (Int) Int) (locals Int) (local 0))",
 				"(func 1 main (sig () Int) (locals FuncRef) (block (let 0 (func.ref 2)) (return.call.indirect (sig (Int) Int) (local 0) 1)))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (return.call 0 (local 0)))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr) (return.call 0 (local 0)))",
 				"(table 2)",
 				"(main 1)",
 			),
@@ -856,9 +860,10 @@ fn main() -> Int { apply(identity, 7) }
 `,
 			want: lines(
 				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
-				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 7))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 3) 7))",
 				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
-				"(table 2)",
+				"(func 3 identity[Int]$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 2 (local 0)))",
+				"(table 3)",
 				"(main 1)",
 			),
 		},
@@ -874,8 +879,8 @@ fn main() -> Int { if twiceApply(true) { twiceApply(1) } else { 0 } }
 				"(func 0 main (sig () Int) (locals) (if (call 1 true) (return.call 2 1) 0))",
 				"(func 1 twiceApply[Bool] (sig (Bool) Bool) (locals Bool FuncRef) (block (let 1 (func.ref 3)) (return.call.indirect (sig (Bool) Bool) (local 1) (call.indirect (sig (Bool) Bool) (local 1) (local 0)))))",
 				"(func 2 twiceApply[Int] (sig (Int) Int) (locals Int FuncRef) (block (let 1 (func.ref 4)) (return.call.indirect (sig (Int) Int) (local 1) (call.indirect (sig (Int) Int) (local 1) (local 0)))))",
-				"(func 3 lambda$0 (sig (Bool) Bool) (locals Bool) (local 0))",
-				"(func 4 lambda$1 (sig (Int) Int) (locals Int) (local 0))",
+				"(func 3 lambda$0 (sig (Bool Ptr) Bool) (locals Bool Ptr) (local 0))",
+				"(func 4 lambda$1 (sig (Int Ptr) Int) (locals Int Ptr) (local 0))",
 				"(table 3 4)",
 				"(main 0)",
 			),
@@ -954,10 +959,12 @@ fn main() -> Int { if f(None) { 1 } else { 0 } }
 fn main() -> Int { let f = identity if f(true) { f(1) } else { 0 } }
 `,
 			want: lines(
-				"(func 0 main (sig () Int) (locals) (if (call.indirect (sig (Bool) Bool) (func.ref 1) true) (return.call.indirect (sig (Int) Int) (func.ref 2) 1) 0))",
+				"(func 0 main (sig () Int) (locals) (if (call.indirect (sig (Bool) Bool) (func.ref 2) true) (return.call.indirect (sig (Int) Int) (func.ref 4) 1) 0))",
 				"(func 1 identity[Bool] (sig (Bool) Bool) (locals Bool) (local 0))",
-				"(func 2 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
-				"(table 1 2)",
+				"(func 2 identity[Bool]$ref (sig (Bool Ptr) Bool) (locals Bool Ptr) (return.call 1 (local 0)))",
+				"(func 3 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
+				"(func 4 identity[Int]$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 3 (local 0)))",
+				"(table 2 4)",
 				"(main 0)",
 			),
 		},
@@ -966,8 +973,8 @@ fn main() -> Int { let f = identity if f(true) { f(1) } else { 0 } }
 			src:  "fn main() -> Int { let id = fn(x) { x } if id(true) { id(1) } else { 0 } }\n",
 			want: lines(
 				"(func 0 main (sig () Int) (locals) (if (call.indirect (sig (Bool) Bool) (func.ref 1) true) (return.call.indirect (sig (Int) Int) (func.ref 2) 1) 0))",
-				"(func 1 lambda$0 (sig (Bool) Bool) (locals Bool) (local 0))",
-				"(func 2 lambda$1 (sig (Int) Int) (locals Int) (local 0))",
+				"(func 1 lambda$0 (sig (Bool Ptr) Bool) (locals Bool Ptr) (local 0))",
+				"(func 2 lambda$1 (sig (Int Ptr) Int) (locals Int Ptr) (local 0))",
 				"(table 1 2)",
 				"(main 0)",
 			),
@@ -991,7 +998,7 @@ fn main() -> Int { apply(fn(x) { x + 1 }, 2) }
 			want: lines(
 				"(func 0 apply (sig (FuncRef Int) Int) (locals FuncRef Int) (return.call.indirect (sig (Int) Int) (local 0) (local 1)))",
 				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 2))",
-				"(func 2 lambda$0 (sig (Int) Int) (locals Int) (add (local 0) 1))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr) (add (local 0) 1))",
 				"(table 2)",
 				"(main 1)",
 			),
@@ -1005,10 +1012,10 @@ fn main() -> Int { if twice(true) { twice(1) } else { 0 } }
 				"(func 0 main (sig () Int) (locals) (if (call 1 true) (return.call 2 1) 0))",
 				"(func 1 twice[Bool] (sig (Bool) Bool) (locals Bool) (return.call.indirect (sig (Bool) Bool) (func.ref 3) (call.indirect (sig (Bool) Bool) (func.ref 4) (local 0))))",
 				"(func 2 twice[Int] (sig (Int) Int) (locals Int) (return.call.indirect (sig (Int) Int) (func.ref 5) (call.indirect (sig (Int) Int) (func.ref 6) (local 0))))",
-				"(func 3 lambda$0 (sig (Bool) Bool) (locals Bool) (local 0))",
-				"(func 4 lambda$1 (sig (Bool) Bool) (locals Bool) (local 0))",
-				"(func 5 lambda$2 (sig (Int) Int) (locals Int) (local 0))",
-				"(func 6 lambda$3 (sig (Int) Int) (locals Int) (local 0))",
+				"(func 3 lambda$0 (sig (Bool Ptr) Bool) (locals Bool Ptr) (local 0))",
+				"(func 4 lambda$1 (sig (Bool Ptr) Bool) (locals Bool Ptr) (local 0))",
+				"(func 5 lambda$2 (sig (Int Ptr) Int) (locals Int Ptr) (local 0))",
+				"(func 6 lambda$3 (sig (Int Ptr) Int) (locals Int Ptr) (local 0))",
 				"(table 3 4 5 6)",
 				"(main 0)",
 			),
@@ -1019,10 +1026,63 @@ fn main() -> Int { if twice(true) { twice(1) } else { 0 } }
 fn main() -> Int { let f = identity let g = f g(5) }
 `,
 			want: lines(
-				"(func 0 main (sig () Int) (locals) (return.call.indirect (sig (Int) Int) (func.ref 1) 5))",
+				"(func 0 main (sig () Int) (locals) (return.call.indirect (sig (Int) Int) (func.ref 2) 5))",
 				"(func 1 identity[Int] (sig (Int) Int) (locals Int) (local 0))",
-				"(table 1)",
+				"(func 2 identity[Int]$ref (sig (Int Ptr) Int) (locals Int Ptr) (return.call 1 (local 0)))",
+				"(table 2)",
 				"(main 0)",
+			),
+		},
+		{
+			name: "anonymous function captures a parameter",
+			src: `fn makeAdder(n: Int) -> Int -> Int {
+    fn(x: Int) -> Int { x + n }
+}
+fn main() -> Int { makeAdder(1)(2) }
+`,
+			want: lines(
+				"(func 0 makeAdder (sig (Int) FuncRef) (locals Int) (func.ref 2 (construct 0 (local 0))))",
+				"(func 1 main (sig () Int) (locals) (return.call.indirect (sig (Int) Int) (call 0 1) 2))",
+				"(func 2 lambda$0 (sig (Int Ptr) Int) (locals Int Ptr Int) (block (let 2 (field 1 0)) (add (local 0) (local 2))))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "generalized let captures an outer parameter",
+			src: `fn outer(y: Int) -> Int {
+    let id = fn(x) { y }
+    id(true) + id(1)
+}
+fn main() -> Int { outer(3) }
+`,
+			want: lines(
+				"(func 0 outer (sig (Int) Int) (locals Int) (add (call.indirect (sig (Bool) Int) (func.ref 2 (construct 0 (local 0))) true) (call.indirect (sig (Int) Int) (func.ref 3 (construct 0 (local 0))) 1)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 3))",
+				"(func 2 lambda$0 (sig (Bool Ptr) Int) (locals Bool Ptr Int) (block (let 2 (field 1 0)) (local 2)))",
+				"(func 3 lambda$1 (sig (Int Ptr) Int) (locals Int Ptr Int) (block (let 2 (field 1 0)) (local 2)))",
+				"(table 2 3)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "nested anonymous function captures an outer parameter",
+			src: `fn f(n: Int) -> Int {
+    let g = fn() -> Int {
+        let h = fn() -> Int { n }
+        h()
+    }
+    g()
+}
+fn main() -> Int { f(1) }
+`,
+			want: lines(
+				"(func 0 f (sig (Int) Int) (locals Int FuncRef) (block (let 1 (func.ref 2 (construct 0 (local 0)))) (return.call.indirect (sig () Int) (local 1))))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 1))",
+				"(func 2 lambda$0 (sig (Ptr) Int) (locals Ptr Int FuncRef) (block (let 1 (field 0 0)) (block (let 2 (func.ref 3 (construct 0 (local 1)))) (return.call.indirect (sig () Int) (local 2)))))",
+				"(func 3 lambda$1 (sig (Ptr) Int) (locals Ptr Int) (block (let 1 (field 0 0)) (local 1)))",
+				"(table 3 2)",
+				"(main 1)",
 			),
 		},
 	}

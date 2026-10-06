@@ -44,8 +44,10 @@ type LocalID int
 // Module is a lowered compilation unit.
 type Module struct {
 	Funcs []*Func
-	// Table lists every function used as a value, without duplicates,
-	// in order of first use. A FuncRef value is an index into Table.
+	// Table lists every function used as a value, without duplicates, in order
+	// of first use. A FuncRef value holds an index into Table. Every function in
+	// Table takes an environment pointer (Ptr) as its last parameter, after the
+	// parameters of the source-level function type.
 	Table []FuncID
 	Main  FuncID
 }
@@ -78,8 +80,14 @@ type LocalGet struct {
 	T     ValType
 }
 
-// FuncValue produces a FuncRef value for Func. Func must appear in Module.Table.
-type FuncValue struct{ Func FuncID }
+// FuncValue produces a FuncRef value for Func, which must appear in
+// Module.Table. Env yields the address of the environment block passed as
+// the last argument whenever the value is called; it is nil for a function
+// that captures nothing, which passes address 0.
+type FuncValue struct {
+	Func FuncID
+	Env  Expr // nil, or a Ptr expression (a Construct with Tag 0)
+}
 
 // UnOp is a unary operator.
 type UnOp int
@@ -150,6 +158,9 @@ type Call struct {
 // Tail reports that the call is in tail position of the enclosing function
 // (ADR-0005); it is then encoded as return_call_indirect, and Sig.Result
 // equals the enclosing function's result type.
+// Sig is the signature of the source-level function type and does not
+// include the environment parameter; the callee's environment is passed
+// after Args.
 type CallIndirect struct {
 	Callee Expr
 	Sig    Sig

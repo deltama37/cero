@@ -31,7 +31,10 @@ func FormatExpr(e Expr) string {
 	case *LocalGet:
 		return fmt.Sprintf("(local %d)", e.Local)
 	case *FuncValue:
-		return fmt.Sprintf("(func.ref %d)", e.Func)
+		if e.Env == nil {
+			return fmt.Sprintf("(func.ref %d)", e.Func)
+		}
+		return fmt.Sprintf("(func.ref %d %s)", e.Func, FormatExpr(e.Env))
 	case *Unary:
 		return "(" + unaryName(e.Op) + " " + FormatExpr(e.X) + ")"
 	case *Binary:

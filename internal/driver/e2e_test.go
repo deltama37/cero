@@ -902,6 +902,129 @@ fn main() {
 `,
 			want: "500000500000",
 		},
+		{
+			name: "closures example",
+			file: "examples/closures.cero",
+			want: "42",
+		},
+		{
+			name: "makeAdder",
+			src: `fn makeAdder(n: Int) -> Int -> Int {
+    fn(x: Int) -> Int { x + n }
+}
+
+fn main() -> Int {
+    makeAdder(40)(2)
+}
+`,
+			want: "42",
+		},
+		{
+			name: "map captures an outer value",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+
+fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn main() -> Int {
+    let k = 10
+    let xs = Cons(1, Cons(2, Cons(3, Nil)))
+    foldl(map(xs, fn(x) { x * k }), 0, fn(acc, x) { acc + x })
+}
+`,
+			want: "60",
+		},
+		{
+			name: "nested closure captures two levels out",
+			src: `fn main() -> Int {
+    let n = 40
+    let f = fn(x: Int) -> Int {
+        let g = fn(y: Int) -> Int { x + y + n }
+        g(1)
+    }
+    f(1)
+}
+`,
+			want: "42",
+		},
+		{
+			name: "capture bool, function, data, and int",
+			src: `type Box = Box(Int)
+
+fn id(n: Int) -> Int { n }
+
+fn main() -> Int {
+    let flag = true
+    let f = id
+    let b = Box(10)
+    let n = 2
+    let g = fn(x: Int) -> Int {
+        let m = match b {
+            Box(v) => v,
+        }
+        if flag { f(m) + n + x } else { 0 }
+    }
+    g(30)
+}
+`,
+			want: "42",
+		},
+		{
+			name: "capturing generalized let at two types and from a closure",
+			src: `fn main() -> Int {
+    let y = 1
+    let id = fn(x) { y }
+    let fromBool = id(true)
+    let fromInt = id(2)
+    let h = fn() -> Int { id(0) }
+    fromBool + fromInt + h() + 39
+}
+`,
+			want: "42",
+		},
+		{
+			name: "continuation passing a million closures",
+			src: `fn count(n: Int, k: Int -> Int) -> Int {
+    if n == 0 {
+        k(0)
+    } else {
+        count(n - 1, fn(x: Int) -> Int { k(x + 1) })
+    }
+}
+
+fn main() -> Int {
+    count(1000000, fn(x: Int) -> Int { x })
+}
+`,
+			want: "1000000",
+		},
+		{
+			name: "call a function value stored in a data type",
+			src: `type Box = Box(Int -> Int)
+
+fn main() -> Int {
+    let n = 40
+    let b = Box(fn(x: Int) -> Int { x + n })
+    match b {
+        Box(f) => f(2),
+    }
+}
+`,
+			want: "42",
+		},
 	}
 
 	for _, tt := range tests {
