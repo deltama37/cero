@@ -154,6 +154,47 @@ make selfhost-build
 wasmtime run --invoke main examples/fib.wasm   # prints 55
 ```
 
+## Language server and VS Code
+
+The Cero-written compiler speaks the Language Server Protocol on standard
+input
+([ADR-0017](docs/adr/0017-lsp-and-vscode-extension.md)):
+
+```bash
+make selfhost-build
+./scripts/ceroc-cero lsp
+```
+
+`lsp --std DIR` reads the standard library from `DIR` instead of `std`.
+The server reports the first parse or type error, answers hover with
+`name : type`, jumps to the definition of a name, and formats a document
+with `fmt`. It keeps each open document in memory and analyzes it when the
+document is opened and when it is saved.
+
+`editors/vscode/` is a VS Code extension: syntax highlighting and a small
+language client, with no npm dependencies. From the repository root:
+
+```bash
+code --extensionDevelopmentPath=editors/vscode
+```
+
+Open a workspace that contains `bin/ceroc-cero.wasm` and `std/`. The
+extension runs `wasmtime run --dir=. <compilerWasm> lsp --std <stdPath>` in
+the first workspace folder. It shows diagnostics, hover types, go to
+definition, and formatting.
+
+* `cero.wasmtimePath` (default `wasmtime`): the wasmtime executable
+* `cero.compilerWasm` (default `${workspaceFolder}/bin/ceroc-cero.wasm`):
+  the language server module. `${workspaceFolder}` is replaced with the
+  first workspace folder
+* `cero.stdPath` (default `std`): the standard library directory
+
+The language server does not free memory. When the process stops, the
+extension starts it again and sends `didOpen` for Cero documents that are
+still open. It restarts at most five times in one minute. Another stop in
+that minute leaves the server stopped and shows an error. Saving a large
+program, such as `compiler/` itself, can restart the server.
+
 ## License
 
 Cero is released under the [MIT License](LICENSE).
