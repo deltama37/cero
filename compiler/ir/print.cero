@@ -1,0 +1,183 @@
+import "std/list"
+import "std/option"
+import "ir/ir"
+import "util/doc"
+import "util/quote"
+
+fn vtDocs(ts: List[ValType], acc: List[Doc]) -> List[Doc] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => vtDocs(rest, Cons(docText(irValName(t)), acc)),
+    }
+}
+
+fn exprDocs(es: List[IrExpr], acc: List[Doc]) -> List[Doc] {
+    match es {
+        Nil => reverse(acc),
+        Cons(e, rest) => exprDocs(rest, Cons(irFormatExpr(e), acc)),
+    }
+}
+
+fn paren(name: String, parts: List[Doc]) -> Doc {
+    docConcat(Cons(docText("(" ++ name ++ " "), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
+}
+
+fn formatSig(s: Sig) -> Doc {
+    let IrSig(ps, r) = s
+    docConcat(Cons(
+        docText("(sig ("),
+        Cons(docJoin(vtDocs(ps, Nil), " "), Cons(docText(") " ++ irValName(r) ++ ")"), Nil))
+    ))
+}
+
+fn formatLocals(ls: List[ValType]) -> Doc {
+    match ls {
+        Nil => docText("(locals)"),
+        _ => paren("locals", vtDocs(ls, Nil)),
+    }
+}
+
+fn unaryName(op: UnOp) -> String {
+    match op {
+        IrNeg => "neg",
+        IrNot => "not",
+    }
+}
+
+fn binaryName(op: BinOp) -> String {
+    match op {
+        IrAdd => "add",
+        IrSub => "sub",
+        IrMul => "mul",
+        IrDiv => "div",
+        IrRem => "rem",
+        IrEq => "eq",
+        IrNe => "ne",
+        IrLt => "lt",
+        IrLe => "le",
+        IrGt => "gt",
+        IrGe => "ge",
+    }
+}
+
+fn primName(op: PrimOp) -> String {
+    match op {
+        IrStrLength => "string.length",
+        IrStrByteAt => "string.byte_at",
+        IrStrSlice => "string.slice",
+        IrStrFromByte => "string.from_byte",
+        IrStrCompare => "string.compare",
+        IrIntToString => "int.to_string",
+        IrStrConcat => "string.concat",
+        IrStrEq => "string.eq",
+        IrIOPrint => "io.print",
+        IrIOEPrint => "io.eprint",
+        IrIOReadStdin => "io.read_stdin",
+        IrIOReadFile => "io.read_file",
+        IrIOFileExists => "io.file_exists",
+        IrIOWriteFile => "io.write_file",
+        IrIOArgCount => "io.arg_count",
+        IrIOArgAt => "io.arg_at",
+        IrIOExit => "io.exit",
+        IrBitAnd => "int.and",
+        IrBitOr => "int.or",
+        IrBitXor => "int.xor",
+        IrShiftLeft => "int.shl",
+        IrShiftRight => "int.shr_s",
+        IrShiftRightUnsigned => "int.shr_u",
+    }
+}
+
+fn formatLet(l: IrLet) -> Doc {
+    let IrLet(id, v) = l
+    paren("let", Cons(docText(intToString(id)), Cons(irFormatExpr(v), Nil)))
+}
+
+fn formatLets(ls: List[IrLet], acc: List[Doc]) -> List[Doc] {
+    match ls {
+        Nil => reverse(acc),
+        Cons(l, rest) => formatLets(rest, Cons(formatLet(l), acc)),
+    }
+}
+
+fn formatCase(c: IrTagCase) -> Doc {
+    let IrTagCase(tag, body) = c
+    paren("case", Cons(docText(intToString(tag)), Cons(irFormatExpr(body), Nil)))
+}
+
+fn formatCases(cs: List[IrTagCase], acc: List[Doc]) -> List[Doc] {
+    match cs {
+        Nil => reverse(acc),
+        Cons(c, rest) => formatCases(rest, Cons(formatCase(c), acc)),
+    }
+}
+
+fn irFormatExpr(e: IrExpr) -> Doc {
+    match e {
+        IrIntConst(n) => docText(intToString(n)),
+        IrBoolConst(b) => if b { docText("true") } else { docText("false") },
+        IrStrConst(s) => docText("(str " ++ quoteString(s) ++ ")"),
+        IrLocalGet(id, _) => docText("(local " ++ intToString(id) ++ ")"),
+        IrFuncValue(id, env) => match env {
+            None => docText("(func.ref " ++ intToString(id) ++ ")"),
+            Some(ev) => paren("func.ref", Cons(docText(intToString(id)), Cons(irFormatExpr(ev), Nil))),
+        },
+        IrUnary(op, x) => paren(unaryName(op), Cons(irFormatExpr(x), Nil)),
+        IrBinary(op, x, y) => paren(binaryName(op), Cons(irFormatExpr(x), Cons(irFormatExpr(y), Nil))),
+        IrIf(c, t, el, _) => paren("if", Cons(irFormatExpr(c), Cons(irFormatExpr(t), Cons(irFormatExpr(el), Nil)))),
+        IrBlock(lets, result) => paren("block", append(formatLets(lets, Nil), Cons(irFormatExpr(result), Nil))),
+        IrCall(id, args, _, tail) => {
+            let name = if tail { "return.call" } else { "call" }
+            paren(name, Cons(docText(intToString(id)), exprDocs(args, Nil)))
+        },
+        IrCallIndirect(callee, sig, args, tail) => {
+            let name = if tail { "return.call.indirect" } else { "call.indirect" }
+            paren(name, Cons(formatSig(sig), Cons(irFormatExpr(callee), exprDocs(args, Nil))))
+        },
+        IrConstruct(tag, fields) => paren("construct", Cons(docText(intToString(tag)), exprDocs(fields, Nil))),
+        IrField(local, index, _) => docText("(field " ++ intToString(local) ++ " " ++ intToString(index) ++ ")"),
+        IrSwitchTag(local, cases, def, _) => {
+            let parts = Cons(docText(intToString(local)), formatCases(cases, Nil))
+            match def {
+                None => paren("switch.tag", parts),
+                Some(d) => paren("switch.tag", append(parts, Cons(paren("default", Cons(irFormatExpr(d), Nil)), Nil))),
+            }
+        },
+        IrPrim(op, args) => paren("prim", Cons(docText(primName(op)), exprDocs(args, Nil))),
+    }
+}
+
+fn formatFunc(id: Int, f: IrFunc) -> Doc {
+    let IrFunc(name, sig, locals, body) = f
+    docConcat(Cons(
+        docText("(func " ++ intToString(id) ++ " " ++ name ++ " "),
+        Cons(formatSig(sig), Cons(docText(" "), Cons(formatLocals(locals), Cons(docText(" "), Cons(irFormatExpr(body), Cons(docText(")"), Nil))))))
+    ))
+}
+
+fn formatFuncs(fs: List[IrFunc], i: Int, acc: List[Doc]) -> List[Doc] {
+    match fs {
+        Nil => reverse(acc),
+        Cons(f, rest) => formatFuncs(rest, i + 1, Cons(formatFunc(i, f), acc)),
+    }
+}
+
+fn formatTable(table: List[Int]) -> Doc {
+    match table {
+        Nil => docText("(table)"),
+        _ => paren("table", vtIds(table, Nil)),
+    }
+}
+
+fn vtIds(xs: List[Int], acc: List[Doc]) -> List[Doc] {
+    match xs {
+        Nil => reverse(acc),
+        Cons(x, rest) => vtIds(rest, Cons(docText(intToString(x)), acc)),
+    }
+}
+
+pub fn irFormat(m: IrModule) -> String {
+    let IrModule(fs, table, main, _) = m
+    let lines = append(formatFuncs(fs, 0, Nil), Cons(formatTable(table), Cons(docText("(main " ++ intToString(main) ++ ")"), Nil)))
+    docToString(docJoin(lines, "\n"))
+}
