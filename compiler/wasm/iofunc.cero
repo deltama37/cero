@@ -1,0 +1,540 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "ir/ir"
+import "wasm/bytes"
+import "wasm/leb128"
+
+pub type WaIoUse = | WaIoUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+
+pub type WaIoFn = | WaIoFn(Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int)
+
+type WaIoItem = | WaIoItem(Int, Bool, Sig)
+
+pub fn waIoEmpty() -> WaIoUse {
+    WaIoUse(false, false, false, false, false, false, false, false, false)
+}
+
+pub fn waIoNote(u: WaIoUse, op: PrimOp) -> WaIoUse {
+    match u {
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => match op {
+            IrIOPrint => WaIoUse(true, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit),
+            IrIOEPrint => WaIoUse(print, true, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit),
+            IrIOReadStdin => WaIoUse(print, eprint, true, readFile, fileExists, writeFile, argCount, argAt, exit),
+            IrIOReadFile => WaIoUse(print, eprint, readStdin, true, fileExists, writeFile, argCount, argAt, exit),
+            IrIOFileExists => WaIoUse(print, eprint, readStdin, readFile, true, writeFile, argCount, argAt, exit),
+            IrIOWriteFile => WaIoUse(print, eprint, readStdin, readFile, fileExists, true, argCount, argAt, exit),
+            IrIOArgCount => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, true, argAt, exit),
+            IrIOArgAt => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, true, exit),
+            IrIOExit => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, true),
+            _ => u,
+        },
+    }
+}
+
+pub fn waIoAny(u: WaIoUse) -> Bool {
+    match u {
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => print || eprint || readStdin || readFile || fileExists || writeFile || argCount || argAt || exit,
+    }
+}
+
+fn waNeedWrite(u: WaIoUse) -> Bool {
+    match u {
+        WaIoUse(print, eprint, _, readFile, _, writeFile, _, _, _) => print || eprint || readFile || writeFile,
+    }
+}
+
+fn waNeedReadFd(u: WaIoUse) -> Bool {
+    match u {
+        WaIoUse(_, _, readStdin, readFile, _, _, _, _, _) => readStdin || readFile,
+    }
+}
+
+fn waNeedOpen(u: WaIoUse) -> Bool {
+    match u {
+        WaIoUse(_, _, _, readFile, fileExists, writeFile, _, _, _) => readFile || fileExists || writeFile,
+    }
+}
+
+fn sigPP() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtPtr, Nil)), VtPtr)
+}
+
+fn sigP() -> Sig {
+    IrSig(Cons(VtPtr, Nil), VtPtr)
+}
+
+fn sigRP() -> Sig {
+    IrSig(Nil, VtPtr)
+}
+
+fn sigOpen() -> Sig {
+    IrSig(Cons(VtPtr, Cons(VtPtr, Cons(VtInt, Nil))), VtPtr)
+}
+
+fn sigRI() -> Sig {
+    IrSig(Nil, VtInt)
+}
+
+fn sigIP() -> Sig {
+    IrSig(Cons(VtInt, Nil), VtPtr)
+}
+
+fn waIoPlan(u: WaIoUse) -> List[WaIoItem] {
+    match u {
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => reverse(Cons(WaIoItem(11, exit, sigIP()), Cons(WaIoItem(10, argAt, sigIP()), Cons(WaIoItem(9, argCount, sigRI()), Cons(WaIoItem(8, writeFile, sigPP()), Cons(WaIoItem(7, fileExists, sigP()), Cons(WaIoItem(6, readFile, sigP()), Cons(WaIoItem(5, waNeedOpen(u), sigOpen()), Cons(WaIoItem(4, readStdin, sigRP()), Cons(WaIoItem(3, waNeedReadFd(u), sigP()), Cons(WaIoItem(2, eprint, sigP()), Cons(WaIoItem(1, print, sigP()), Cons(WaIoItem(0, waNeedWrite(u), sigPP()), Nil)))))))))))))
+    }
+}
+
+fn waIoCountGo(xs: List[WaIoItem], n: Int) -> Int {
+    match xs {
+        Nil => n,
+        Cons(it, rest) => match it {
+            WaIoItem(_, used, _) => if used {
+                waIoCountGo(rest, n + 1)
+            } else {
+                waIoCountGo(rest, n)
+            },
+        },
+    }
+}
+
+pub fn waIoCount(u: WaIoUse) -> Int {
+    waIoCountGo(waIoPlan(u), 0)
+}
+
+fn waIoSigsGo(xs: List[WaIoItem], acc: List[Sig]) -> List[Sig] {
+    match xs {
+        Nil => reverse(acc),
+        Cons(it, rest) => match it {
+            WaIoItem(_, used, sig) => if used {
+                waIoSigsGo(rest, Cons(sig, acc))
+            } else {
+                waIoSigsGo(rest, acc)
+            },
+        },
+    }
+}
+
+pub fn waIoSigs(u: WaIoUse) -> List[Sig] {
+    waIoSigsGo(waIoPlan(u), Nil)
+}
+
+fn waIoNone() -> WaIoFn {
+    WaIoFn(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
+}
+
+fn waIoPut(f: WaIoFn, kind: Int, idx: Int) -> WaIoFn {
+    match f {
+        WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start) => if kind == 0 {
+            WaIoFn(idx, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 1 {
+            WaIoFn(write, idx, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 2 {
+            WaIoFn(write, print, idx, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 3 {
+            WaIoFn(write, print, eprint, idx, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 4 {
+            WaIoFn(write, print, eprint, readFd, idx, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 5 {
+            WaIoFn(write, print, eprint, readFd, readStdin, idx, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 6 {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, idx, fileExists, writeFile, argCount, argAt, exit, start)
+        } else if kind == 7 {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, idx, writeFile, argCount, argAt, exit, start)
+        } else if kind == 8 {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, idx, argCount, argAt, exit, start)
+        } else if kind == 9 {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, idx, argAt, exit, start)
+        } else if kind == 10 {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, idx, exit, start)
+        } else {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, idx, start)
+        },
+    }
+}
+
+fn waIoAssign(xs: List[WaIoItem], n: Int, f: WaIoFn) -> Pair[Int, WaIoFn] {
+    match xs {
+        Nil => Pair(n, f),
+        Cons(it, rest) => match it {
+            WaIoItem(kind, used, _) => if used {
+                waIoAssign(rest, n + 1, waIoPut(f, kind, n))
+            } else {
+                waIoAssign(rest, n, f)
+            },
+        },
+    }
+}
+
+fn waIoSetStart(f: WaIoFn, idx: Int) -> WaIoFn {
+    match f {
+        WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, _) => WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, idx),
+    }
+}
+
+pub fn waIoIndices(start: Int, u: WaIoUse, command: Bool) -> WaIoFn {
+    let Pair(n, fns) = waIoAssign(waIoPlan(u), start, waIoNone())
+    if command {
+        waIoSetStart(fns, n)
+    } else {
+        fns
+    }
+}
+
+pub fn waWasiSigs() -> List[Sig] {
+    Cons(IrSig(Cons(VtPtr, Cons(VtPtr, Cons(VtPtr, Cons(VtPtr, Nil)))), VtPtr), Cons(IrSig(Cons(VtPtr, Cons(VtPtr, Cons(VtPtr, Cons(VtPtr, Cons(VtPtr, Cons(VtInt, Cons(VtInt, Cons(VtPtr, Cons(VtPtr, Nil))))))))), VtPtr), Cons(sigP(), Cons(sigPP(), Nil))))
+}
+
+fn waName(b: Bytes, s: String) -> Bytes {
+    waCat(waCat(b, waUleb128(stringLength(s))), waString(s))
+}
+
+fn waImportItem(b: Bytes, name: String, idx: Int) -> Bytes {
+    waU(waRaw(waName(waName(b, "wasi_snapshot_preview1"), name), Cons(0, Nil)), idx)
+}
+
+pub fn waEncodeImport(fdWrite: Int, pathOpen: Int, fdClose: Int, args: Int, procExit: Int) -> Bytes {
+    let b0 = waUleb128(7)
+    let b1 = waImportItem(b0, "fd_write", fdWrite)
+    let b2 = waImportItem(b1, "fd_read", fdWrite)
+    let b3 = waImportItem(b2, "path_open", pathOpen)
+    let b4 = waImportItem(b3, "fd_close", fdClose)
+    let b5 = waImportItem(b4, "args_sizes_get", args)
+    let b6 = waImportItem(b5, "args_get", args)
+    let b7 = waImportItem(b6, "proc_exit", procExit)
+    waCat(waCat(waByte(2), waUleb128(waLength(b7))), b7)
+}
+
+pub fn waEncodeCommandExport(startIdx: Int) -> Bytes {
+    let b0 = waUleb128(2)
+    let b1 = waU(waRaw(waName(b0, "_start"), Cons(0, Nil)), startIdx)
+    let b2 = waU(waRaw(waName(b1, "memory"), Cons(2, Nil)), 0)
+    waCat(waCat(waByte(7), waUleb128(waLength(b2))), b2)
+}
+
+fn waAdd(b: Bytes) -> Bytes {
+    waRaw(b, Cons(106, Nil))
+}
+
+fn waSub(b: Bytes) -> Bytes {
+    waRaw(b, Cons(107, Nil))
+}
+
+fn waDrop(b: Bytes) -> Bytes {
+    waRaw(b, Cons(26, Nil))
+}
+
+fn waUnreach(b: Bytes) -> Bytes {
+    waRaw(b, Cons(0, Nil))
+}
+
+fn waIfVoid(b: Bytes) -> Bytes {
+    waRaw(b, Cons(4, Cons(64, Nil)))
+}
+
+fn waIfI32(b: Bytes) -> Bytes {
+    waRaw(b, Cons(4, Cons(127, Nil)))
+}
+
+fn waElse(b: Bytes) -> Bytes {
+    waRaw(b, Cons(5, Nil))
+}
+
+fn waBlock(b: Bytes) -> Bytes {
+    waRaw(b, Cons(2, Cons(64, Nil)))
+}
+
+fn waLoop(b: Bytes) -> Bytes {
+    waRaw(b, Cons(3, Cons(64, Nil)))
+}
+
+fn waEqz(b: Bytes) -> Bytes {
+    waRaw(b, Cons(69, Nil))
+}
+
+fn waEq(b: Bytes) -> Bytes {
+    waRaw(b, Cons(70, Nil))
+}
+
+fn waGtU(b: Bytes) -> Bytes {
+    waRaw(b, Cons(75, Nil))
+}
+
+fn waWrap(b: Bytes) -> Bytes {
+    waRaw(b, Cons(167, Nil))
+}
+
+fn waExtend(b: Bytes) -> Bytes {
+    waRaw(b, Cons(173, Nil))
+}
+
+fn waTrapNZ(b: Bytes) -> Bytes {
+    waEnd(waUnreach(waIfVoid(waEqz(waEqz(b)))))
+}
+
+fn waBlockSize(b: Bytes, local: Int) -> Bytes {
+    waRaw(waI32(waAdd(waI32(waLocalGet(b, local), 15)), -8), Cons(113, Nil))
+}
+
+fn waEncodeIOWrite(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(4, Cons(127, Nil))))
+    let b1 = waLocalSet(waAdd(waI32(waLocalGet(b0, 1), 8)), 2)
+    let b2 = waLocalSet(waLoadI32(waLocalGet(b1, 1), 0), 3)
+    let b3 = waLoop(waBlock(b2))
+    let b4 = waBrIf(waEqz(waLocalGet(b3, 3)), 1)
+    let b5 = waLocalSet(waCallFunc(waI32(b4, 16), allocIdx), 4)
+    let b6 = waStoreI32(waLocalGet(waLocalGet(b5, 4), 2), 0)
+    let b7 = waStoreI32(waLocalGet(waLocalGet(b6, 4), 3), 4)
+    let b8 = waStoreI32(waI32(waLocalGet(b7, 4), 0), 8)
+    let b9 = waCallFunc(waAdd(waI32(waLocalGet(waI32(waLocalGet(waLocalGet(b8, 0), 4), 1), 4), 8)), 0)
+    let b10 = waTrapNZ(b9)
+    let b11 = waLocalTee(waLoadI32(waLocalGet(b10, 4), 8), 5)
+    let b12 = waEnd(waUnreach(waIfVoid(waEqz(b11))))
+    let b13 = waEnd(waUnreach(waIfVoid(waGtU(waLocalGet(waLocalGet(b12, 5), 3)))))
+    let b14 = waLocalSet(waAdd(waLocalGet(waLocalGet(b13, 2), 5)), 2)
+    let b15 = waLocalSet(waSub(waLocalGet(waLocalGet(b14, 3), 5)), 3)
+    let b16 = waEnd(waEnd(waBr(b15, 0)))
+    waEnd(waI32(b16, 0))
+}
+
+fn waEncodeIOToFd(writeIdx: Int, fd: Int) -> Bytes {
+    waEnd(waCallFunc(waLocalGet(waI32(waBytes(Cons(0, Nil)), fd), 0), writeIdx))
+}
+
+fn waEncodeIOReadFd(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(6, Cons(127, Nil))))
+    let b1 = waLocalSet(waI32(b0, 4096), 2)
+    let b2 = waLocalSet(waCallFunc(waBlockSize(b1, 2), allocIdx), 1)
+    let b3 = waLocalSet(waI32(b2, 0), 3)
+    let b4 = waLoop(waBlock(b3))
+    let b5 = waIfVoid(waEq(waLocalGet(waLocalGet(b4, 3), 2)))
+    let b6 = waLocalSet(waRaw(waI32(waLocalGet(b5, 2), 1), Cons(116, Nil)), 2)
+    let b7 = waLocalSet(waCallFunc(waBlockSize(b6, 2), allocIdx), 6)
+    let b8 = waMemCopy(waLocalGet(waAdd(waI32(waLocalGet(waAdd(waI32(waLocalGet(b7, 6), 8)), 1), 8)), 3))
+    let b9 = waEnd(waLocalSet(waLocalGet(b8, 6), 1))
+    let b10 = waLocalSet(waCallFunc(waI32(b9, 16), allocIdx), 4)
+    let p1 = waLocalGet(b10, 4)
+    let p2 = waAdd(waI32(waLocalGet(p1, 1), 8))
+    let p3 = waAdd(waLocalGet(p2, 3))
+    let b11 = waStoreI32(p3, 0)
+    let q1 = waLocalGet(b11, 4)
+    let q2 = waSub(waLocalGet(waLocalGet(q1, 2), 3))
+    let b12 = waStoreI32(q2, 4)
+    let b13 = waStoreI32(waI32(waLocalGet(b12, 4), 0), 8)
+    let b14 = waCallFunc(waAdd(waI32(waLocalGet(waI32(waLocalGet(waLocalGet(b13, 0), 4), 1), 4), 8)), 1)
+    let b15 = waTrapNZ(b14)
+    let b16 = waLocalTee(waLoadI32(waLocalGet(b15, 4), 8), 5)
+    let b17 = waBrIf(waEqz(b16), 1)
+    let b18 = waLocalSet(waAdd(waLocalGet(waLocalGet(b17, 3), 5)), 3)
+    let b19 = waEnd(waEnd(waBr(b18, 0)))
+    let b20 = waStoreI32(waLocalGet(waLocalGet(b19, 1), 3), 0)
+    let b21 = waStoreI32(waI32(waLocalGet(b20, 1), 0), 4)
+    waEnd(waLocalGet(b21, 1))
+}
+
+fn waEncodeIOReadStdin(readFd: Int) -> Bytes {
+    waEnd(waCallFunc(waI32(waBytes(Cons(0, Nil)), 0), readFd))
+}
+
+fn waEncodeIOOpen(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waLocalSet(waCallFunc(waI32(b0, 8), allocIdx), 3)
+    let b2 = waI32(b1, 3)
+    let b3 = waI32(b2, 0)
+    let b4 = waAdd(waI32(waLocalGet(b3, 0), 8))
+    let b5 = waLoadI32(waLocalGet(b4, 0), 0)
+    let b6 = waLocalGet(b5, 1)
+    let b7 = waLocalGet(b6, 2)
+    let b8 = waLocalGet(b7, 2)
+    let b9 = waI32(b8, 0)
+    let b10 = waCallFunc(waLocalGet(b9, 3), 2)
+    let b11 = waIfI32(b10)
+    let b12 = waElse(waI32(b11, -1))
+    let b13 = waEnd(waLoadI32(waLocalGet(b12, 3), 0))
+    waEnd(b13)
+}
+
+fn waExitFile(b: Bytes, concatIdx: Int, writeIdx: Int, prefix: Int, nl: Int) -> Bytes {
+    let b1 = waI32(b, 2)
+    let b2 = waI32(b1, prefix)
+    let b3 = waCallFunc(waLocalGet(b2, 0), concatIdx)
+    let b4 = waCallFunc(waI32(b3, nl), concatIdx)
+    let b5 = waDrop(waCallFunc(b4, writeIdx))
+    let b6 = waCallFunc(waI32(b5, 1), 6)
+    waUnreach(b6)
+}
+
+fn waEncodeIOReadFile(openIdx: Int, readFd: Int, concatIdx: Int, writeIdx: Int, prefix: Int, nl: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waLocalGet(b0, 0)
+    let b2 = waI32(b1, 0)
+    let b3 = waI64(b2, 2)
+    let b4 = waLocalTee(waCallFunc(b3, openIdx), 1)
+    let b5 = waEq(waI32(b4, -1))
+    let b6 = waEnd(waExitFile(waIfVoid(b5), concatIdx, writeIdx, prefix, nl))
+    let b7 = waCallFunc(waLocalGet(b6, 1), readFd)
+    let b8 = waDrop(waCallFunc(waLocalGet(b7, 1), 3))
+    waEnd(b8)
+}
+
+fn waEncodeIOFileExists(openIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waLocalTee(waCallFunc(waI64(waI32(waLocalGet(b0, 0), 0), 2), openIdx), 1)
+    let b2 = waIfI32(waEq(waI32(b1, -1)))
+    let b3 = waElse(waI32(b2, 0))
+    let b4 = waDrop(waCallFunc(waLocalGet(b3, 1), 3))
+    let b5 = waEnd(waI32(b4, 1))
+    waEnd(b5)
+}
+
+fn waEncodeIOWriteFile(openIdx: Int, writeIdx: Int, concatIdx: Int, eprintIdx: Int, prefix: Int, nl: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waLocalTee(waCallFunc(waI64(waI32(waLocalGet(b0, 0), 9), 64), openIdx), 2)
+    let b2 = waEnd(waExitFile(waIfVoid(waEq(waI32(b1, -1))), concatIdx, eprintIdx, prefix, nl))
+    let b3 = waDrop(waCallFunc(waLocalGet(waLocalGet(b2, 2), 1), writeIdx))
+    let b4 = waDrop(waCallFunc(waLocalGet(b3, 2), 3))
+    waEnd(waI32(b4, 0))
+}
+
+fn waEncodeIOArgCount(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b1 = waLocalSet(waCallFunc(waI32(b0, 8), allocIdx), 0)
+    let b2 = waCallFunc(waAdd(waI32(waLocalGet(waLocalGet(b1, 0), 0), 4)), 4)
+    let b3 = waTrapNZ(b2)
+    let b4 = waRaw(waI64(waExtend(waLoadI32(waLocalGet(b3, 0), 0)), 1), Cons(125, Nil))
+    waEnd(b4)
+}
+
+fn waEncodeIOArgAt(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(8, Cons(127, Nil))))
+    let b1 = waLocalSet(waCallFunc(waI32(b0, 8), allocIdx), 1)
+    let b2 = waCallFunc(waAdd(waI32(waLocalGet(waLocalGet(b1, 1), 1), 4)), 4)
+    let b3 = waTrapNZ(b2)
+    let b4 = waLocalSet(waLoadI32(waLocalGet(b3, 1), 0), 2)
+    let b5 = waLocalSet(waLoadI32(waLocalGet(b4, 1), 4), 3)
+    let b6 = waEnd(waUnreach(waIfVoid(waRaw(waI64(waLocalGet(b5, 0), 0), Cons(83, Nil)))))
+    let c1 = waExtend(waLocalGet(waLocalGet(b6, 0), 2))
+    let c2 = waRaw(waI64(c1, 1), Cons(125, Nil))
+    let b8 = waEnd(waUnreach(waIfVoid(waRaw(c2, Cons(89, Nil)))))
+    let d1 = waRaw(waI32(waLocalGet(b8, 2), 4), Cons(108, Nil))
+    let d2 = waAdd(waI32(d1, 7))
+    let d3 = waRaw(waI32(d2, -8), Cons(113, Nil))
+    let b11 = waLocalSet(waCallFunc(d3, allocIdx), 4)
+    let e1 = waAdd(waI32(waLocalGet(b11, 3), 7))
+    let e2 = waLocalTee(waRaw(waI32(e1, -8), Cons(113, Nil)), 5)
+    let e3 = waIfI32(waEqz(e2))
+    let e4 = waElse(waI32(e3, 8))
+    let e5 = waEnd(waLocalGet(e4, 5))
+    let b17 = waLocalSet(waCallFunc(e5, allocIdx), 5)
+    let b18 = waCallFunc(waLocalGet(waLocalGet(b17, 4), 5), 5)
+    let b19 = waTrapNZ(b18)
+    let f1 = waWrap(waLocalGet(waLocalGet(b19, 4), 0))
+    let f2 = waAdd(waI32(f1, 1))
+    let f3 = waRaw(waI32(f2, 4), Cons(108, Nil))
+    let b21 = waLocalSet(waLoadI32(waAdd(f3), 0), 6)
+    let b22 = waLocalSet(waI32(b21, 0), 7)
+    let b23 = waLoop(waBlock(b22))
+    let b24 = waBrIf(waEqz(waLoad8U(waAdd(waLocalGet(waLocalGet(b23, 6), 7)), 0)), 1)
+    let b25 = waLocalSet(waAdd(waI32(waLocalGet(b24, 7), 1)), 7)
+    let b26 = waEnd(waEnd(waBr(b25, 0)))
+    let b27 = waLocalSet(waCallFunc(waRaw(waI32(waAdd(waI32(waLocalGet(b26, 7), 15)), -8), Cons(113, Nil)), allocIdx), 8)
+    let b28 = waStoreI32(waLocalGet(waLocalGet(b27, 8), 7), 0)
+    let b29 = waStoreI32(waI32(waLocalGet(b28, 8), 0), 4)
+    let m1 = waAdd(waI32(waLocalGet(b29, 8), 8))
+    let m2 = waLocalGet(m1, 6)
+    let b30 = waMemCopy(waLocalGet(m2, 7))
+    waEnd(waLocalGet(b30, 8))
+}
+
+fn waEncodeIOExit() -> Bytes {
+    let b0 = waBytes(Cons(0, Nil))
+    let b1 = waCallFunc(waWrap(waLocalGet(b0, 0)), 6)
+    waEnd(waUnreach(b1))
+}
+
+fn waEncodeKind(
+    kind: Int,
+    allocIdx: Int,
+    fns: WaIoFn,
+    concatIdx: Int,
+    readMsg: Int,
+    writeMsg: Int,
+    nl: Int
+) -> Bytes {
+    match fns {
+        WaIoFn(write, _, _, readFd, _, open, _, _, _, _, _, _, _) => if kind == 0 {
+            waEncodeIOWrite(allocIdx)
+        } else if kind == 1 {
+            waEncodeIOToFd(write, 1)
+        } else if kind == 2 {
+            waEncodeIOToFd(write, 2)
+        } else if kind == 3 {
+            waEncodeIOReadFd(allocIdx)
+        } else if kind == 4 {
+            waEncodeIOReadStdin(readFd)
+        } else if kind == 5 {
+            waEncodeIOOpen(allocIdx)
+        } else if kind == 6 {
+            waEncodeIOReadFile(open, readFd, concatIdx, write, readMsg, nl)
+        } else if kind == 7 {
+            waEncodeIOFileExists(open)
+        } else if kind == 8 {
+            waEncodeIOWriteFile(open, write, concatIdx, write, writeMsg, nl)
+        } else if kind == 9 {
+            waEncodeIOArgCount(allocIdx)
+        } else if kind == 10 {
+            waEncodeIOArgAt(allocIdx)
+        } else {
+            waEncodeIOExit()
+        },
+    }
+}
+
+fn waAddBody(content: Bytes, body: Bytes) -> Bytes {
+    waCat(waCat(content, waUleb128(waLength(body))), body)
+}
+
+fn waAppendIOGo(
+    xs: List[WaIoItem],
+    content: Bytes,
+    allocIdx: Int,
+    fns: WaIoFn,
+    concatIdx: Int,
+    readMsg: Int,
+    writeMsg: Int,
+    nl: Int
+) -> Bytes {
+    match xs {
+        Nil => content,
+        Cons(it, rest) => match it {
+            WaIoItem(kind, used, _) => if used {
+                waAppendIOGo(rest, waAddBody(content, waEncodeKind(kind, allocIdx, fns, concatIdx, readMsg, writeMsg, nl)), allocIdx, fns, concatIdx, readMsg, writeMsg, nl)
+            } else {
+                waAppendIOGo(rest, content, allocIdx, fns, concatIdx, readMsg, writeMsg, nl)
+            },
+        },
+    }
+}
+
+pub fn waAppendIO(
+    content: Bytes,
+    allocIdx: Int,
+    fns: WaIoFn,
+    concatIdx: Int,
+    readMsg: Int,
+    writeMsg: Int,
+    nl: Int,
+    u: WaIoUse
+) -> Bytes {
+    waAppendIOGo(waIoPlan(u), content, allocIdx, fns, concatIdx, readMsg, writeMsg, nl)
+}
+
+pub fn waEncodeStart(mainIdx: Int, closureType: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(1, Cons(126, Nil))))
+    let b1 = waLocalTee(waCallFunc(b0, mainIdx), 0)
+    let b2 = waWrap(waRaw(waI64(b1, 32), Cons(136, Nil)))
+    let b3 = waWrap(waLocalGet(b2, 0))
+    let b4 = waRaw(waU(waRaw(b3, Cons(17, Nil)), closureType), Cons(0, Nil))
+    waEnd(waDrop(b4))
+}

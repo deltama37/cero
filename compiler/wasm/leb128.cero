@@ -1,0 +1,98 @@
+import "std/list"
+import "wasm/bytes"
+
+fn ulebAcc(v: Int, acc: List[Int]) -> List[Int] {
+    let c = bitAnd(v, 127)
+    let next = shiftRightUnsigned(v, 7)
+    if next != 0 {
+        ulebAcc(next, Cons(bitOr(c, 128), acc))
+    } else {
+        reverse(Cons(c, acc))
+    }
+}
+
+fn slebAcc(v: Int, acc: List[Int]) -> List[Int] {
+    let c = bitAnd(v, 127)
+    let next = shiftRight(v, 7)
+    if (next == 0 && bitAnd(c, 64) == 0) || (next == -1 && bitAnd(c, 64) != 0) {
+        reverse(Cons(c, acc))
+    } else {
+        slebAcc(next, Cons(bitOr(c, 128), acc))
+    }
+}
+
+pub fn waUleb128(v: Int) -> Bytes {
+    waBytes(ulebAcc(v, Nil))
+}
+
+pub fn waSleb128(v: Int) -> Bytes {
+    waBytes(slebAcc(v, Nil))
+}
+
+pub fn waRaw(b: Bytes, xs: List[Int]) -> Bytes {
+    waCat(b, waBytes(xs))
+}
+
+pub fn waU(b: Bytes, v: Int) -> Bytes {
+    waCat(b, waUleb128(v))
+}
+
+pub fn waLocalGet(b: Bytes, i: Int) -> Bytes {
+    waU(waCat(b, waByte(32)), i)
+}
+
+pub fn waLocalSet(b: Bytes, i: Int) -> Bytes {
+    waU(waCat(b, waByte(33)), i)
+}
+
+pub fn waLocalTee(b: Bytes, i: Int) -> Bytes {
+    waU(waCat(b, waByte(34)), i)
+}
+
+pub fn waCallFunc(b: Bytes, i: Int) -> Bytes {
+    waU(waCat(b, waByte(16)), i)
+}
+
+pub fn waI32(b: Bytes, v: Int) -> Bytes {
+    waCat(waCat(b, waByte(65)), waSleb128(v))
+}
+
+pub fn waI64(b: Bytes, v: Int) -> Bytes {
+    waCat(waCat(b, waByte(66)), waSleb128(v))
+}
+
+pub fn waLoadI32(b: Bytes, off: Int) -> Bytes {
+    waU(waRaw(b, Cons(40, Cons(2, Nil))), off)
+}
+
+pub fn waStoreI32(b: Bytes, off: Int) -> Bytes {
+    waU(waRaw(b, Cons(54, Cons(2, Nil))), off)
+}
+
+pub fn waLoad8U(b: Bytes, off: Int) -> Bytes {
+    waU(waRaw(b, Cons(45, Cons(0, Nil))), off)
+}
+
+pub fn waLoad8UI64(b: Bytes, off: Int) -> Bytes {
+    waU(waRaw(b, Cons(49, Cons(0, Nil))), off)
+}
+
+pub fn waStore8(b: Bytes, off: Int) -> Bytes {
+    waU(waRaw(b, Cons(58, Cons(0, Nil))), off)
+}
+
+pub fn waMemCopy(b: Bytes) -> Bytes {
+    waRaw(b, Cons(252, Cons(10, Cons(0, Cons(0, Nil)))))
+}
+
+pub fn waEnd(b: Bytes) -> Bytes {
+    waCat(b, waByte(11))
+}
+
+pub fn waBr(b: Bytes, depth: Int) -> Bytes {
+    waU(waCat(b, waByte(12)), depth)
+}
+
+pub fn waBrIf(b: Bytes, depth: Int) -> Bytes {
+    waU(waCat(b, waByte(13)), depth)
+}

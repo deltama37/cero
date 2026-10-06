@@ -1,11 +1,13 @@
 import "std/io"
 import "std/list"
+import "std/string"
 import "syntax/diag"
 import "syntax/print"
 import "driver/load"
 import "check/program"
 import "ir/print"
 import "lower/lower"
+import "wasm/encode"
 
 fn usage() -> String {
     "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT]\n"
@@ -130,9 +132,41 @@ fn runIr(stdDir: String, file: String) -> IO[Unit] {
     }
 }
 
+fn defaultOutput(input: String) -> String {
+    if endsWith(input, ".cero") {
+        stringSlice(input, 0, stringLength(input) - 5) ++ ".wasm"
+    } else {
+        input ++ ".wasm"
+    }
+}
+
+fn runBuild(stdDir: String, file: String, out: String) -> IO[Unit] {
+    let! ok = fileExists(file)
+    if ok {
+        let! result = loadProgram(file, stdDir)
+        match result {
+            LoadFailed(e) => die(1, formatError(e) ++ "\n"),
+            Loaded(mods, _) => match checkProgram(mods) {
+                Err(e) => die(1, formatError(e) ++ "\n"),
+                Ok(info) => {
+                    let wasm = encodeModule(lowerProgram(mods, info))
+                    let dest = if out == "" { defaultOutput(file) } else { out }
+                    if dest == "-" {
+                        print(wasm)
+                    } else {
+                        writeFile(dest, wasm)
+                    }
+                },
+            },
+        }
+    } else {
+        die(1, "ceroc: cannot read " ++ file ++ "\n")
+    }
+}
+
 fn dispatch(stdDir: String, cmd: String, file: String, flag: String) -> IO[Unit] {
     if cmd == "build" {
-        die(3, "ceroc: " ++ cmd ++ ": not yet implemented\n")
+        runBuild(stdDir, file, flag)
     } else if cmd == "ir" {
         runIr(stdDir, file)
     } else if cmd == "check" {
