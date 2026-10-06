@@ -1,0 +1,50 @@
+{
+  "name": "cero",
+  "displayName": "Cero",
+  "description": "Syntax highlighting and a language server client for the Cero programming language.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onLanguage:cero"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cero",
+        "aliases": ["Cero", "cero"],
+        "extensions": [".cero"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cero",
+        "scopeName": "source.cero",
+        "path": "./syntaxes/cero.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Cero",
+      "properties": {
+        "cero.wasmtimePath": {
+          "type": "string",
+          "default": "wasmtime",
+          "description": "Path to the wasmtime executable used to run the language server."
+        },
+        "cero.compilerWasm": {
+          "type": "string",
+          "default": "${workspaceFolder}/bin/ceroc-cero.wasm",
+          "description": "Path to ceroc-cero.wasm. ${workspaceFolder} is replaced with the first workspace folder."
+        },
+        "cero.stdPath": {
+          "type": "string",
+          "default": "std",
+          "description": "Path to the Cero standard library, relative to the first workspace folder."
+        }
+      }
+    }
+  }
+}
