@@ -1,5 +1,4 @@
 // expected output: 42
-
 type List[T] =
     | Nil
     | Cons(T, List[T])

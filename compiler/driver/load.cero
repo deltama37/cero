@@ -7,13 +7,15 @@ import "syntax/diag"
 import "syntax/parser"
 import "util/strmap"
 
-pub type Module = | Module(String, String, File, List[String])
+pub type Module =
+    | Module(String, String, File, List[String])
 
 pub type LoadResult =
     | Loaded(List[Module], Int)
     | LoadFailed(Error)
 
-type St = | St(StrMap[Module], StrMap[Int], List[String], List[Module], Int, String)
+type St =
+    | St(StrMap[Module], StrMap[Int], List[String], List[Module], Int, String)
 
 type Step =
     | StepOk(St)
@@ -81,7 +83,7 @@ fn validBytes(p: String, i: Int, end: Int) -> Bool {
         true
     } else {
         let c = stringByteAt(p, i)
-        let ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+        let ok = c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_'
         if ok {
             validBytes(p, i + 1, end)
         } else {

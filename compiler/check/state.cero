@@ -14,76 +14,42 @@ pub type SymKind =
     | CkSymCtor
     | CkSymBuiltin
 
-pub type Symbol = | Symbol(SymKind, String, Type, Pos, Int, Option[Pair[Int, Int]], List[Type], Int)
+pub type Symbol =
+    | Symbol(SymKind, String, Type, Pos, Int, Option[Pair[Int, Int]], List[Type], Int)
 
-pub type Info = | Info(
-    IntMap[Type],
-    IntMap[Int],
-    IntMap[Int],
-    IntMap[Int],
-    IntMap[Int],
-    IntMap[Type],
-    IntMap[Int],
-    IntMap[Pair[Int, Int]],
-    IntMap[Int],
-    IntMap[List[Type]],
-    IntMap[Symbol],
-    IntMap[DataInfo],
-    Int,
-    Bool,
-    IntMap[Int]
-)
+pub type Info =
+    | Info(IntMap[Type], IntMap[Int], IntMap[Int], IntMap[Int], IntMap[Int], IntMap[Type], IntMap[Int], IntMap[Pair[Int, Int]], IntMap[Int], IntMap[List[Type]], IntMap[Symbol], IntMap[DataInfo], Int, Bool, IntMap[Int])
 
-pub type CkPending = | CkPending(Int, Pos, String, Int)
+pub type CkPending =
+    | CkPending(Int, Pos, String, Int)
 
-pub type CkCompRef = | CkCompRef(Int, Int, Int, Pos)
+pub type CkCompRef =
+    | CkCompRef(Int, Int, Int, Pos)
 
-pub type CkImport = | CkImport(Int, String)
+pub type CkImport =
+    | CkImport(Int, String)
 
-pub type CkMaps = | CkMaps(
-    IntMap[Type],
-    IntMap[Int],
-    IntMap[Int],
-    IntMap[Int],
-    IntMap[Int],
-    IntMap[Type],
-    IntMap[Int],
-    IntMap[Pair[Int, Int]],
-    IntMap[Int],
-    IntMap[List[Type]],
-    IntMap[Symbol],
-    Int,
-    Bool,
-    IntMap[Int]
-)
+pub type CkMaps =
+    | CkMaps(IntMap[Type], IntMap[Int], IntMap[Int], IntMap[Int], IntMap[Int], IntMap[Type], IntMap[Int], IntMap[Pair[Int, Int]], IntMap[Int], IntMap[List[Type]], IntMap[Symbol], Int, Bool, IntMap[Int])
 
-pub type CkLocal = | CkLocal(
-    StrMap[Int],
-    StrMap[Int],
-    StrMap[Int],
-    StrMap[CkImport],
-    StrMap[CkImport],
-    Bool,
-    StrMap[Type],
-    List[CkPending],
-    Int,
-    IntMap[Bool],
-    List[CkCompRef],
-    IntMap[Bool],
-    Int
-)
+pub type CkLocal =
+    | CkLocal(StrMap[Int], StrMap[Int], StrMap[Int], StrMap[CkImport], StrMap[CkImport], Bool, StrMap[Type], List[CkPending], Int, IntMap[Bool], List[CkCompRef], IntMap[Bool], Int)
 
-pub type CkState = | CkState(CkMaps, CkLocal, TyEnv, Int)
+pub type CkState =
+    | CkState(CkMaps, CkLocal, TyEnv, Int)
 
-pub type CkScope = | CkScope(StrMap[Int])
+pub type CkScope =
+    | CkScope(StrMap[Int])
 
-pub type CkCtx = | CkCtx(Option[CkCtx], List[CkScope])
+pub type CkCtx =
+    | CkCtx(Option[CkCtx], List[CkScope])
 
 pub type CkResult[A] =
     | CkOk(A, CkState)
     | CkErr(Error)
 
-pub type Check[A] = | Check(CkState -> CkResult[A])
+pub type Check[A] =
+    | Check(CkState -> CkResult[A])
 
 pub fn bind[A, B](m: Check[A], f: A -> Check[B]) -> Check[B] {
     Check(fn(s: CkState) -> CkResult[B] {
@@ -214,16 +180,7 @@ pub fn ckPutSym(id: Int, sym: Symbol) -> Check[Unit] {
     ckModify(fn(st: CkState) -> CkState { withMaps(st, putSymMap(mapsOf(st), id, sym)) })
 }
 
-pub fn ckNewSym(
-    kind: SymKind,
-    name: String,
-    typ: Type,
-    pos: Pos,
-    decl: Int,
-    ctor: Option[Pair[Int, Int]],
-    tps: List[Type],
-    bno: Int
-) -> Check[Int] {
+pub fn ckNewSym(kind: SymKind, name: String, typ: Type, pos: Pos, decl: Int, ctor: Option[Pair[Int, Int]], tps: List[Type], bno: Int) -> Check[Int] {
     let! id = ckAlloc()
     let! _ = ckPutSym(id, Symbol(kind, name, typ, pos, decl, ctor, tps, bno))
     pure(id)

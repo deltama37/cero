@@ -5,7 +5,8 @@ import "syntax/ast"
 import "util/intmap"
 import "util/strmap"
 
-type CkRef = | CkRef(List[String], StrMap[Bool], List[StrMap[Bool]])
+type CkRef =
+    | CkRef(List[String], StrMap[Bool], List[StrMap[Bool]])
 
 fn rfPush(st: CkRef) -> CkRef {
     let CkRef(refs, seen, scopes) = st
@@ -143,7 +144,8 @@ pub fn ckFuncRefs(params: List[Param], body: Block, isFunc: String -> Bool) -> L
     reverse(refs)
 }
 
-type CkTarjan = | CkTarjan(Int, IntMap[Int], IntMap[Int], List[Int], IntMap[Bool], List[List[Int]])
+type CkTarjan =
+    | CkTarjan(Int, IntMap[Int], IntMap[Int], List[Int], IntMap[Bool], List[List[Int]])
 
 fn tjIndex(st: CkTarjan, v: Int) -> Int {
     let CkTarjan(_, indices, _, _, _, _) = st

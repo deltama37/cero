@@ -7,7 +7,8 @@ pub type ValType =
     | VtFuncRef
     | VtPtr
 
-pub type Sig = | IrSig(List[ValType], ValType)
+pub type Sig =
+    | IrSig(List[ValType], ValType)
 
 pub type UnOp =
     | IrNeg
@@ -68,13 +69,17 @@ pub type IrExpr =
     | IrSwitchTag(Int, List[IrTagCase], Option[IrExpr], ValType)
     | IrPrim(PrimOp, List[IrExpr])
 
-pub type IrLet = | IrLet(Int, IrExpr)
+pub type IrLet =
+    | IrLet(Int, IrExpr)
 
-pub type IrTagCase = | IrTagCase(Int, IrExpr)
+pub type IrTagCase =
+    | IrTagCase(Int, IrExpr)
 
-pub type IrFunc = | IrFunc(String, Sig, List[ValType], IrExpr)
+pub type IrFunc =
+    | IrFunc(String, Sig, List[ValType], IrExpr)
 
-pub type IrModule = | IrModule(List[IrFunc], List[Int], Int, Bool)
+pub type IrModule =
+    | IrModule(List[IrFunc], List[Int], Int, Bool)
 
 pub fn irValName(t: ValType) -> String {
     match t {

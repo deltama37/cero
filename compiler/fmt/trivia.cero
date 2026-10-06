@@ -6,13 +6,17 @@ import "syntax/lexer"
 import "syntax/token"
 import "util/intmap"
 
-pub type FmTk = | FmTk(Int, Int, Int, String)
+pub type FmTk =
+    | FmTk(Int, Int, Int, String)
 
-pub type FmIt = | FmIt(Int, Int, Int)
+pub type FmIt =
+    | FmIt(Int, Int, Int)
 
-pub type FmRegion = | FmRegion(Int, Int, Int, List[FmIt])
+pub type FmRegion =
+    | FmRegion(Int, Int, Int, List[FmIt])
 
-pub type FmNotes = | FmNotes(IntMap[List[String]], IntMap[String], IntMap[List[String]])
+pub type FmNotes =
+    | FmNotes(IntMap[List[String]], IntMap[String], IntMap[List[String]])
 
 pub fn fmKey(line: Int, col: Int) -> Int {
     line * 1000000 + col

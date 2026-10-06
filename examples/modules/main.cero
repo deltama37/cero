@@ -1,5 +1,4 @@
 // expected output: 42
-
 import "std/list"
 import "shapes"
 import "util/math"

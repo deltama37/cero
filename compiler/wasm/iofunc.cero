@@ -5,11 +5,14 @@ import "ir/ir"
 import "wasm/bytes"
 import "wasm/leb128"
 
-pub type WaIoUse = | WaIoUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+pub type WaIoUse =
+    | WaIoUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
 
-pub type WaIoFn = | WaIoFn(Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int)
+pub type WaIoFn =
+    | WaIoFn(Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int)
 
-type WaIoItem = | WaIoItem(Int, Bool, Sig)
+type WaIoItem =
+    | WaIoItem(Int, Bool, Sig)
 
 pub fn waIoEmpty() -> WaIoUse {
     WaIoUse(false, false, false, false, false, false, false, false, false)
@@ -82,7 +85,7 @@ fn sigIP() -> Sig {
 
 fn waIoPlan(u: WaIoUse) -> List[WaIoItem] {
     match u {
-        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => reverse(Cons(WaIoItem(11, exit, sigIP()), Cons(WaIoItem(10, argAt, sigIP()), Cons(WaIoItem(9, argCount, sigRI()), Cons(WaIoItem(8, writeFile, sigPP()), Cons(WaIoItem(7, fileExists, sigP()), Cons(WaIoItem(6, readFile, sigP()), Cons(WaIoItem(5, waNeedOpen(u), sigOpen()), Cons(WaIoItem(4, readStdin, sigRP()), Cons(WaIoItem(3, waNeedReadFd(u), sigP()), Cons(WaIoItem(2, eprint, sigP()), Cons(WaIoItem(1, print, sigP()), Cons(WaIoItem(0, waNeedWrite(u), sigPP()), Nil)))))))))))))
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => reverse(Cons(WaIoItem(11, exit, sigIP()), Cons(WaIoItem(10, argAt, sigIP()), Cons(WaIoItem(9, argCount, sigRI()), Cons(WaIoItem(8, writeFile, sigPP()), Cons(WaIoItem(7, fileExists, sigP()), Cons(WaIoItem(6, readFile, sigP()), Cons(WaIoItem(5, waNeedOpen(u), sigOpen()), Cons(WaIoItem(4, readStdin, sigRP()), Cons(WaIoItem(3, waNeedReadFd(u), sigP()), Cons(WaIoItem(2, eprint, sigP()), Cons(WaIoItem(1, print, sigP()), Cons(WaIoItem(0, waNeedWrite(u), sigPP()), Nil))))))))))))),
     }
 }
 
@@ -453,15 +456,7 @@ fn waEncodeIOExit() -> Bytes {
     waEnd(waUnreach(b1))
 }
 
-fn waEncodeKind(
-    kind: Int,
-    allocIdx: Int,
-    fns: WaIoFn,
-    concatIdx: Int,
-    readMsg: Int,
-    writeMsg: Int,
-    nl: Int
-) -> Bytes {
+fn waEncodeKind(kind: Int, allocIdx: Int, fns: WaIoFn, concatIdx: Int, readMsg: Int, writeMsg: Int, nl: Int) -> Bytes {
     match fns {
         WaIoFn(write, _, _, readFd, _, open, _, _, _, _, _, _, _) => if kind == 0 {
             waEncodeIOWrite(allocIdx)
@@ -495,16 +490,7 @@ fn waAddBody(content: Bytes, body: Bytes) -> Bytes {
     waCat(waCat(content, waUleb128(waLength(body))), body)
 }
 
-fn waAppendIOGo(
-    xs: List[WaIoItem],
-    content: Bytes,
-    allocIdx: Int,
-    fns: WaIoFn,
-    concatIdx: Int,
-    readMsg: Int,
-    writeMsg: Int,
-    nl: Int
-) -> Bytes {
+fn waAppendIOGo(xs: List[WaIoItem], content: Bytes, allocIdx: Int, fns: WaIoFn, concatIdx: Int, readMsg: Int, writeMsg: Int, nl: Int) -> Bytes {
     match xs {
         Nil => content,
         Cons(it, rest) => match it {
@@ -517,16 +503,7 @@ fn waAppendIOGo(
     }
 }
 
-pub fn waAppendIO(
-    content: Bytes,
-    allocIdx: Int,
-    fns: WaIoFn,
-    concatIdx: Int,
-    readMsg: Int,
-    writeMsg: Int,
-    nl: Int,
-    u: WaIoUse
-) -> Bytes {
+pub fn waAppendIO(content: Bytes, allocIdx: Int, fns: WaIoFn, concatIdx: Int, readMsg: Int, writeMsg: Int, nl: Int, u: WaIoUse) -> Bytes {
     waAppendIOGo(waIoPlan(u), content, allocIdx, fns, concatIdx, readMsg, writeMsg, nl)
 }
 

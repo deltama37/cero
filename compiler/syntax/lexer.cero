@@ -5,11 +5,14 @@ import "syntax/diag"
 import "syntax/token"
 import "util/quote"
 
-type Cur = | Cur(Int, Int, Int)
+type Cur =
+    | Cur(Int, Int, Int)
 
-type Scanned = | Scanned(Token, Int, Int, Int)
+type Scanned =
+    | Scanned(Token, Int, Int, Int)
 
-type LexDone = | LexDone(List[Token], Int, Int)
+type LexDone =
+    | LexDone(List[Token], Int, Int)
 
 type Esc =
     | EscOk(Int, Int, Int, Int)
@@ -19,13 +22,17 @@ type Hex =
     | HexOk(Int, Int, Int, Int)
     | HexNone
 
-pub type Comment = | Comment(Pos, String, Bool)
+pub type Comment =
+    | Comment(Pos, String, Bool)
 
-pub type RawToken = | RawToken(Pos, Kind, String)
+pub type RawToken =
+    | RawToken(Pos, Kind, String)
 
-type Triv = | Triv(Int, Int, Int, Bool, List[Comment])
+type Triv =
+    | Triv(Int, Int, Int, Bool, List[Comment])
 
-type CEnd = | CEnd(Int, Int, Int)
+type CEnd =
+    | CEnd(Int, Int, Int)
 
 fn contByte(b: Int) -> Bool {
     b >= 128 && b <= 191
@@ -117,7 +124,7 @@ fn isDigit(b: Int) -> Bool {
 }
 
 fn isIdentStart(b: Int) -> Bool {
-    b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+    b == '_' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
 }
 
 fn isIdentPart(b: Int) -> Bool {
@@ -452,7 +459,11 @@ fn oneKind(b: Int) -> Option[Kind] {
 fn scanSymbol(src: String, i: Int, line: Int, col: Int, pos: Pos) -> Result[Scanned] {
     let b = stringByteAt(src, i)
     let n = stringLength(src)
-    let next = if i + 1 < n { stringByteAt(src, i + 1) } else { 0 }
+    let next = if i + 1 < n {
+        stringByteAt(src, i + 1)
+    } else {
+        0
+    }
     match twoKind(b, next) {
         Some(k) => Ok(Scanned(Token(k, stringSlice(src, i, i + 2), pos), i + 2, line, col + 2)),
         None => match oneKind(b) {
@@ -542,15 +553,7 @@ fn skipTrivia(src: String, i: Int, line: Int, col: Int, bol: Bool, acc: List[Com
     }
 }
 
-fn lexTriviaAll(
-    src: String,
-    i: Int,
-    line: Int,
-    col: Int,
-    bol: Bool,
-    tokAcc: List[RawToken],
-    cmtAcc: List[Comment]
-) -> Result[Pair[List[RawToken], List[Comment]]] {
+fn lexTriviaAll(src: String, i: Int, line: Int, col: Int, bol: Bool, tokAcc: List[RawToken], cmtAcc: List[Comment]) -> Result[Pair[List[RawToken], List[Comment]]] {
     let Triv(j, line2, col2, _, cmt2) = skipTrivia(src, i, line, col, bol, cmtAcc)
     if j >= stringLength(src) {
         let eof = RawToken(Pos(line2, col2), EOF, "")
@@ -560,15 +563,7 @@ fn lexTriviaAll(
             Err(e) => Err(e),
             Ok(sc) => match sc {
                 Scanned(tok, j2, line3, col3) => match tok {
-                    Token(k, _, pos) => lexTriviaAll(
-                        src,
-                        j2,
-                        line3,
-                        col3,
-                        false,
-                        Cons(RawToken(pos, k, stringSlice(src, j, j2)), tokAcc),
-                        cmt2
-                    ),
+                    Token(k, _, pos) => lexTriviaAll(src, j2, line3, col3, false, Cons(RawToken(pos, k, stringSlice(src, j, j2)), tokAcc), cmt2),
                 },
             },
         }

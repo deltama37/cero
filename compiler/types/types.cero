@@ -13,11 +13,14 @@ pub type Type =
     | TyParam(Int, String)
     | TyMeta(Int)
 
-pub type CtorInfo = | CtorInfo(String, Int, List[Type], Int)
+pub type CtorInfo =
+    | CtorInfo(String, Int, List[Type], Int)
 
-pub type DataInfo = | DataInfo(String, List[Type], List[CtorInfo])
+pub type DataInfo =
+    | DataInfo(String, List[Type], List[CtorInfo])
 
-pub type TyEnv = | TyEnv(IntMap[DataInfo], IntMap[String], IntMap[Type])
+pub type TyEnv =
+    | TyEnv(IntMap[DataInfo], IntMap[String], IntMap[Type])
 
 pub fn tyIOData() -> Int {
     0

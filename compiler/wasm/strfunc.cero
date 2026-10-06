@@ -6,13 +6,17 @@ import "util/strmap"
 import "wasm/bytes"
 import "wasm/leb128"
 
-pub type WaStrUse = | WaStrUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+pub type WaStrUse =
+    | WaStrUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool)
 
-pub type WaStrFn = | WaStrFn(Int, Int, Int, Int, Int, Int, Int, Int)
+pub type WaStrFn =
+    | WaStrFn(Int, Int, Int, Int, Int, Int, Int, Int)
 
-pub type WaLay = | WaLay(StrMap[Int], Int, Bytes)
+pub type WaLay =
+    | WaLay(StrMap[Int], Int, Bytes)
 
-type WaStrPart = | WaStrPart(Int, Sig)
+type WaStrPart =
+    | WaStrPart(Int, Sig)
 
 pub fn waStrEmpty() -> WaStrUse {
     WaStrUse(false, false, false, false, false, false, false)
@@ -76,14 +80,46 @@ fn sigEq() -> Sig {
 fn waStrPlan(u: WaStrUse) -> List[WaStrPart] {
     match u {
         WaStrUse(byteAt, slice, fromByte, compare, intToStr, concat, eq) => {
-            let a = if waStrAllocUsed(u) { Cons(WaStrPart(0, sigPtr()), Nil) } else { Nil }
-            let b = if byteAt { Cons(WaStrPart(1, sigByteAt()), a) } else { a }
-            let c = if slice { Cons(WaStrPart(2, sigSlice()), b) } else { b }
-            let d = if fromByte { Cons(WaStrPart(3, sigFromByte()), c) } else { c }
-            let e = if compare { Cons(WaStrPart(4, sigCompare()), d) } else { d }
-            let f = if intToStr { Cons(WaStrPart(5, sigFromByte()), e) } else { e }
-            let g = if concat { Cons(WaStrPart(6, sigConcat()), f) } else { f }
-            let h = if eq { Cons(WaStrPart(7, sigEq()), g) } else { g }
+            let a = if waStrAllocUsed(u) {
+                Cons(WaStrPart(0, sigPtr()), Nil)
+            } else {
+                Nil
+            }
+            let b = if byteAt {
+                Cons(WaStrPart(1, sigByteAt()), a)
+            } else {
+                a
+            }
+            let c = if slice {
+                Cons(WaStrPart(2, sigSlice()), b)
+            } else {
+                b
+            }
+            let d = if fromByte {
+                Cons(WaStrPart(3, sigFromByte()), c)
+            } else {
+                c
+            }
+            let e = if compare {
+                Cons(WaStrPart(4, sigCompare()), d)
+            } else {
+                d
+            }
+            let f = if intToStr {
+                Cons(WaStrPart(5, sigFromByte()), e)
+            } else {
+                e
+            }
+            let g = if concat {
+                Cons(WaStrPart(6, sigConcat()), f)
+            } else {
+                f
+            }
+            let h = if eq {
+                Cons(WaStrPart(7, sigEq()), g)
+            } else {
+                g
+            }
             reverse(h)
         },
     }
@@ -388,12 +424,7 @@ fn waAddBody(content: Bytes, body: Bytes) -> Bytes {
     waCat(waCat(content, waUleb128(waLength(body))), body)
 }
 
-fn waAppendStrGo(
-    xs: List[WaStrPart],
-    content: Bytes,
-    allocIdx: Int,
-    strAlloc: Int
-) -> Bytes {
+fn waAppendStrGo(xs: List[WaStrPart], content: Bytes, allocIdx: Int, strAlloc: Int) -> Bytes {
     match xs {
         Nil => content,
         Cons(p, rest) => match p {

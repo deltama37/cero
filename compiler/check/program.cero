@@ -12,9 +12,11 @@ import "check/state"
 import "check/expr"
 import "check/deps"
 
-type CkExports = | CkExports(String, StrMap[Int], StrMap[Int])
+type CkExports =
+    | CkExports(String, StrMap[Int], StrMap[Int])
 
-type CkSeen = | CkSeen(IntMap[Bool], IntMap[Bool], List[Type])
+type CkSeen =
+    | CkSeen(IntMap[Bool], IntMap[Bool], List[Type])
 
 fn fileOf(m: Module) -> String {
     let Module(_, file, _, _) = m
@@ -830,7 +832,11 @@ fn checkEscape(tps: List[Type], owner: Int, name: String, pos: Pos) -> Check[Uni
         Nil => pure(()),
         Cons(tp, rest) => {
             let! st = ckGet()
-            let ownerTps = if owner < 0 { Nil } else { symTPs(ckSym(st, owner)) }
+            let ownerTps = if owner < 0 {
+                Nil
+            } else {
+                symTPs(ckSym(st, owner))
+            }
             let owned = match tp {
                 TyParam(id, _) => containsID(ownerTps, id),
                 _ => false,

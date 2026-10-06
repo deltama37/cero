@@ -1,6 +1,8 @@
-pub type Pos = | Pos(Int, Int)
+pub type Pos =
+    | Pos(Int, Int)
 
-pub type Error = | Error(String, Pos, String)
+pub type Error =
+    | Error(String, Pos, String)
 
 pub type Result[T] =
     | Ok(T)

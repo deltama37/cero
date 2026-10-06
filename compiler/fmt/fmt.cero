@@ -10,19 +10,26 @@ import "util/intmap"
 import "util/quote"
 import "fmt/trivia"
 
-type Open = | Open(Int, Int, List[FmIt])
+type Open =
+    | Open(Int, Int, List[FmIt])
 
-type St = | St(Int, List[Open], List[FmRegion], IntMap[Pair[Int, Int]])
+type St =
+    | St(Int, List[Open], List[FmRegion], IntMap[Pair[Int, Int]])
 
-type Sc = | Sc(St, Int, List[FmTk])
+type Sc =
+    | Sc(St, Int, List[FmTk])
 
-type Src = | Src(List[FmTk], IntMap[String], IntMap[Int], String, List[Comment])
+type Src =
+    | Src(List[FmTk], IntMap[String], IntMap[Int], String, List[Comment])
 
-type Px = | Px(Int, FmNotes, IntMap[Pair[Int, Int]], Src)
+type Px =
+    | Px(Int, FmNotes, IntMap[Pair[Int, Int]], Src)
 
-type Ln = | Ln(String, List[String])
+type Ln =
+    | Ln(String, List[String])
 
-type Out = | Out(Ln, Px)
+type Out =
+    | Out(Ln, Px)
 
 type Flat =
     | FlLet(String, Option[TypeExpr], Expr)
@@ -30,9 +37,11 @@ type Flat =
     | FlPat(Pattern, Expr)
     | FlRes(Expr)
 
-type Bang = | Bang(String, Option[TypeExpr], Expr, Block)
+type Bang =
+    | Bang(String, Option[TypeExpr], Expr, Block)
 
-type PatB = | PatB(Pattern, Expr, Expr)
+type PatB =
+    | PatB(Pattern, Expr, Expr)
 
 fn fmSt0() -> St {
     St(0, Nil, Nil, imEmpty())
@@ -152,7 +161,8 @@ fn fmSkipAssign(ts: List[FmTk], depth: Int) -> List[FmTk] {
     }
 }
 
-type Skip = | Skip(Int, List[FmTk])
+type Skip =
+    | Skip(Int, List[FmTk])
 
 fn fmSkipGroup(ts: List[FmTk]) -> Skip {
     match ts {
@@ -530,7 +540,7 @@ fn fmScanCtor(st: St, ts: List[FmTk]) -> Sc {
 
 fn fmScanCtors(st: St, ts: List[FmTk], assignLine: Int, last: Int, started: Bool) -> Sc {
     let k = fmKindH(ts)
-    if k == kBar() || (k == kIdent() && !started) {
+    if k == kBar() || k == kIdent() && !started {
         if started {
             let Sc(st2, end, rest) = fmScanCtor(st, ts)
             fmScanCtors(st2, rest, assignLine, end, true)
@@ -912,7 +922,7 @@ fn fmTokAt(ts: List[FmTk], line: Int, col: Int) -> List[FmTk] {
         Cons(t, rest) => match t {
             FmTk(_, l, c, _) => if l == line && c == col {
                 ts
-            } else if l > line || (l == line && c > col) {
+            } else if l > line || l == line && c > col {
                 Nil
             } else {
                 fmTokAt(rest, line, col)
@@ -1339,7 +1349,8 @@ fn fmPrintArms(px: Px, arms: List[Arm], base: Int, acc: List[String]) -> Acc {
     }
 }
 
-type Acc = | Acc(List[String], Px)
+type Acc =
+    | Acc(List[String], Px)
 
 fn fmLnLines(ln: Ln) -> List[String] {
     match ln {

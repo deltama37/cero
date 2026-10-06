@@ -6,9 +6,11 @@ import "types/types"
 import "check/state"
 import "util/intmap"
 
-type CapAcc = | CapAcc(List[Int], IntMap[Bool])
+type CapAcc =
+    | CapAcc(List[Int], IntMap[Bool])
 
-type CapWalk = | CapWalk(IntMap[Bool], CapAcc, IntMap[List[Int]])
+type CapWalk =
+    | CapWalk(IntMap[Bool], CapAcc, IntMap[List[Int]])
 
 fn capAdd(acc: CapAcc, id: Int) -> CapAcc {
     let CapAcc(xs, seen) = acc

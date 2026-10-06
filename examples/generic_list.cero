@@ -1,5 +1,4 @@
 // expected output: 26
-
 type List[T] =
     | Nil
     | Cons(T, List[T])
@@ -35,7 +34,13 @@ fn sum(xs: List[Int]) -> Int {
 }
 
 fn count(bs: List[Bool]) -> Int {
-    foldl(bs, 0, fn(n: Int, b: Bool) -> Int { if b { n + 1 } else { n } })
+    foldl(bs, 0, fn(n: Int, b: Bool) -> Int {
+        if b {
+            n + 1
+        } else {
+            n
+        }
+    })
 }
 
 fn main() -> Int {

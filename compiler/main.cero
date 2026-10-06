@@ -105,7 +105,11 @@ fn parseFmtFiles(xs: List[String], mode: String, acc: List[String]) -> Parsed {
 
 fn parseBuild(stdDir: String, xs: List[String], file: String, out: String) -> Parsed {
     match xs {
-        Nil => if file == "" { Usage } else { Cmd(stdDir, "build", file, out) },
+        Nil => if file == "" {
+            Usage
+        } else {
+            Cmd(stdDir, "build", file, out)
+        },
         Cons(a, rest) => if a == "-o" {
             match rest {
                 Nil => Usage,
@@ -187,7 +191,11 @@ fn runBuild(stdDir: String, file: String, out: String) -> IO[Unit] {
                 Err(e) => die(1, formatError(e) ++ "\n"),
                 Ok(info) => {
                     let wasm = encodeModule(lowerProgram(mods, info))
-                    let dest = if out == "" { defaultOutput(file) } else { out }
+                    let dest = if out == "" {
+                        defaultOutput(file)
+                    } else {
+                        out
+                    }
                     if dest == "-" {
                         print(wasm)
                     } else {

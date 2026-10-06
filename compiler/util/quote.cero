@@ -68,7 +68,11 @@ fn runeLen(s: String, i: Int) -> Int {
         } else if b < 194 || b > 244 {
             0
         } else if b < 224 {
-            if cont(s, i + 1, n) { 2 } else { 0 }
+            if cont(s, i + 1, n) {
+                2
+            } else {
+                0
+            }
         } else if b < 240 {
             if i + 2 >= n {
                 0
@@ -81,7 +85,11 @@ fn runeLen(s: String, i: Int) -> Int {
                 } else {
                     b2 >= 128 && b2 <= 191
                 }
-                if ok2 && cont(s, i + 2, n) { 3 } else { 0 }
+                if ok2 && cont(s, i + 2, n) {
+                    3
+                } else {
+                    0
+                }
             }
         } else {
             if i + 3 >= n {
@@ -95,7 +103,11 @@ fn runeLen(s: String, i: Int) -> Int {
                 } else {
                     b2 >= 128 && b2 <= 191
                 }
-                if ok2 && cont(s, i + 2, n) && cont(s, i + 3, n) { 4 } else { 0 }
+                if ok2 && cont(s, i + 2, n) && cont(s, i + 3, n) {
+                    4
+                } else {
+                    0
+                }
             }
         }
     }

@@ -1,5 +1,4 @@
 // expected output: 42
-
 fn classify(word: String) -> Int {
     match word {
         "answer" => 42,

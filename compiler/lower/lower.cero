@@ -13,9 +13,11 @@ import "ir/ir"
 import "lower/state"
 import "lower/captures"
 
-type LwResult[A] = | LwOk(A, LwState)
+type LwResult[A] =
+    | LwOk(A, LwState)
 
-type Lower[A] = | Lower(LwState -> LwResult[A])
+type Lower[A] =
+    | Lower(LwState -> LwResult[A])
 
 fn bind[A, B](m: Lower[A], f: A -> Lower[B]) -> Lower[B] {
     Lower(fn(s: LwState) -> LwResult[B] {
@@ -275,7 +277,11 @@ fn valTypeIn(env: IntMap[ValType], t: Type) -> ValType {
         TyString => VtPtr,
         TyUnit => VtBool,
         TyFunc(_, _) => VtFuncRef,
-        TyNamed(id, _) => if id == tyIOData() { VtFuncRef } else { VtPtr },
+        TyNamed(id, _) => if id == tyIOData() {
+            VtFuncRef
+        } else {
+            VtPtr
+        },
         TyParam(id, _) => withDefault(imLookup(env, id), VtInt),
         TyMeta(_) => VtInt,
     }
@@ -352,7 +358,11 @@ fn ctorTag(sym: Symbol) -> Int {
 fn listHas(xs: List[Int], x: Int) -> Bool {
     match xs {
         Nil => false,
-        Cons(y, rest) => if y == x { true } else { listHas(rest, x) },
+        Cons(y, rest) => if y == x {
+            true
+        } else {
+            listHas(rest, x)
+        },
     }
 }
 
@@ -366,12 +376,16 @@ fn localGets(ps: List[ValType], i: Int, acc: List[IrExpr]) -> List[IrExpr] {
 fn atVT(xs: List[ValType], i: Int) -> ValType {
     match xs {
         Nil => VtInt,
-        Cons(x, rest) => if i == 0 { x } else { atVT(rest, i - 1) },
+        Cons(x, rest) => if i == 0 {
+            x
+        } else {
+            atVT(rest, i - 1)
+        },
     }
 }
 
 fn isIO(b: Int) -> Bool {
-    (b >= 6) && (b <= 16)
+    b >= 6 && b <= 16
 }
 
 fn primOf(b: Int) -> PrimOp {
@@ -467,15 +481,7 @@ fn ioField(index: Int, t: ValType) -> IrExpr {
 }
 
 fn ioBindBody(a: ValType, result: ValType) -> IrExpr {
-    IrBlock(
-        Cons(IrLet(1, IrCallIndirect(ioField(0, VtFuncRef), IrSig(Nil, a), Nil, false)), Nil),
-        IrCallIndirect(
-            IrCallIndirect(ioField(1, VtFuncRef), IrSig(Cons(a, Nil), VtFuncRef), Cons(IrLocalGet(1, a), Nil), false),
-            IrSig(Nil, result),
-            Nil,
-            true
-        )
-    )
+    IrBlock(Cons(IrLet(1, IrCallIndirect(ioField(0, VtFuncRef), IrSig(Nil, a), Nil, false)), Nil), IrCallIndirect(IrCallIndirect(ioField(1, VtFuncRef), IrSig(Cons(a, Nil), VtFuncRef), Cons(IrLocalGet(1, a), Nil), false), IrSig(Nil, result), Nil, true))
 }
 
 fn ioBody(b: Int, reps: List[ValType]) -> IrExpr {
@@ -992,7 +998,11 @@ fn lwLowerLocal(useId: Int, sid: Int, tps: List[Type]) -> Lower[IrExpr] {
 }
 
 fn lwUnOp(k) -> UnOp {
-    if kindAsInt(k) == kMinus() { IrNeg } else { IrNot }
+    if kindAsInt(k) == kMinus() {
+        IrNeg
+    } else {
+        IrNot
+    }
 }
 
 fn lwBinOp(k) -> BinOp {
@@ -1054,7 +1064,7 @@ fn lwLowerBinaryBody(op, x: Expr, y: Expr) -> Lower[IrExpr] {
         let! yv = lwLowerExpr(y)
         if n == kPlusPlus() {
             pure(IrPrim(IrStrConcat, Cons(xv, Cons(yv, Nil))))
-        } else if (n == kEq()) || (n == kNotEq()) {
+        } else if n == kEq() || n == kNotEq() {
             let! str = lwIsString(x)
             if str {
                 let eq = IrPrim(IrStrEq, Cons(xv, Cons(yv, Nil)))
@@ -1206,7 +1216,11 @@ fn flatMatch(arms: List[Arm]) -> Bool {
         Nil => true,
         Cons(arm, rest) => {
             let Arm(pat, _) = arm
-            if flatPattern(pat) { flatMatch(rest) } else { false }
+            if flatPattern(pat) {
+                flatMatch(rest)
+            } else {
+                false
+            }
         },
     }
 }
@@ -1222,7 +1236,11 @@ fn containsVar(p: Pattern) -> Bool {
 fn anyVar(ps: List[Pattern]) -> Bool {
     match ps {
         Nil => false,
-        Cons(p, rest) => if containsVar(p) { true } else { anyVar(rest) },
+        Cons(p, rest) => if containsVar(p) {
+            true
+        } else {
+            anyVar(rest)
+        },
     }
 }
 

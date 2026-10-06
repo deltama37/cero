@@ -21,13 +21,17 @@ pub type Expr =
     | FuncLit(Int, Pos, List[Param], Option[TypeExpr], Block)
     | Match(Int, Pos, Expr, List[Arm], Bool)
 
-pub type Block = | Block(Int, Pos, List[LetStmt], Expr)
+pub type Block =
+    | Block(Int, Pos, List[LetStmt], Expr)
 
-pub type LetStmt = | LetStmt(Int, Pos, String, Pos, Option[TypeExpr], Expr)
+pub type LetStmt =
+    | LetStmt(Int, Pos, String, Pos, Option[TypeExpr], Expr)
 
-pub type Param = | Param(Int, Pos, String, Option[TypeExpr])
+pub type Param =
+    | Param(Int, Pos, String, Option[TypeExpr])
 
-pub type Arm = | Arm(Pattern, Expr)
+pub type Arm =
+    | Arm(Pattern, Expr)
 
 pub type Pattern =
     | WildP(Int, Pos)
@@ -37,17 +41,23 @@ pub type Pattern =
     | StrP(Int, Pos, String)
     | BoolP(Int, Pos, Bool)
 
-pub type TypeParam = | TypeParam(Pos, String)
+pub type TypeParam =
+    | TypeParam(Pos, String)
 
-pub type CtorDecl = | CtorDecl(Pos, String, List[TypeExpr])
+pub type CtorDecl =
+    | CtorDecl(Pos, String, List[TypeExpr])
 
-pub type TypeDecl = | TypeDecl(Int, Pos, Bool, String, Pos, List[TypeParam], List[CtorDecl])
+pub type TypeDecl =
+    | TypeDecl(Int, Pos, Bool, String, Pos, List[TypeParam], List[CtorDecl])
 
-pub type FuncDecl = | FuncDecl(Int, Pos, Bool, String, Pos, List[TypeParam], List[Param], Option[TypeExpr], Block)
+pub type FuncDecl =
+    | FuncDecl(Int, Pos, Bool, String, Pos, List[TypeParam], List[Param], Option[TypeExpr], Block)
 
-pub type Import = | Import(Pos, String, Pos)
+pub type Import =
+    | Import(Pos, String, Pos)
 
-pub type File = | File(List[Import], List[TypeDecl], List[FuncDecl])
+pub type File =
+    | File(List[Import], List[TypeDecl], List[FuncDecl])
 
 pub fn exprId(e: Expr) -> Int {
     match e {
