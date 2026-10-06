@@ -1,0 +1,6 @@
+fn id(u: Unit) -> Unit { u }
+fn main() -> Int {
+    let u: Unit = ()
+    let v = ()
+    0
+}

@@ -1,0 +1,14 @@
+fn main() -> Int {
+    let a = pure(1)
+    let b = bind(readStdin(), fn(s) { print(s) })
+    let c = print("x")
+    let d = eprint("x")
+    let e = readStdin()
+    let f = readFile("p")
+    let g = fileExists("p")
+    let h = writeFile("p", "x")
+    let i = argCount()
+    let j = argAt(0)
+    let k = exit(0)
+    0
+}

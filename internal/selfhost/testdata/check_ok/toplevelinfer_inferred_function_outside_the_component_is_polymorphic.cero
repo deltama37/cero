@@ -1,0 +1,3 @@
+fn identity(x) { x }
+fn pair(x) { identity(x) }
+fn main() { if pair(true) { identity(1) } else { pair(0) } }

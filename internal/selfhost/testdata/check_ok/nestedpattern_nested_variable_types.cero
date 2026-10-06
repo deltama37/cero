@@ -1,0 +1,13 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Cons(2, Nil)) {
+        Cons(x, Cons(y, _)) => x + y,
+        _ => 0,
+    }
+}

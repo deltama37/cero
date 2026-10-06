@@ -1,0 +1,2 @@
+fn lenOf(s) { stringLength(s) }
+fn main() -> Int { 0 }

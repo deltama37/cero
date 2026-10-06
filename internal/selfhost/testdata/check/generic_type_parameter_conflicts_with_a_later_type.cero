@@ -1,0 +1,2 @@
+fn f[T](x: T) -> T { x }
+type T = T0

@@ -1,0 +1,2 @@
+fn f(x: Int, y) { y }
+fn main() { if f(1, true) { 1 } else { 0 } }

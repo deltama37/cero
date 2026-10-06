@@ -1,0 +1,14 @@
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn f(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        other => 1,
+    }
+}
+
+fn main() -> Int {
+    f(Nil)
+}

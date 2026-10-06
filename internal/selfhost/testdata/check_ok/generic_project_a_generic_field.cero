@@ -1,0 +1,13 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Pair[A, B] = Pair(A, B)
+
+fn identity[T](x: T) -> T { x }
+fn fst[A, B](p: Pair[A, B]) -> A { match p { Pair(a, _) => a } }
+fn main() -> Int { fst(Pair(3, true)) }

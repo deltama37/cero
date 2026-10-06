@@ -1,0 +1,1 @@
+fn main() -> Int { pure(1) == pure(1) }

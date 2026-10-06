@@ -1,0 +1,4 @@
+import "lib"
+fn main() -> Int {
+    if id(true) { id(1) } else { 0 }
+}

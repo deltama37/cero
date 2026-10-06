@@ -1,0 +1,2 @@
+fn f(x) { let g = f g(x) }
+fn main() { f(1) }

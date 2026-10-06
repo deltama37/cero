@@ -1,0 +1,3 @@
+fn main() -> IO[Unit] {
+    print("hi")
+}

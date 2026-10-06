@@ -1,0 +1,7 @@
+type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Cons(2, Nil)) {
+        Cons(x, Cons(x, _)) => x,
+        _ => 0,
+    }
+}

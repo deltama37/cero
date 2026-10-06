@@ -1,0 +1,1 @@
+fn main() -> Int { stringSlice("a", 0) }

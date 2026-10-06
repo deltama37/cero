@@ -1,0 +1,9 @@
+fn shadow() -> Bool {
+    let x = 1
+    let x = x == 1
+    x
+}
+
+fn main() -> Int {
+    if shadow() { 1 } else { 0 }
+}

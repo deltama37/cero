@@ -1,0 +1,2 @@
+import "helper"
+fn main() -> Int { answer() }

@@ -1,0 +1,1 @@
+fn main() -> Int { match pure(1) { _ => 0 } }

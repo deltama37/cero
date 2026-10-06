@@ -1,0 +1,6 @@
+type Pair[A, B] = Pair(A, B)
+fn main() -> Int {
+    let Pair(a, b) = Pair(20, 22)
+    let s = a + b
+    s
+}

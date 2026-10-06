@@ -1,0 +1,2 @@
+type T = | A(Foo)
+fn main() -> Int { 1 }

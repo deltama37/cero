@@ -1,0 +1,9 @@
+type Shape = | Circle(Int) | Rect(Int, Int)
+type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let s = Circle(1)
+    match s {
+        Nil => 1,
+        _ => 2,
+    }
+}

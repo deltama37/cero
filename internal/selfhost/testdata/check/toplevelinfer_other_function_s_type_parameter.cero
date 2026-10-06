@@ -1,0 +1,4 @@
+type Option[T] = | None | Some(T)
+fn f(x) { g(x, None) }
+fn g(p, q) { f(p) }
+fn main() { f(1) }

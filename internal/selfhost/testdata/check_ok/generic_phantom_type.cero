@@ -1,0 +1,2 @@
+type Tag[T] = Tag
+fn main() -> Int { let t: Tag[Int] = Tag 0 }

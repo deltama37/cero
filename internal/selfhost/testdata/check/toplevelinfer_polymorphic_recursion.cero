@@ -1,0 +1,3 @@
+type List[T] = | Nil | Cons(T, List[T])
+fn f(x) { if true { x } else { f(Cons(x, Nil)) } }
+fn main() { 0 }

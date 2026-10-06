@@ -1,0 +1,14 @@
+import "shapes"
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => r,
+        Rect(w, h) => w * h
+    }
+}
+fn classify(s) {
+    match s {
+        Circle(_) => 1,
+        Rect(_, _) => 2
+    }
+}
+fn main() -> Int { area(Circle(1)) + classify(Rect(2, 3)) }

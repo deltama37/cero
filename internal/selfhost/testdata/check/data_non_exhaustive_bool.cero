@@ -1,0 +1,6 @@
+fn main() -> Int {
+    let b = true
+    match b {
+        true => 1,
+    }
+}

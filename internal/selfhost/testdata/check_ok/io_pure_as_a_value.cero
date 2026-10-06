@@ -1,0 +1,6 @@
+fn main() -> Int {
+    let p = pure
+    let a = p(1)
+    let b = p(true)
+    0
+}

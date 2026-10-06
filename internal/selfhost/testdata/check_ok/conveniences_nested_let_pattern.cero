@@ -1,0 +1,6 @@
+type Pair[A, B] = Pair(A, B)
+type Box[T] = Box(T)
+fn main() -> Int {
+    let Box(Pair(x, y)) = Box(Pair(1, 2))
+    x + y
+}

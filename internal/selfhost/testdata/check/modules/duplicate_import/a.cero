@@ -1,0 +1,3 @@
+import "b"
+import "b"
+fn main() -> Int { f() }

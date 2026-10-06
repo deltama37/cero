@@ -1,0 +1,1 @@
+fn main() -> Int { let g = if true { fn(x) { 0 } } else { fn(y) { 1 } } 0 }

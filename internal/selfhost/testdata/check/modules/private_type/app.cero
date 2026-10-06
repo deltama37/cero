@@ -1,0 +1,3 @@
+import "lib"
+fn f(x: Hidden) -> Int { 0 }
+fn main() -> Int { 0 }

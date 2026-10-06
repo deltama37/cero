@@ -1,0 +1,8 @@
+type Option[T] = None | Some(T)
+fn f[T](o: Option[T]) -> Int {
+    match o {
+        Some(1) => 1,
+        _ => 0,
+    }
+}
+fn main() -> Int { 0 }

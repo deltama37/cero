@@ -1,0 +1,2 @@
+import "c"
+pub fn fromB() -> Int { fromC() }

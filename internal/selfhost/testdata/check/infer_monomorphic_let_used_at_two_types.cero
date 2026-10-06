@@ -1,0 +1,2 @@
+fn identity[T](x: T) -> T { x }
+fn main() -> Int { let g = identity(fn(x) { x }) if g(true) { g(1) } else { 0 } }

@@ -1,0 +1,1 @@
+fn main() -> Int { let x: Text = 1 x }

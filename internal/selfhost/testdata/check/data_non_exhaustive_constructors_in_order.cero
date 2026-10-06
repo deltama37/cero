@@ -1,0 +1,7 @@
+type Shape = | Circle(Int) | Rect(Int, Int) | Tri(Int, Int)
+fn main() -> Int {
+    let s = Circle(1)
+    match s {
+        Circle(r) => r,
+    }
+}

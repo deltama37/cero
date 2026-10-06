@@ -1,0 +1,9 @@
+fn main() -> Int {
+    let n = stringLength("abc")
+    let b = stringByteAt("abc", 0)
+    let s = stringSlice("abc", 0, 1)
+    let c = stringFromByte(65)
+    let d = stringCompare("a", "b")
+    let t = intToString(1)
+    n + b
+}

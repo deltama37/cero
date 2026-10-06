@@ -1,0 +1,13 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Pair[A, B] = Pair(A, B)
+
+fn identity[T](x: T) -> T { x }
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] { match xs { Nil => Nil, Cons(x, r) => Cons(f(x), map(r, f)) } }
+fn main() -> Int { let ys = map(Cons(1, Nil), fn(x) { x > 0 }) 0 }

@@ -1,0 +1,2 @@
+type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int { Cons(true, Nil) }

@@ -1,0 +1,5 @@
+type Option[T] = None | Some(T)
+fn main() -> Int {
+    let Some(x) = Some(1)
+    x
+}

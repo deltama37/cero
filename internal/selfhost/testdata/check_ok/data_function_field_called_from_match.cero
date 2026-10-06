@@ -1,0 +1,9 @@
+type Box =
+    | Box(Int -> Int)
+
+fn main() -> Int {
+    let b = Box(fn(x: Int) -> Int { x + 1 })
+    match b {
+        Box(f) => f(1),
+    }
+}

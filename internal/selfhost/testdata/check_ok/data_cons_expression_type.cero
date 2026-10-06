@@ -1,0 +1,8 @@
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn main() -> Int {
+    let xs = Cons(1, Nil)
+    0
+}

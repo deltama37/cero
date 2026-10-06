@@ -1,0 +1,2 @@
+fn twice(f, x) { f(f(x)) }
+fn main() { twice(fn(n) { n + 1 }, 0) }

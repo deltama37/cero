@@ -1,0 +1,2 @@
+type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int { if Nil == Nil { 1 } else { 0 } }

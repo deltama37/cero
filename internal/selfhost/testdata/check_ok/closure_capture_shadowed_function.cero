@@ -1,0 +1,6 @@
+fn id(x: Int) -> Int { x }
+fn main() -> Int {
+    let id = 1
+    let f = fn() -> Int { id }
+    f()
+}

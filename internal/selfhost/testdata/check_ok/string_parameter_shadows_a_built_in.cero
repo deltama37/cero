@@ -1,0 +1,2 @@
+fn f(stringLength: Int) -> Int { stringLength }
+fn main() -> Int { f(1) }

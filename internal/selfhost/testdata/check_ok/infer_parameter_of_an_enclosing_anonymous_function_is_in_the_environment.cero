@@ -1,0 +1,1 @@
+fn main() -> Int { let k = fn(x) { let y = x y } k(1) }

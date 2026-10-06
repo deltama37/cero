@@ -1,0 +1,2 @@
+type Option[T] = | None | Some(T)
+fn f(x: Option) -> Int { 0 }

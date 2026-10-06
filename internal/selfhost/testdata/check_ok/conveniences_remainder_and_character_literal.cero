@@ -1,0 +1,5 @@
+fn main() -> Int {
+    let n = 7 % 3
+    let c = 'a'
+    n + c
+}

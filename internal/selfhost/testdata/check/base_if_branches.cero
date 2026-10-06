@@ -1,0 +1,7 @@
+fn main() -> Int {
+    if true {
+        10
+    } else {
+        false
+    }
+}

@@ -1,0 +1,1 @@
+fn main() -> Int { let id = fn(x) { x } if id(true) { id(1) } else { 0 } }

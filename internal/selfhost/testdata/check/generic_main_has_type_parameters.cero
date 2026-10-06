@@ -1,0 +1,2 @@
+type Option[T] = | None | Some(T)
+fn main[T]() -> Option[T] { None }

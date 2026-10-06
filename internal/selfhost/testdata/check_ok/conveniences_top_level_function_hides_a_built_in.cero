@@ -1,0 +1,2 @@
+fn stringLength(s: String) -> Int { 0 }
+fn main() -> Int { stringLength("abc") }

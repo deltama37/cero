@@ -1,0 +1,2 @@
+fn main() { identity(1) }
+fn identity(x) { x }

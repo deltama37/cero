@@ -1,0 +1,2 @@
+fn ignore(_: Int, _: Bool) -> Int { 1 }
+fn main() -> Int { ignore(1, true) }

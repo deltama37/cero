@@ -1,0 +1,3 @@
+fn Nil() -> Int { 1 }
+type L = Nil
+fn main() -> Int { 1 }
