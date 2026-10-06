@@ -12,17 +12,46 @@ fn byte(s: String) -> Int {
     stringByteAt(s, 0)
 }
 
+fn listChecks(xs: List[Int], empty: List[Int]) -> Bool {
+    let evens = filter(xs, fn(x: Int) -> Bool { x % 2 == 0 })
+    let basic = length(xs) == 4 && length(empty) == 0 && pack(reverse(xs)) == 4321
+    let mapped = pack(map(xs, fn(x: Int) -> Int { x + 1 })) == 2345 && pack(evens) == 24
+    let folds = foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc - x }) == -10 && foldr(xs, 0, fn(x: Int, acc: Int) -> Int { x - acc }) == -2
+    let joined = pack(append(Cons(1, Cons(2, Nil)), Cons(3, Nil))) == 123 && pack(concat(Cons(Cons(1, Cons(2, Nil)), Cons(Cons(3, Nil), Nil)))) == 123
+    let anyAll = any(xs, fn(x: Int) -> Bool { x == 3 }) && !any(empty, fn(x: Int) -> Bool { true })
+    let allOk = all(xs, fn(x: Int) -> Bool { x > 0 }) && all(empty, fn(x: Int) -> Bool { false })
+    let ranges = length(range(3, 3)) == 0 && length(range(4, 1)) == 0 && pack(range(1, 4)) == 123 && sum(range(1, 5)) == 10
+    let takes = pack(take(xs, 0)) == 0 && pack(take(xs, -1)) == 0 && pack(take(xs, 2)) == 12 && pack(take(xs, 9)) == 1234
+    let drops = pack(drop(xs, 0)) == 1234 && pack(drop(xs, -2)) == 1234 && pack(drop(xs, 2)) == 34 && pack(drop(xs, 9)) == 0
+    basic && mapped && folds && joined && anyAll && allOk && ranges && takes && drops
+}
+
+fn optionChecks(missing: Option[Int]) -> Bool {
+    let defaults = withDefault(Some(3), 0) == 3 && withDefault(missing, 4) == 4
+    let mapped = withDefault(mapOption(Some(2), fn(x: Int) -> Int { x + 1 }), 0) == 3 && withDefault(mapOption(missing, fn(x: Int) -> Int { x }), 9) == 9
+    let chained = withDefault(andThen(Some(1), fn(x: Int) -> Option[Int] { Some(x + 1) }), 0) == 2 && withDefault(andThen(missing, fn(x: Int) -> Option[Int] { Some(x) }), 0) == 0
+    let failed = withDefault(andThen(Some(1), fn(x: Int) -> Option[Int] { None }), 5) == 5
+    let tests = isSome(Some(1)) && !isSome(missing) && isNone(missing) && !isNone(Some(1))
+    defaults && mapped && chained && failed && tests
+}
+
+fn textChecks(blank: List[String]) -> Bool {
+    let joins = join(blank, ",") == "" && join(Cons("a", Nil), ",") == "a" && join(Cons("a", Cons("b", Cons("c", Nil))), "-") == "a-b-c"
+    let starts = startsWith("hello", "he") && startsWith("hello", "") && !startsWith("hello", "hex") && !startsWith("ab", "abc")
+    let ends = endsWith("hello", "lo") && endsWith("hello", "") && !endsWith("hello", "lx") && !endsWith("ab", "cab")
+    let digits = isDigit(byte("0")) && isDigit(byte("9")) && !isDigit(byte("a")) && !isDigit(byte("/"))
+    let alphas = isAlpha(byte("A")) && isAlpha(byte("Z")) && isAlpha(byte("a")) && isAlpha(byte("z")) && !isAlpha(byte("0")) && !isAlpha(byte(" "))
+    let spaces = isSpace(byte(" ")) && isSpace(byte("\t")) && isSpace(byte("\n")) && isSpace(byte("\r")) && !isSpace(byte("a"))
+    joins && starts && ends && digits && alphas && spaces
+}
+
 fn main() -> Int {
     let empty: List[Int] = Nil
     let blank: List[String] = Nil
     let missing: Option[Int] = None
     let xs = Cons(1, Cons(2, Cons(3, Cons(4, Nil))))
-    let evens = filter(xs, fn(x: Int) -> Bool { x / 2 * 2 == x })
-    let lists = length(xs) == 4 && length(empty) == 0 && pack(reverse(xs)) == 4321 && pack(map(xs, fn(x: Int) -> Int { x + 1 })) == 2345 && pack(evens) == 24 && foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc - x }) == -10 && foldr(xs, 0, fn(x: Int, acc: Int) -> Int { x - acc }) == -2 && pack(append(Cons(1, Cons(2, Nil)), Cons(3, Nil))) == 123 && pack(concat(Cons(Cons(1, Cons(2, Nil)), Cons(Cons(3, Nil), Nil)))) == 123 && any(xs, fn(x: Int) -> Bool { x == 3 }) && !any(empty, fn(x: Int) -> Bool { true }) && all(xs, fn(x: Int) -> Bool { x > 0 }) && all(empty, fn(x: Int) -> Bool { false }) && length(range(3, 3)) == 0 && length(range(4, 1)) == 0 && pack(range(1, 4)) == 123 && sum(range(1, 5)) == 10 && pack(take(xs, 0)) == 0 && pack(take(xs, -1)) == 0 && pack(take(xs, 2)) == 12 && pack(take(xs, 9)) == 1234 && pack(drop(xs, 0)) == 1234 && pack(drop(xs, -2)) == 1234 && pack(drop(xs, 2)) == 34 && pack(drop(xs, 9)) == 0
-    let opts = withDefault(Some(3), 0) == 3 && withDefault(missing, 4) == 4 && withDefault(mapOption(Some(2), fn(x: Int) -> Int { x + 1 }), 0) == 3 && withDefault(mapOption(missing, fn(x: Int) -> Int { x }), 9) == 9 && withDefault(andThen(Some(1), fn(x: Int) -> Option[Int] { Some(x + 1) }), 0) == 2 && withDefault(andThen(missing, fn(x: Int) -> Option[Int] { Some(x) }), 0) == 0 && withDefault(andThen(Some(1), fn(x: Int) -> Option[Int] { None }), 5) == 5 && isSome(Some(1)) && !isSome(missing) && isNone(missing) && !isNone(Some(1))
     let pairs = fst(Pair(4, 5)) == 4 && snd(Pair(4, 5)) == 5
-    let text = join(blank, ",") == "" && join(Cons("a", Nil), ",") == "a" && join(Cons("a", Cons("b", Cons("c", Nil))), "-") == "a-b-c" && startsWith("hello", "he") && startsWith("hello", "") && !startsWith("hello", "hex") && !startsWith("ab", "abc") && endsWith("hello", "lo") && endsWith("hello", "") && !endsWith("hello", "lx") && !endsWith("ab", "cab") && isDigit(byte("0")) && isDigit(byte("9")) && !isDigit(byte("a")) && !isDigit(byte("/")) && isAlpha(byte("A")) && isAlpha(byte("Z")) && isAlpha(byte("a")) && isAlpha(byte("z")) && !isAlpha(byte("0")) && !isAlpha(byte(" ")) && isSpace(byte(" ")) && isSpace(byte("\t")) && isSpace(byte("\n")) && isSpace(byte("\r")) && !isSpace(byte("a"))
-    if lists && opts && pairs && text {
+    if listChecks(xs, empty) && optionChecks(missing) && pairs && textChecks(blank) {
         42
     } else {
         0
