@@ -1230,6 +1230,18 @@ func primOf(b typecheck.Builtin) ir.PrimOp {
 		return ir.StrCompare
 	case typecheck.BuiltinIntToString:
 		return ir.IntToString
+	case typecheck.BuiltinBitAnd:
+		return ir.BitAnd
+	case typecheck.BuiltinBitOr:
+		return ir.BitOr
+	case typecheck.BuiltinBitXor:
+		return ir.BitXor
+	case typecheck.BuiltinShiftLeft:
+		return ir.ShiftLeft
+	case typecheck.BuiltinShiftRight:
+		return ir.ShiftRight
+	case typecheck.BuiltinShiftRightUnsigned:
+		return ir.ShiftRightUnsigned
 	default:
 		panic(fmt.Sprintf("lower: unknown built-in %d", int(b)))
 	}
@@ -1411,6 +1423,8 @@ func binOp(e *ast.BinaryExpr) ir.BinOp {
 		return ir.Mul
 	case token.Slash:
 		return ir.Div
+	case token.Percent:
+		return ir.Rem
 	case token.Eq:
 		return ir.Eq
 	case token.NotEq:

@@ -18,6 +18,87 @@ func TestLower(t *testing.T) {
 		want string
 	}{
 		{
+			name: "remainder",
+			src:  "fn main() -> Int { 7 % 3 }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (rem 7 3))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "bit and",
+			src:  "fn main() -> Int { bitAnd(12, 10) }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (prim int.and 12 10))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "bit or",
+			src:  "fn main() -> Int { bitOr(12, 10) }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (prim int.or 12 10))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "bit xor",
+			src:  "fn main() -> Int { bitXor(12, 10) }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (prim int.xor 12 10))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "shift left",
+			src:  "fn main() -> Int { shiftLeft(1, 62) }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (prim int.shl 1 62))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "shift right",
+			src:  "fn main() -> Int { shiftRight(-8, 1) }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (prim int.shr_s (neg 8) 1))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "shift right unsigned",
+			src:  "fn main() -> Int { shiftRightUnsigned(1, 2) }\n",
+			want: lines(
+				"(func 0 main (sig () Int) (locals) (prim int.shr_u 1 2))",
+				"(table)",
+				"(main 0)",
+			),
+		},
+		{
+			name: "bit and used as a value",
+			src: `fn apply(f: (Int, Int) -> Int, a: Int, b: Int) -> Int {
+    f(a, b)
+}
+
+fn main() -> Int {
+    apply(bitAnd, 1, 2)
+}
+`,
+			want: lines(
+				"(func 0 apply (sig (FuncRef Int Int) Int) (locals FuncRef Int Int) (return.call.indirect (sig (Int Int) Int) (local 0) (local 1) (local 2)))",
+				"(func 1 main (sig () Int) (locals) (return.call 0 (func.ref 2) 1 2))",
+				"(func 2 bitAnd$ref (sig (Int Int Ptr) Int) (locals Int Int Ptr) (prim int.and (local 0) (local 1)))",
+				"(table 2)",
+				"(main 1)",
+			),
+		},
+		{
 			name: "main returns constant",
 			src:  "fn main() -> Int { 42 }\n",
 			want: lines(
@@ -1393,6 +1474,24 @@ fn main() -> Int { 0 }
 				"(table)",
 				"(main 1)",
 			),
+		},
+		{
+			name: "let bang is a bind call",
+			src: `fn main() -> IO[Unit] {
+    let! s = readStdin()
+    print(s)
+}
+`,
+			want: lines(
+				"(func 0 main (sig () FuncRef) (locals) (func.ref 4 (construct 0 (func.ref 1) (func.ref 2))))",
+				"(func 1 io.read_stdin (sig (Ptr) Ptr) (locals Ptr) (prim io.read_stdin))",
+				"(func 2 lambda$0 (sig (Ptr Ptr) FuncRef) (locals Ptr Ptr) (func.ref 3 (construct 0 (local 0))))",
+				"(func 3 io.print (sig (Ptr) Bool) (locals Ptr) (prim io.print (field 0 0)))",
+				"(func 4 io.bind[Ptr,Bool] (sig (Ptr) Bool) (locals Ptr Ptr) (block (let 1 (call.indirect (sig () Ptr) (field 0 0))) (return.call.indirect (sig () Bool) (call.indirect (sig (Ptr) FuncRef) (field 0 1) (local 1)))))",
+				"(table 1 3 2 4)",
+				"(main 0)",
+			),
+			command: true,
 		},
 		{
 			name: "int main is not a command",
