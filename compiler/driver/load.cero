@@ -5,7 +5,6 @@ import "std/string"
 import "syntax/ast"
 import "syntax/diag"
 import "syntax/parser"
-import "util/intmap"
 import "util/strmap"
 
 pub type Module = | Module(String, String, File, List[String])
@@ -23,33 +22,6 @@ type Step =
 type Resolved =
     | ResolveOk(St, String)
     | ResolveFail(Error)
-
-fn imFill(m: IntMap[Int], i: Int) -> IntMap[Int] {
-    if i > 20 {
-        m
-    } else {
-        imFill(imInsert(m, i, i * 10), i + 1)
-    }
-}
-
-fn imSorted(xs: List[Pair[Int, Int]], expect: Int) -> Bool {
-    match xs {
-        Nil => expect == 21,
-        Cons(p, rest) => match p {
-            Pair(k, v) => if k == expect && v == expect * 10 {
-                imSorted(rest, expect + 1)
-            } else {
-                false
-            },
-        },
-    }
-}
-
-fn imCheck() -> Bool {
-    let m = imFill(imEmpty(), 1)
-    let m2 = imInsert(m, 5, 99)
-    imSize(m) == 20 && imSorted(imToList(m), 1) && imMember(m, 20) && withDefault(imLookup(m2, 5), 0) == 99 && !imMember(m, 0)
-}
 
 fn cleanEntry(path: String) -> String {
     if startsWith(path, "./") {
@@ -343,26 +315,22 @@ fn fromStep(step: Step) -> LoadResult {
 }
 
 pub fn loadProgram(entryFile: String, stdDir: String) -> IO[LoadResult] {
-    if imCheck() {
-        let! exists = fileExists(entryFile)
-        if exists {
-            let! src = readFile(entryFile)
-            match parseFile(src, 0) {
-                Err(e) => pure(LoadFailed(errorWithFile(e, entryFile))),
-                Ok(parsed) => match parsed {
-                    Pair(file, nextId) => {
-                        let key = cleanEntry(entryFile)
-                        let m = Module(modulePath(entryFile), entryFile, file, Nil)
-                        let st = St(smInsert(smEmpty(), key, m), smEmpty(), Nil, Nil, nextId, dirOf(key))
-                        let! step = visit(st, key, stdDir)
-                        pure(fromStep(step))
-                    },
+    let! exists = fileExists(entryFile)
+    if exists {
+        let! src = readFile(entryFile)
+        match parseFile(src, 0) {
+            Err(e) => pure(LoadFailed(errorWithFile(e, entryFile))),
+            Ok(parsed) => match parsed {
+                Pair(file, nextId) => {
+                    let key = cleanEntry(entryFile)
+                    let m = Module(modulePath(entryFile), entryFile, file, Nil)
+                    let st = St(smInsert(smEmpty(), key, m), smEmpty(), Nil, Nil, nextId, dirOf(key))
+                    let! step = visit(st, key, stdDir)
+                    pure(fromStep(step))
                 },
-            }
-        } else {
-            pure(LoadFailed(errorf(Pos(1, 1), "cannot read " ++ entryFile)))
+            },
         }
     } else {
-        pure(LoadFailed(errorf(Pos(1, 1), "internal error")))
+        pure(LoadFailed(errorf(Pos(1, 1), "cannot read " ++ entryFile)))
     }
 }
