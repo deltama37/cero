@@ -1,4 +1,6 @@
-.PHONY: build test fmt fmt-check vet lint check clean run selfhost selfhost-build
+.PHONY: build test fmt fmt-check vet lint check clean run selfhost selfhost-build fmt-cero fmt-cero-check
+
+CERO_SOURCES = $(shell find examples std compiler -name '*.cero' | sort)
 
 BIN_DIR := bin
 CEROC   := $(BIN_DIR)/ceroc
@@ -45,3 +47,10 @@ selfhost:
 
 selfhost-build: build
 	./bin/ceroc build compiler/main.cero -o bin/ceroc-cero.wasm
+
+# fmt-cero formats every Cero source in the repository with the Cero-written compiler (ADR-0016).
+fmt-cero: selfhost-build
+	./scripts/ceroc-cero fmt -w $(CERO_SOURCES)
+
+fmt-cero-check: selfhost-build
+	./scripts/ceroc-cero fmt --check $(CERO_SOURCES)

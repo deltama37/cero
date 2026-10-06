@@ -253,10 +253,10 @@ fn main() -> Int {
 			wantStderrHas: "runtime failed",
 		},
 		{
-			name:          "fmt is not yet implemented",
+			name:          "fmt points at the Cero-written compiler",
 			args:          []string{"fmt"},
 			wantExit:      exitNotImplemented,
-			wantStderrHas: "not yet implemented",
+			wantStderrHas: "ceroc fmt: the formatter is part of the Cero-written compiler; run scripts/ceroc-cero fmt FILE (ADR-0016)",
 		},
 		{
 			name:          "unknown command is a usage error",

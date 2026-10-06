@@ -1,0 +1,7 @@
+fn f() -> Int {
+    let s = "a\nb\t\"c"
+    let c = 'a'
+    let n = '\n'
+    let q = '\''
+    c
+}

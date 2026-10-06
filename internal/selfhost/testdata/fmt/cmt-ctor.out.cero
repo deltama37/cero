@@ -1,0 +1,6 @@
+type T =
+    // first
+    | A
+    | B // mid
+    // last
+    | C(Int)

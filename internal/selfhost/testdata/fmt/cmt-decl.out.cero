@@ -1,0 +1,4 @@
+// before
+fn f() -> Int {
+    1
+}

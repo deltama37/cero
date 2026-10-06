@@ -19,6 +19,7 @@ import (
 	"github.com/deltama37/cero/internal/driver"
 	"github.com/deltama37/cero/internal/ir"
 	"github.com/deltama37/cero/internal/lower"
+	"github.com/deltama37/cero/internal/parser"
 	"github.com/deltama37/cero/internal/typecheck"
 )
 
@@ -293,15 +294,9 @@ func TestBuildRuns(t *testing.T) {
 
 	root := repoRoot(t)
 	outDir := filepath.Join(root, "internal/selfhost/testdata/.out")
-	if err := os.RemoveAll(outDir); err != nil {
-		t.Fatalf("remove %s: %v", outDir, err)
-	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", outDir, err)
 	}
-	t.Cleanup(func() {
-		os.RemoveAll(outDir)
-	})
 
 	files := []string{
 		"examples/fib.cero",
@@ -321,6 +316,9 @@ func TestBuildRuns(t *testing.T) {
 			name := strings.ReplaceAll(file, "/", "_")
 			name = strings.TrimSuffix(name, ".cero") + ".wasm"
 			rel := filepath.Join("internal/selfhost/testdata/.out", name)
+			t.Cleanup(func() {
+				os.Remove(filepath.Join(root, rel))
+			})
 			stdout, stderr, code := runCero(t, root, "build", file, "-o", rel)
 			if code != 0 {
 				t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
@@ -651,6 +649,259 @@ func checkFormatReachable(format string) bool {
 		return false
 	}
 	return !strings.HasPrefix(format, "unhandled ")
+}
+
+func TestFmtGolden(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	ins := relGlob(t, root, "internal/selfhost/testdata/fmt/*.in.cero")
+	if len(ins) < 25 {
+		t.Fatalf("golden inputs = %d, want at least 25", len(ins))
+	}
+	for _, in := range ins {
+		t.Run(in, func(t *testing.T) {
+			t.Parallel()
+
+			outPath := strings.TrimSuffix(in, ".in.cero") + ".out.cero"
+			want, err := os.ReadFile(filepath.Join(root, outPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", outPath, err)
+			}
+			stdout, stderr, code := runCero(t, root, "fmt", in)
+			if code != 0 {
+				t.Fatalf("exit %d, stderr %s", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q", stderr)
+			}
+			if stdout != string(want) {
+				t.Errorf("stdout mismatch\n got %q\nwant %q", stdout, want)
+			}
+		})
+	}
+}
+
+func TestFmtProperties(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	files := fmtCorpus(t, root)
+	dir := filepath.Join(root, "internal/selfhost/testdata/.out/props")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove %s: %v", dir, err)
+	}
+	copies := make([]string, 0, len(files))
+	for _, rel := range files {
+		dstRel := filepath.Join("internal/selfhost/testdata/.out/props", rel)
+		dst := filepath.Join(root, dstRel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dst, err)
+		}
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if err := os.WriteFile(dst, body, 0o644); err != nil {
+			t.Fatalf("write %s: %v", dst, err)
+		}
+		copies = append(copies, dstRel)
+	}
+
+	args := append([]string{"fmt", "-w"}, copies...)
+	stdout, stderr, code := runCero(t, root, args...)
+	if code != 0 {
+		t.Fatalf("fmt -w exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+
+	stdout, stderr, code = runCero(t, root, append([]string{"fmt", "--check"}, copies...)...)
+	if code != 0 || stdout != "" {
+		t.Fatalf("second fmt --check exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+
+	for _, rel := range files {
+		t.Run(rel, func(t *testing.T) {
+			t.Parallel()
+
+			orig, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatalf("read %s: %v", rel, err)
+			}
+			got, err := os.ReadFile(filepath.Join(root, "internal/selfhost/testdata/.out/props", rel))
+			if err != nil {
+				t.Fatalf("read formatted %s: %v", rel, err)
+			}
+			before, err := parser.ParseFile(orig)
+			if err != nil {
+				t.Fatalf("parse %s: %v", rel, err)
+			}
+			after, err := parser.ParseFile(got)
+			if err != nil {
+				t.Fatalf("parse formatted %s: %v", rel, err)
+			}
+			if ast.FormatFile(before) != ast.FormatFile(after) {
+				t.Errorf("AST changed for %s", rel)
+			}
+			if strings.Join(commentBodies(orig), "\n") != strings.Join(commentBodies(got), "\n") {
+				t.Errorf("comments changed for %s", rel)
+			}
+		})
+	}
+}
+
+func TestFmtCheck(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	dir := filepath.Join(root, "internal/selfhost/testdata/.out/fmtcheck")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove %s: %v", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	rel := "internal/selfhost/testdata/.out/fmtcheck/ugly.cero"
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("fn f() -> Int { 1+2 }\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	stdout, stderr, code := runCero(t, root, "fmt", "--check", rel)
+	if code != 1 {
+		t.Fatalf("--check exit %d, want 1\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	if stdout != rel+"\n" {
+		t.Errorf("--check stdout = %q, want %q", stdout, rel+"\n")
+	}
+
+	stdout, stderr, code = runCero(t, root, "fmt", "-w", rel)
+	if code != 0 {
+		t.Fatalf("-w exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runCero(t, root, "fmt", "--check", rel)
+	if code != 0 {
+		t.Fatalf("formatted --check exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("formatted --check stdout = %q", stdout)
+	}
+
+	stdout, stderr, code = runCero(t, root, "fmt", "--check", "internal/selfhost/testdata/fmt/type.out.cero")
+	if code != 0 {
+		t.Fatalf("golden --check exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+}
+
+func TestFmtSyntaxError(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	dir := filepath.Join(root, "internal/selfhost/testdata/.out/fmterr")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove %s: %v", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	rel := "internal/selfhost/testdata/.out/fmterr/bad.cero"
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("fn f( { }\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	stdout, stderr, code := runCero(t, root, "fmt", rel)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q", stdout)
+	}
+	if !strings.Contains(stderr, rel+":") {
+		t.Errorf("stderr = %q, want the file name", stderr)
+	}
+	if !strings.HasSuffix(stderr, "\n") {
+		t.Errorf("stderr = %q, want a trailing newline", stderr)
+	}
+}
+
+func fmtCorpus(t *testing.T, root string) []string {
+	t.Helper()
+
+	var files []string
+	addTree := func(rel string) {
+		t.Helper()
+		err := filepath.Walk(filepath.Join(root, rel), func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".cero") {
+				return nil
+			}
+			name, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			files = append(files, name)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", rel, err)
+		}
+	}
+	addTree("examples")
+	addTree("std")
+	addTree("compiler")
+	addTree("internal/selfhost/testdata/check_ok")
+	addTree("internal/selfhost/testdata/programs")
+	files = append(files, relGlob(t, root, "internal/selfhost/testdata/fmt/*.in.cero")...)
+	sort.Strings(files)
+	return files
+}
+
+func commentBodies(src []byte) []string {
+	var out []string
+	i := 0
+	for i < len(src) {
+		switch src[i] {
+		case '"':
+			i = skipQuote(src, i, '"')
+		case '\'':
+			i = skipQuote(src, i, '\'')
+		case '/':
+			if i+1 < len(src) && src[i+1] == '/' {
+				j := i + 2
+				for j < len(src) && src[j] != '\n' {
+					j++
+				}
+				out = append(out, string(src[i+2:j]))
+				i = j
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return out
+}
+
+func skipQuote(src []byte, i int, quote byte) int {
+	i++
+	for i < len(src) {
+		if src[i] == '\\' {
+			i += 2
+			if i > len(src) {
+				return len(src)
+			}
+			continue
+		}
+		if src[i] == quote || src[i] == '\n' {
+			return i + 1
+		}
+		i++
+	}
+	return i
 }
 
 func skipNoWasmtime(t *testing.T) {

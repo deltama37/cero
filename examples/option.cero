@@ -1,5 +1,4 @@
 // expected output: 42
-
 type Option[T] =
     | None
     | Some(T)
@@ -30,6 +29,10 @@ fn main() -> Int {
     let a = withDefault(mapOption(safeDiv(84, 2), fn(x: Int) -> Int { x - 2 }), 0)
     let b = withDefault(safeDiv(1, 0), 2)
     let nested = Some(Some(true))
-    let c = if withDefault(withDefault(nested, None), false) { 0 } else { 100 }
+    let c = if withDefault(withDefault(nested, None), false) {
+        0
+    } else {
+        100
+    }
     a + b + c
 }

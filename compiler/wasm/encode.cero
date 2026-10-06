@@ -8,13 +8,17 @@ import "wasm/leb128"
 import "wasm/strfunc"
 import "wasm/iofunc"
 
-type WaGrp = | WaGrp(Int, Int)
+type WaGrp =
+    | WaGrp(Int, Int)
 
-type TyAcc = | TyAcc(List[Sig], StrMap[Int], Int)
+type TyAcc =
+    | TyAcc(List[Sig], StrMap[Int], Int)
 
-type NewsAcc = | NewsAcc(List[List[ValType]], StrMap[Int])
+type NewsAcc =
+    | NewsAcc(List[List[ValType]], StrMap[Int])
 
-type WaCtx = | WaCtx(List[Int], StrMap[Int], Int, StrMap[Int], StrMap[Int], WaStrFn, Int, WaIoFn)
+type WaCtx =
+    | WaCtx(List[Int], StrMap[Int], Int, StrMap[Int], StrMap[Int], WaStrFn, Int, WaIoFn)
 
 fn waValType(t: ValType) -> Int {
     match t {
@@ -370,22 +374,31 @@ fn waSigTypes(xs: List[Sig], types: StrMap[Int], b: Bytes) -> Bytes {
     }
 }
 
-fn waFuncSection(
-    funcs: List[IrFunc],
-    types: StrMap[Int],
-    aux: List[Sig],
-    ioSigs: List[Sig],
-    mem: Bool,
-    startType: Int
-) -> Bytes {
+fn waFuncSection(funcs: List[IrFunc], types: StrMap[Int], aux: List[Sig], ioSigs: List[Sig], mem: Bool, startType: Int) -> Bytes {
     let n0 = length(funcs)
-    let n1 = if mem { n0 + length(aux) + length(ioSigs) } else { n0 }
-    let n = if startType >= 0 { n1 + 1 } else { n1 }
+    let n1 = if mem {
+        n0 + length(aux) + length(ioSigs)
+    } else {
+        n0
+    }
+    let n = if startType >= 0 {
+        n1 + 1
+    } else {
+        n1
+    }
     let b0 = waUleb128(n)
     let b1 = waFuncTypes(funcs, types, b0)
     let b2 = waSigTypes(aux, types, b1)
-    let b3 = if mem { waSigTypes(ioSigs, types, b2) } else { b2 }
-    let b4 = if startType >= 0 { waCat(b3, waUleb128(startType)) } else { b3 }
+    let b3 = if mem {
+        waSigTypes(ioSigs, types, b2)
+    } else {
+        b2
+    }
+    let b4 = if startType >= 0 {
+        waCat(b3, waUleb128(startType))
+    } else {
+        b3
+    }
     waSection(3, b4)
 }
 
@@ -520,7 +533,11 @@ fn waEncodeLocals(sig: Sig, locals: List[ValType], scratch: Bool) -> Bytes {
     match sig {
         IrSig(params, _) => {
             let groups = waLocalGroups(waDropLocals(locals, length(params)), Nil)
-            let groups2 = if scratch { waAddGrp(groups, 126) } else { groups }
+            let groups2 = if scratch {
+                waAddGrp(groups, 126)
+            } else {
+                groups
+            }
             waEncodeGroups(reverse(groups2), waUleb128(length(groups2)))
         },
     }
@@ -611,26 +628,14 @@ fn waHead(args: List[IrExpr]) -> IrExpr {
     }
 }
 
-fn waArgs(
-    ctx: WaCtx,
-    result: ValType,
-    scratch: Int,
-    b: Bytes,
-    args: List[IrExpr]
-) -> Bytes {
+fn waArgs(ctx: WaCtx, result: ValType, scratch: Int, b: Bytes, args: List[IrExpr]) -> Bytes {
     match args {
         Nil => b,
         Cons(a, rest) => waArgs(ctx, result, scratch, waExpr(ctx, result, scratch, b, a), rest),
     }
 }
 
-fn waLets(
-    ctx: WaCtx,
-    result: ValType,
-    scratch: Int,
-    b: Bytes,
-    lets: List[IrLet]
-) -> Bytes {
+fn waLets(ctx: WaCtx, result: ValType, scratch: Int, b: Bytes, lets: List[IrLet]) -> Bytes {
     match lets {
         Nil => b,
         Cons(one, rest) => match one {
@@ -660,17 +665,7 @@ fn waDefNone(def: Option[IrExpr]) -> Bool {
     }
 }
 
-fn waSwitch(
-    ctx: WaCtx,
-    result: ValType,
-    scratch: Int,
-    b: Bytes,
-    local: Int,
-    cases: List[IrTagCase],
-    def: Option[IrExpr],
-    t: ValType,
-    i: Int
-) -> Bytes {
+fn waSwitch(ctx: WaCtx, result: ValType, scratch: Int, b: Bytes, local: Int, cases: List[IrTagCase], def: Option[IrExpr], t: ValType, i: Int) -> Bytes {
     let n = length(cases)
     if waDefNone(def) && i == n - 1 {
         match waNthCase(cases, i) {
@@ -696,27 +691,14 @@ fn waSwitch(
     }
 }
 
-fn waConstr(
-    ctx: WaCtx,
-    result: ValType,
-    scratch: Int,
-    b: Bytes,
-    fields: List[IrExpr],
-    rev: List[ValType]
-) -> Pair[Bytes, List[ValType]] {
+fn waConstr(ctx: WaCtx, result: ValType, scratch: Int, b: Bytes, fields: List[IrExpr], rev: List[ValType]) -> Pair[Bytes, List[ValType]] {
     match fields {
         Nil => Pair(b, rev),
         Cons(f, rest) => waConstr(ctx, result, scratch, waExpr(ctx, result, scratch, b, f), rest, Cons(irExprType(f), rev)),
     }
 }
 
-fn waExpr(
-    ctx: WaCtx,
-    result: ValType,
-    scratch: Int,
-    b: Bytes,
-    e: IrExpr
-) -> Bytes {
+fn waExpr(ctx: WaCtx, result: ValType, scratch: Int, b: Bytes, e: IrExpr) -> Bytes {
     match e {
         IrIntConst(v) => waI64(b, v),
         IrBoolConst(v) => if v {
@@ -761,7 +743,11 @@ fn waExpr(
         IrCall(func, args, _, tail) => match ctx {
             WaCtx(_, _, _, _, _, _, base, _) => {
                 let b1 = waArgs(ctx, result, scratch, b, args)
-                let op = if tail { 18 } else { 16 }
+                let op = if tail {
+                    18
+                } else {
+                    16
+                }
                 waU(waCat(b1, waByte(op)), func + base)
             },
         },
@@ -772,7 +758,11 @@ fn waExpr(
                 let b3 = waLocalTee(b2, scratch)
                 let b4 = waRaw(waRaw(waI64(b3, 32), Cons(136, Nil)), Cons(167, Nil))
                 let b5 = waRaw(waLocalGet(b4, scratch), Cons(167, Nil))
-                let op = if tail { 19 } else { 17 }
+                let op = if tail {
+                    19
+                } else {
+                    17
+                }
                 let ty = waLookup(types, waSigKey(waIndirectSig(sig)))
                 waRaw(waU(waCat(b5, waByte(op)), ty), Cons(0, Nil))
             },
@@ -812,7 +802,11 @@ fn waEncodeBody(ctx: WaCtx, func: IrFunc) -> Bytes {
     match func {
         IrFunc(_, sig, locals, body) => match sig {
             IrSig(_, result) => {
-                let scratch = if waUsesCI(body) { length(locals) } else { -1 }
+                let scratch = if waUsesCI(body) {
+                    length(locals)
+                } else {
+                    -1
+                }
                 let b = waEncodeLocals(sig, locals, scratch >= 0)
                 waCat(waExpr(ctx, result, scratch, b, body), waByte(11))
             },
@@ -838,25 +832,20 @@ fn waCodeNews(allocIdx: Int, news: List[List[ValType]], b: Bytes) -> Bytes {
     }
 }
 
-fn waCode(
-    ctx: WaCtx,
-    funcs: List[IrFunc],
-    main: Int,
-    mem: Bool,
-    news: List[List[ValType]],
-    strs: WaStrUse,
-    io: WaIoUse,
-    startType: Int,
-    closureType: Int,
-    readMsg: Int,
-    writeMsg: Int,
-    nl: Int
-) -> Bytes {
+fn waCode(ctx: WaCtx, funcs: List[IrFunc], main: Int, mem: Bool, news: List[List[ValType]], strs: WaStrUse, io: WaIoUse, startType: Int, closureType: Int, readMsg: Int, writeMsg: Int, nl: Int) -> Bytes {
     match ctx {
         WaCtx(_, _, allocIdx, _, _, strFn, base, ioFn) => {
             let n0 = length(funcs)
-            let n1 = if mem { n0 + 1 + length(news) + waStrCount(strs) + waIoCount(io) } else { n0 }
-            let n = if startType >= 0 { n1 + 1 } else { n1 }
+            let n1 = if mem {
+                n0 + 1 + length(news) + waStrCount(strs) + waIoCount(io)
+            } else {
+                n0
+            }
+            let n = if startType >= 0 {
+                n1 + 1
+            } else {
+                n1
+            }
             let b0 = waUleb128(n)
             let b1 = waCodeFuncs(ctx, funcs, b0)
             let b2 = if mem {
@@ -897,30 +886,90 @@ pub fn encodeModule(m: IrModule) -> String {
                 NewsAcc(Nil, smEmpty())
             }
             let news = match newsRev {
-                NewsAcc(rev, _) => if mem { reverse(rev) } else { Nil },
+                NewsAcc(rev, _) => if mem {
+                    reverse(rev)
+                } else {
+                    Nil
+                },
             }
-            let strs0 = if mem { waWalkFuncs(funcs, waStrEmpty(), waStrVisit) } else { waStrEmpty() }
+            let strs0 = if mem {
+                waWalkFuncs(funcs, waStrEmpty(), waStrVisit)
+            } else {
+                waStrEmpty()
+            }
             let Pair(readFile, writeFile) = waReadWrite(io)
-            let strs = if mem && (readFile || writeFile) { waStrForceConcat(strs0) } else { strs0 }
-            let lay0 = if mem { waWalkFuncs(funcs, waLayEmpty(), waLayVisit) } else { waLayEmpty() }
-            let lay1 = if mem && readFile { waLayAdd(lay0, "error: cannot read file ") } else { lay0 }
-            let lay2 = if mem && writeFile { waLayAdd(lay1, "error: cannot write file ") } else { lay1 }
-            let lay = if mem && (readFile || writeFile) { waLayAdd(lay2, "\n") } else { lay2 }
+            let strs = if mem && (readFile || writeFile) {
+                waStrForceConcat(strs0)
+            } else {
+                strs0
+            }
+            let lay0 = if mem {
+                waWalkFuncs(funcs, waLayEmpty(), waLayVisit)
+            } else {
+                waLayEmpty()
+            }
+            let lay1 = if mem && readFile {
+                waLayAdd(lay0, "error: cannot read file ")
+            } else {
+                lay0
+            }
+            let lay2 = if mem && writeFile {
+                waLayAdd(lay1, "error: cannot write file ")
+            } else {
+                lay1
+            }
+            let lay = if mem && (readFile || writeFile) {
+                waLayAdd(lay2, "\n")
+            } else {
+                lay2
+            }
             let nfuncs = length(funcs)
-            let aux = if mem { waAuxSigs(news, strs) } else { Nil }
-            let wasiSigs = if wasi { waWasiSigs() } else { Nil }
-            let ioSigs = if wasi { waIoSigs(io) } else { Nil }
+            let aux = if mem {
+                waAuxSigs(news, strs)
+            } else {
+                Nil
+            }
+            let wasiSigs = if wasi {
+                waWasiSigs()
+            } else {
+                Nil
+            }
+            let ioSigs = if wasi {
+                waIoSigs(io)
+            } else {
+                Nil
+            }
             let types0: StrMap[Int] = smEmpty()
             let acc = waAddSigs(ioSigs, waAddSigs(wasiSigs, waAddSigs(aux, waWalkFuncs(funcs, waFuncSigs(funcs, TyAcc(Nil, types0, 0)), waCIVisit))))
             match acc {
                 TyAcc(rev, types, sigCount) => match lay {
                     WaLay(addr, heap, data) => {
                         let sigs = reverse(rev)
-                        let procExit = if wasi { sigCount } else { -1 }
-                        let voids1 = if wasi { Cons(Cons(VtPtr, Nil), Nil) } else { Nil }
-                        let startType = if command { sigCount + length(voids1) } else { -1 }
-                        let voids = if command { append(voids1, Cons(Nil, Nil)) } else { voids1 }
-                        let base = if wasi { 7 } else { 0 }
+                        let procExit = if wasi {
+                            sigCount
+                        } else {
+                            -1
+                        }
+                        let voids1 = if wasi {
+                            Cons(Cons(VtPtr, Nil), Nil)
+                        } else {
+                            Nil
+                        }
+                        let startType = if command {
+                            sigCount + length(voids1)
+                        } else {
+                            -1
+                        }
+                        let voids = if command {
+                            append(voids1, Cons(Nil, Nil))
+                        } else {
+                            voids1
+                        }
+                        let base = if wasi {
+                            7
+                        } else {
+                            0
+                        }
                         let allocIdx = nfuncs + base
                         let newMap: StrMap[Int] = waNewIndex(allocIdx, news)
                         let strFn = waStrIndices(allocIdx, length(news), strs)
@@ -958,7 +1007,11 @@ pub fn encodeModule(m: IrModule) -> String {
                         let writeMsg = waLookup(addr, "error: cannot write file ")
                         let nl = waLookup(addr, "\n")
                         let out8 = waCat(out7, waCode(ctx, funcs, main, mem, news, strs, io, startType, closure, readMsg, writeMsg, nl))
-                        let out9 = if waLength(data) > 0 { waCat(out8, waData(data)) } else { out8 }
+                        let out9 = if waLength(data) > 0 {
+                            waCat(out8, waData(data))
+                        } else {
+                            out8
+                        }
                         waToString(out9)
                     },
                 },

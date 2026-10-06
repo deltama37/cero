@@ -6,7 +6,11 @@ fn wcGo(s: String, i: Int, lines: Int, words: Int, inWord: Bool) -> IO[Unit] {
         println(intToString(lines) ++ " " ++ intToString(words) ++ " " ++ intToString(stringLength(s)))
     } else {
         let b = stringByteAt(s, i)
-        let nextLines = if b == stringByteAt("\n", 0) { lines + 1 } else { lines }
+        let nextLines = if b == stringByteAt("\n", 0) {
+            lines + 1
+        } else {
+            lines
+        }
         if isSpace(b) {
             wcGo(s, i + 1, nextLines, words, false)
         } else if inWord {

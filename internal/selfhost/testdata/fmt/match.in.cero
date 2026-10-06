@@ -1,0 +1,1 @@
+fn num(x:Color)->Int{match x{Red=>1,Green(n)=>{let m=n+1 m},Blue=>3}}

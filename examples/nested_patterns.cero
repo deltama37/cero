@@ -1,5 +1,4 @@
 // expected output: 42
-
 type List[T] =
     | Nil
     | Cons(T, List[T])
@@ -8,7 +7,8 @@ type Option[T] =
     | None
     | Some(T)
 
-type Pair[A, B] = Pair(A, B)
+type Pair[A, B] =
+    | Pair(A, B)
 
 fn sumPairs(xs: List[Int]) -> Int {
     match xs {

@@ -1,5 +1,4 @@
 // expected output: 15
-
 type IntList =
     | Nil
     | Cons(Int, IntList)

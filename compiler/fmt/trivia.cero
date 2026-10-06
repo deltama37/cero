@@ -1,0 +1,260 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/diag"
+import "syntax/lexer"
+import "syntax/token"
+import "util/intmap"
+
+pub type FmTk =
+    | FmTk(Int, Int, Int, String)
+
+pub type FmIt =
+    | FmIt(Int, Int, Int)
+
+pub type FmRegion =
+    | FmRegion(Int, Int, Int, List[FmIt])
+
+pub type FmNotes =
+    | FmNotes(IntMap[List[String]], IntMap[String], IntMap[List[String]])
+
+pub fn fmKey(line: Int, col: Int) -> Int {
+    line * 1000000 + col
+}
+
+fn fmTokAcc(raws: List[RawToken], acc: List[FmTk]) -> List[FmTk] {
+    match raws {
+        Nil => reverse(acc),
+        Cons(r, rest) => match r {
+            RawToken(pos, k, text) => if kindToInt(k) == 0 {
+                fmTokAcc(rest, acc)
+            } else {
+                let Pos(line, col) = pos
+                fmTokAcc(rest, Cons(FmTk(kindToInt(k), line, col, text), acc))
+            },
+        },
+    }
+}
+
+pub fn fmTokList(raws: List[RawToken]) -> List[FmTk] {
+    fmTokAcc(raws, Nil)
+}
+
+fn fmTextAcc(raws: List[RawToken], acc: IntMap[String]) -> IntMap[String] {
+    match raws {
+        Nil => acc,
+        Cons(r, rest) => match r {
+            RawToken(pos, _, text) => {
+                let Pos(line, col) = pos
+                fmTextAcc(rest, imInsert(acc, fmKey(line, col), text))
+            },
+        },
+    }
+}
+
+pub fn fmTextMap(raws: List[RawToken]) -> IntMap[String] {
+    fmTextAcc(raws, imEmpty())
+}
+
+fn fmKindAcc(raws: List[RawToken], acc: IntMap[Int]) -> IntMap[Int] {
+    match raws {
+        Nil => acc,
+        Cons(r, rest) => match r {
+            RawToken(pos, k, _) => {
+                let Pos(line, col) = pos
+                fmKindAcc(rest, imInsert(acc, fmKey(line, col), kindToInt(k)))
+            },
+        },
+    }
+}
+
+pub fn fmKindMap(raws: List[RawToken]) -> IntMap[Int] {
+    fmKindAcc(raws, imEmpty())
+}
+
+fn fmEmptyNotes() -> FmNotes {
+    FmNotes(imEmpty(), imEmpty(), imEmpty())
+}
+
+pub fn fmLead(n: FmNotes, id: Int) -> List[String] {
+    match n {
+        FmNotes(lead, _, _) => match imLookup(lead, id) {
+            Some(xs) => xs,
+            None => Nil,
+        },
+    }
+}
+
+pub fn fmEol(n: FmNotes, id: Int) -> String {
+    match n {
+        FmNotes(_, eol, _) => match imLookup(eol, id) {
+            Some(s) => s,
+            None => "",
+        },
+    }
+}
+
+pub fn fmTrail(n: FmNotes, id: Int) -> List[String] {
+    match n {
+        FmNotes(_, _, trail) => match imLookup(trail, id) {
+            Some(xs) => xs,
+            None => Nil,
+        },
+    }
+}
+
+fn fmAddLead(n: FmNotes, id: Int, text: String) -> FmNotes {
+    match n {
+        FmNotes(lead, eol, trail) => {
+            let cur = match imLookup(lead, id) {
+                Some(xs) => xs,
+                None => Nil,
+            }
+            FmNotes(imInsert(lead, id, append(cur, Cons(text, Nil))), eol, trail)
+        },
+    }
+}
+
+fn fmSetEol(n: FmNotes, id: Int, text: String) -> FmNotes {
+    match n {
+        FmNotes(lead, eol, trail) => FmNotes(lead, imInsert(eol, id, text), trail),
+    }
+}
+
+fn fmAddTrail(n: FmNotes, id: Int, text: String) -> FmNotes {
+    match n {
+        FmNotes(lead, eol, trail) => {
+            let cur = match imLookup(trail, id) {
+                Some(xs) => xs,
+                None => Nil,
+            }
+            FmNotes(lead, eol, imInsert(trail, id, append(cur, Cons(text, Nil))))
+        },
+    }
+}
+
+fn fmContains(r: FmRegion, line: Int) -> Bool {
+    match r {
+        FmRegion(_, start, end, _) => start <= line && line <= end,
+    }
+}
+
+fn fmBetter(a: FmRegion, b: FmRegion) -> Bool {
+    let FmRegion(aid, a0, a1, _) = a
+    let FmRegion(bid, b0, b1, _) = b
+    let sa = a1 - a0
+    let sb = b1 - b0
+    if sa < sb {
+        true
+    } else if sa > sb {
+        false
+    } else {
+        aid > bid
+    }
+}
+
+fn fmBest(rs: List[FmRegion], line: Int, best: Option[FmRegion]) -> Option[FmRegion] {
+    match rs {
+        Nil => best,
+        Cons(r, rest) => if fmContains(r, line) {
+            match best {
+                None => fmBest(rest, line, Some(r)),
+                Some(b) => if fmBetter(r, b) {
+                    fmBest(rest, line, Some(r))
+                } else {
+                    fmBest(rest, line, best)
+                },
+            }
+        } else {
+            fmBest(rest, line, best)
+        },
+    }
+}
+
+fn fmItemAt(items: List[FmIt], line: Int) -> Option[FmIt] {
+    match items {
+        Nil => None,
+        Cons(it, rest) => match it {
+            FmIt(_, start, _) => if start == line {
+                Some(it)
+            } else {
+                fmItemAt(rest, line)
+            },
+        },
+    }
+}
+
+fn fmStrict(items: List[FmIt], line: Int) -> Option[FmIt] {
+    match items {
+        Nil => None,
+        Cons(it, rest) => match it {
+            FmIt(_, start, end) => if start < line && line < end {
+                Some(it)
+            } else {
+                fmStrict(rest, line)
+            },
+        },
+    }
+}
+
+fn fmAfter(items: List[FmIt], line: Int) -> Option[FmIt] {
+    match items {
+        Nil => None,
+        Cons(it, rest) => match it {
+            FmIt(_, start, _) => if start > line {
+                Some(it)
+            } else {
+                fmAfter(rest, line)
+            },
+        },
+    }
+}
+
+fn fmPlaceLine(reg: FmRegion, line: Int, text: String, notes: FmNotes) -> FmNotes {
+    let FmRegion(id, _, _, items) = reg
+    match fmStrict(items, line) {
+        Some(it) => match it {
+            FmIt(iid, _, _) => fmAddLead(notes, iid, text),
+        },
+        None => match fmAfter(items, line) {
+            Some(it) => match it {
+                FmIt(iid, _, _) => fmAddLead(notes, iid, text),
+            },
+            None => fmAddTrail(notes, id, text),
+        },
+    }
+}
+
+fn fmPlace(reg: FmRegion, line: Int, text: String, lineCmt: Bool, notes: FmNotes) -> FmNotes {
+    let FmRegion(_, _, _, items) = reg
+    if lineCmt {
+        fmPlaceLine(reg, line, text, notes)
+    } else {
+        match fmItemAt(items, line) {
+            Some(it) => match it {
+                FmIt(iid, _, _) => fmSetEol(notes, iid, text),
+            },
+            None => fmPlaceLine(reg, line, text, notes),
+        }
+    }
+}
+
+fn fmAnnAll(cs: List[Comment], rs: List[FmRegion], notes: FmNotes) -> FmNotes {
+    match cs {
+        Nil => notes,
+        Cons(c, rest) => match c {
+            Comment(pos, text, lineCmt) => {
+                let Pos(line, _) = pos
+                let notes2 = match fmBest(rs, line, None) {
+                    None => fmAddTrail(notes, 0, text),
+                    Some(reg) => fmPlace(reg, line, text, lineCmt, notes),
+                }
+                fmAnnAll(rest, rs, notes2)
+            },
+        },
+    }
+}
+
+pub fn fmAnnotate(comments: List[Comment], regions: List[FmRegion]) -> FmNotes {
+    fmAnnAll(comments, regions, fmEmptyNotes())
+}

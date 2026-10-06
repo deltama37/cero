@@ -24,10 +24,7 @@ fn paren(name: String, parts: List[Doc]) -> Doc {
 
 fn formatSig(s: Sig) -> Doc {
     let IrSig(ps, r) = s
-    docConcat(Cons(
-        docText("(sig ("),
-        Cons(docJoin(vtDocs(ps, Nil), " "), Cons(docText(") " ++ irValName(r) ++ ")"), Nil))
-    ))
+    docConcat(Cons(docText("(sig ("), Cons(docJoin(vtDocs(ps, Nil), " "), Cons(docText(") " ++ irValName(r) ++ ")"), Nil))))
 }
 
 fn formatLocals(ls: List[ValType]) -> Doc {
@@ -115,7 +112,11 @@ fn formatCases(cs: List[IrTagCase], acc: List[Doc]) -> List[Doc] {
 fn irFormatExpr(e: IrExpr) -> Doc {
     match e {
         IrIntConst(n) => docText(intToString(n)),
-        IrBoolConst(b) => if b { docText("true") } else { docText("false") },
+        IrBoolConst(b) => if b {
+            docText("true")
+        } else {
+            docText("false")
+        },
         IrStrConst(s) => docText("(str " ++ quoteString(s) ++ ")"),
         IrLocalGet(id, _) => docText("(local " ++ intToString(id) ++ ")"),
         IrFuncValue(id, env) => match env {
@@ -127,11 +128,19 @@ fn irFormatExpr(e: IrExpr) -> Doc {
         IrIf(c, t, el, _) => paren("if", Cons(irFormatExpr(c), Cons(irFormatExpr(t), Cons(irFormatExpr(el), Nil)))),
         IrBlock(lets, result) => paren("block", append(formatLets(lets, Nil), Cons(irFormatExpr(result), Nil))),
         IrCall(id, args, _, tail) => {
-            let name = if tail { "return.call" } else { "call" }
+            let name = if tail {
+                "return.call"
+            } else {
+                "call"
+            }
             paren(name, Cons(docText(intToString(id)), exprDocs(args, Nil)))
         },
         IrCallIndirect(callee, sig, args, tail) => {
-            let name = if tail { "return.call.indirect" } else { "call.indirect" }
+            let name = if tail {
+                "return.call.indirect"
+            } else {
+                "call.indirect"
+            }
             paren(name, Cons(formatSig(sig), Cons(irFormatExpr(callee), exprDocs(args, Nil))))
         },
         IrConstruct(tag, fields) => paren("construct", Cons(docText(intToString(tag)), exprDocs(fields, Nil))),
@@ -149,10 +158,7 @@ fn irFormatExpr(e: IrExpr) -> Doc {
 
 fn formatFunc(id: Int, f: IrFunc) -> Doc {
     let IrFunc(name, sig, locals, body) = f
-    docConcat(Cons(
-        docText("(func " ++ intToString(id) ++ " " ++ name ++ " "),
-        Cons(formatSig(sig), Cons(docText(" "), Cons(formatLocals(locals), Cons(docText(" "), Cons(irFormatExpr(body), Cons(docText(")"), Nil))))))
-    ))
+    docConcat(Cons(docText("(func " ++ intToString(id) ++ " " ++ name ++ " "), Cons(formatSig(sig), Cons(docText(" "), Cons(formatLocals(locals), Cons(docText(" "), Cons(irFormatExpr(body), Cons(docText(")"), Nil))))))))
 }
 
 fn formatFuncs(fs: List[IrFunc], i: Int, acc: List[Doc]) -> List[Doc] {

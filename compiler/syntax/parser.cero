@@ -7,15 +7,18 @@ import "syntax/k"
 import "syntax/lexer"
 import "util/quote"
 
-type PState = | PState(List[Tok], Int)
+type PState =
+    | PState(List[Tok], Int)
 
 type PResult[A] =
     | POk(A, PState)
     | PErr(Error)
 
-type P[A] = | P(PState -> PResult[A])
+type P[A] =
+    | P(PState -> PResult[A])
 
-type TypeHead = | TypeHead(Option[TypeExpr], List[TypeExpr], Bool, Pos)
+type TypeHead =
+    | TypeHead(Option[TypeExpr], List[TypeExpr], Bool, Pos)
 
 fn bind[A, B](m: P[A], f: A -> P[B]) -> P[B] {
     P(fn(s: PState) -> PResult[B] {
@@ -500,7 +503,7 @@ fn parseLetBang(letPos: Pos) -> P[Expr] {
     let Tok(tag, text, namePos) = tok
     if tag == kIdent() && isUpperName(text) {
         fail(errorf(namePos, "patterns are not supported in 'let!'"))
-    } else if tag == kUnderscore() || (tag == kIdent() && isVarName(text)) {
+    } else if tag == kUnderscore() || tag == kIdent() && isVarName(text) {
         let! _ = advance()
         let! typ = parseOptAnn()
         let! _ = expect(kAssign())
@@ -776,7 +779,11 @@ fn parseTypeDecl() -> P[TypeDecl] {
             let! _ = expect(kAssign())
             let! bar = cur()
             let Tok(tagb, _, _) = bar
-            let! _ = if tagb == kBar() { advance() } else { pure(()) }
+            let! _ = if tagb == kBar() {
+                advance()
+            } else {
+                pure(())
+            }
             let! ctor = parseCtorDecl()
             let! ctors = parseMoreCtors(Cons(ctor, Nil))
             let! id = fresh()

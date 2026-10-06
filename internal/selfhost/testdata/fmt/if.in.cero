@@ -1,0 +1,1 @@
+fn pick(c:Bool,d:Bool)->Int{if c{1}else if d{2}else{3}}

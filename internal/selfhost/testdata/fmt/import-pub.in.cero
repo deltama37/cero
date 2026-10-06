@@ -1,0 +1,6 @@
+import "std/list"
+import "std/option"
+
+pub type Box[T]=|Box(T)
+
+pub fn id[T](x:T)->T{x}

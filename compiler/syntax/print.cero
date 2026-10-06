@@ -78,7 +78,11 @@ fn patternDoc(p: Pattern) -> Doc {
         },
         IntP(_, _, v) => docText(intToString(v)),
         StrP(_, _, s) => docText(quoteString(s)),
-        BoolP(_, _, v) => if v { docText("true") } else { docText("false") },
+        BoolP(_, _, v) => if v {
+            docText("true")
+        } else {
+            docText("false")
+        },
     }
 }
 
@@ -92,7 +96,11 @@ fn exprDoc(e: Expr) -> Doc {
     match e {
         IntLit(_, _, v) => docText(intToString(v)),
         StringLit(_, _, s) => docText(quoteString(s)),
-        BoolLit(_, _, v) => if v { docText("true") } else { docText("false") },
+        BoolLit(_, _, v) => if v {
+            docText("true")
+        } else {
+            docText("false")
+        },
         UnitLit(_, _) => docText("()"),
         Ident(_, _, name) => docText(name),
         Unary(_, _, op, x) => docConcat(Cons(docText("(" ++ unaryOpName(op) ++ " "), Cons(exprDoc(x), Cons(docText(")"), Nil)))),
@@ -123,7 +131,11 @@ fn ctorDoc(c: CtorDecl) -> Doc {
 fn typeDeclDoc(d: TypeDecl) -> Doc {
     match d {
         TypeDecl(_, _, isPub, name, _, tps, ctors) => {
-            let head = if isPub { "(pub type " } else { "(type " }
+            let head = if isPub {
+                "(pub type "
+            } else {
+                "(type "
+            }
             let first = docCat(docText(name), typeParamsDoc(tps))
             let parts = Cons(first, map(ctors, ctorDoc))
             docConcat(Cons(docText(head), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
@@ -134,7 +146,11 @@ fn typeDeclDoc(d: TypeDecl) -> Doc {
 fn funcDoc(d: FuncDecl) -> Doc {
     match d {
         FuncDecl(_, _, isPub, name, _, tps, params, res, body) => {
-            let head = if isPub { "(pub fn " } else { "(fn " }
+            let head = if isPub {
+                "(pub fn "
+            } else {
+                "(fn "
+            }
             docConcat(Cons(docText(head ++ name), Cons(typeParamsDoc(tps), Cons(docText(" ("), Cons(paramsDoc(params), Cons(docText(") "), Cons(optTypeDoc(res), Cons(docText(" "), Cons(blockDoc(body), Cons(docText(")"), Nil))))))))))
         },
     }

@@ -45,7 +45,8 @@ pub type Kind =
     | OrOr
     | Bang
 
-pub type Token = | Token(Kind, String, Pos)
+pub type Token =
+    | Token(Kind, String, Pos)
 
 pub fn kindToInt(k: Kind) -> Int {
     match k {

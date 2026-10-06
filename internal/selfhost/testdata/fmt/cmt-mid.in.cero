@@ -1,0 +1,7 @@
+fn f()->Int{
+    let y = g(
+        1,
+        // keep
+        2)
+    y
+}

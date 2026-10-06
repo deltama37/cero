@@ -8,9 +8,10 @@ import "check/program"
 import "ir/print"
 import "lower/lower"
 import "wasm/encode"
+import "fmt/fmt"
 
 fn usage() -> String {
-    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT]\n"
+    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT] | fmt [-w|--check] FILE...\n"
 }
 
 fn die(code: Int, msg: String) -> IO[Unit] {
@@ -21,6 +22,7 @@ fn die(code: Int, msg: String) -> IO[Unit] {
 type Parsed =
     | Usage
     | Cmd(String, String, String, String)
+    | FmtCmd(String, List[String])
 
 fn splitStd(xs: List[String], stdDir: String, acc: List[String]) -> Parsed {
     match xs {
@@ -59,6 +61,8 @@ fn parseCmd(stdDir: String, xs: List[String]) -> Parsed {
             parseCheck(stdDir, rest)
         } else if cmd == "build" {
             parseBuild(stdDir, rest, "", "")
+        } else if cmd == "fmt" {
+            parseFmt(rest)
         } else {
             Usage
         },
@@ -66,9 +70,46 @@ fn parseCmd(stdDir: String, xs: List[String]) -> Parsed {
     }
 }
 
+fn parseFmt(xs: List[String]) -> Parsed {
+    match xs {
+        Cons(flag, rest) => if flag == "-w" {
+            parseFmtFiles(rest, "w", Nil)
+        } else if flag == "--check" {
+            parseFmtFiles(rest, "check", Nil)
+        } else if stringLength(flag) > 0 && stringByteAt(flag, 0) == '-' {
+            Usage
+        } else {
+            match rest {
+                Nil => FmtCmd("", Cons(flag, Nil)),
+                _ => Usage,
+            }
+        },
+        Nil => Usage,
+    }
+}
+
+fn parseFmtFiles(xs: List[String], mode: String, acc: List[String]) -> Parsed {
+    match xs {
+        Nil => if length(acc) == 0 {
+            Usage
+        } else {
+            FmtCmd(mode, reverse(acc))
+        },
+        Cons(file, rest) => if stringLength(file) > 0 && stringByteAt(file, 0) == '-' {
+            Usage
+        } else {
+            parseFmtFiles(rest, mode, Cons(file, acc))
+        },
+    }
+}
+
 fn parseBuild(stdDir: String, xs: List[String], file: String, out: String) -> Parsed {
     match xs {
-        Nil => if file == "" { Usage } else { Cmd(stdDir, "build", file, out) },
+        Nil => if file == "" {
+            Usage
+        } else {
+            Cmd(stdDir, "build", file, out)
+        },
         Cons(a, rest) => if a == "-o" {
             match rest {
                 Nil => Usage,
@@ -150,7 +191,11 @@ fn runBuild(stdDir: String, file: String, out: String) -> IO[Unit] {
                 Err(e) => die(1, formatError(e) ++ "\n"),
                 Ok(info) => {
                     let wasm = encodeModule(lowerProgram(mods, info))
-                    let dest = if out == "" { defaultOutput(file) } else { out }
+                    let dest = if out == "" {
+                        defaultOutput(file)
+                    } else {
+                        out
+                    }
                     if dest == "-" {
                         print(wasm)
                     } else {
@@ -161,6 +206,56 @@ fn runBuild(stdDir: String, file: String, out: String) -> IO[Unit] {
         }
     } else {
         die(1, "ceroc: cannot read " ++ file ++ "\n")
+    }
+}
+
+fn fmtDie(code: Int, msg: String) -> IO[Bool] {
+    let! _ = eprint(msg)
+    let! _ = exit(code)
+    pure(false)
+}
+
+fn fmtOne(file: String, mode: String) -> IO[Bool] {
+    let! ok = fileExists(file)
+    if ok {
+        let! src = readFile(file)
+        match fmFormat(src) {
+            Err(e) => fmtDie(1, formatError(errorWithFile(e, file)) ++ "\n"),
+            Ok(out) => if mode == "w" {
+                if out == src {
+                    pure(false)
+                } else {
+                    let! _ = writeFile(file, out)
+                    pure(false)
+                }
+            } else if mode == "check" {
+                if out == src {
+                    pure(false)
+                } else {
+                    let! _ = print(file ++ "\n")
+                    pure(true)
+                }
+            } else {
+                let! _ = print(out)
+                pure(false)
+            },
+        }
+    } else {
+        fmtDie(1, "ceroc: cannot read " ++ file ++ "\n")
+    }
+}
+
+fn fmtAll(files: List[String], mode: String, bad: Bool) -> IO[Unit] {
+    match files {
+        Nil => if mode == "check" && bad {
+            exit(1)
+        } else {
+            pure(())
+        },
+        Cons(file, rest) => {
+            let! failed = fmtOne(file, mode)
+            fmtAll(rest, mode, bad || failed)
+        },
     }
 }
 
@@ -190,5 +285,6 @@ fn main() -> IO[Unit] {
     match splitStd(argv, "std", Nil) {
         Usage => die(2, usage()),
         Cmd(stdDir, cmd, file, flag) => dispatch(stdDir, cmd, file, flag),
+        FmtCmd(mode, files) => fmtAll(files, mode, false),
     }
 }

@@ -20,7 +20,11 @@ fn imHeight[V](m: IntMap[V]) -> Int {
 fn imNode[V](l: IntMap[V], k: Int, v: V, r: IntMap[V]) -> IntMap[V] {
     let hl = imHeight(l)
     let hr = imHeight(r)
-    let h = if hl > hr { hl + 1 } else { hr + 1 }
+    let h = if hl > hr {
+        hl + 1
+    } else {
+        hr + 1
+    }
     IMNode(l, k, v, r, h)
 }
 

@@ -1,0 +1,5 @@
+fn f() -> Int {
+    // keep
+    let y = g(1, 2)
+    y
+}

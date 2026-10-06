@@ -104,7 +104,20 @@ with design documents in [`docs/design/`](docs/design/):
   ([ADR-0013](docs/adr/0013-v0.11-conveniences-for-writing-a-compiler.md);
   `examples/conveniences.cero`)
 
-`ceroc fmt` is not implemented yet.
+`ceroc fmt` formats Cero source. The formatter is part of the Cero-written
+compiler ([ADR-0016](docs/adr/0016-ceroc-fmt.md)). The Go bootstrap does not
+format; it tells you to run the Cero-written compiler:
+
+```bash
+make selfhost-build
+./scripts/ceroc-cero fmt examples/fib.cero
+./scripts/ceroc-cero fmt -w examples/fib.cero
+make fmt-cero-check
+```
+
+`fmt FILE` writes the formatted source to standard output. `fmt -w FILE...`
+rewrites files in place. `fmt --check FILE...` prints each file that is not
+yet formatted and exits with status 1.
 
 ## Self-hosting
 

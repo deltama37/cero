@@ -14,9 +14,7 @@ fn catAll(i: Int, n: Int) -> IO[Unit] {
     if i == n {
         pure(())
     } else {
-        bind(argAt(i), fn(path: String) -> IO[Unit] {
-            bind(catFile(path), fn(ignored: Unit) -> IO[Unit] { catAll(i + 1, n) })
-        })
+        bind(argAt(i), fn(path: String) -> IO[Unit] { bind(catFile(path), fn(ignored: Unit) -> IO[Unit] { catAll(i + 1, n) }) })
     }
 }
 

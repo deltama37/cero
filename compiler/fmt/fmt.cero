@@ -1,0 +1,1706 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/ast"
+import "syntax/diag"
+import "syntax/k"
+import "syntax/lexer"
+import "syntax/parser"
+import "util/intmap"
+import "util/quote"
+import "fmt/trivia"
+
+type Open =
+    | Open(Int, Int, List[FmIt])
+
+type St =
+    | St(Int, List[Open], List[FmRegion], IntMap[Pair[Int, Int]])
+
+type Sc =
+    | Sc(St, Int, List[FmTk])
+
+type Src =
+    | Src(List[FmTk], IntMap[String], IntMap[Int], String, List[Comment])
+
+type Px =
+    | Px(Int, FmNotes, IntMap[Pair[Int, Int]], Src)
+
+type Ln =
+    | Ln(String, List[String])
+
+type Out =
+    | Out(Ln, Px)
+
+type Flat =
+    | FlLet(String, Option[TypeExpr], Expr)
+    | FlBang(String, Option[TypeExpr], Expr)
+    | FlPat(Pattern, Expr)
+    | FlRes(Expr)
+
+type Bang =
+    | Bang(String, Option[TypeExpr], Expr, Block)
+
+type PatB =
+    | PatB(Pattern, Expr, Expr)
+
+fn fmSt0() -> St {
+    St(0, Nil, Nil, imEmpty())
+}
+
+fn fmAlloc(st: St) -> Pair[Int, St] {
+    match st {
+        St(n, opens, regs, spans) => Pair(n, St(n + 1, opens, regs, spans)),
+    }
+}
+
+fn fmBegin(st: St, start: Int) -> St {
+    let Pair(id, st1) = fmAlloc(st)
+    match st1 {
+        St(n, opens, regs, spans) => match opens {
+            Nil => st1,
+            Cons(op, rest) => match op {
+                Open(rid, rs, items) => {
+                    let it = FmIt(id, start, start)
+                    let spans2 = imInsert(spans, id, Pair(start, start))
+                    St(n, Cons(Open(rid, rs, Cons(it, items)), rest), regs, spans2)
+                },
+            },
+        },
+    }
+}
+
+fn fmFinish(st: St, end: Int) -> St {
+    match st {
+        St(n, opens, regs, spans) => match opens {
+            Nil => st,
+            Cons(op, rest) => match op {
+                Open(rid, rs, items) => match items {
+                    Nil => st,
+                    Cons(it, more) => match it {
+                        FmIt(iid, istart, _) => {
+                            let it2 = FmIt(iid, istart, end)
+                            let spans2 = imInsert(spans, iid, Pair(istart, end))
+                            St(n, Cons(Open(rid, rs, Cons(it2, more)), rest), regs, spans2)
+                        },
+                    },
+                },
+            },
+        },
+    }
+}
+
+fn fmPush(st: St, start: Int) -> St {
+    let Pair(id, st1) = fmAlloc(st)
+    match st1 {
+        St(n, opens, regs, spans) => St(n, Cons(Open(id, start, Nil), opens), regs, spans),
+    }
+}
+
+fn fmPop(st: St, end: Int) -> St {
+    match st {
+        St(n, opens, regs, spans) => match opens {
+            Nil => st,
+            Cons(op, rest) => match op {
+                Open(id, start, items) => {
+                    let reg = FmRegion(id, start, end, reverse(items))
+                    let spans2 = imInsert(spans, id, Pair(start, end))
+                    St(n, rest, Cons(reg, regs), spans2)
+                },
+            },
+        },
+    }
+}
+
+fn fmKindH(ts: List[FmTk]) -> Int {
+    match ts {
+        Nil => -1,
+        Cons(t, _) => match t {
+            FmTk(k, _, _, _) => k,
+        },
+    }
+}
+
+fn fmLineH(ts: List[FmTk]) -> Int {
+    match ts {
+        Nil => 1,
+        Cons(t, _) => match t {
+            FmTk(_, line, _, _) => line,
+        },
+    }
+}
+
+fn fmDrop(ts: List[FmTk]) -> List[FmTk] {
+    match ts {
+        Nil => Nil,
+        Cons(_, rest) => rest,
+    }
+}
+
+fn fmOpenK(k: Int) -> Bool {
+    k == kLParen() || k == kLBrace() || k == kLBracket()
+}
+
+fn fmCloseK(k: Int) -> Bool {
+    k == kRParen() || k == kRBrace() || k == kRBracket()
+}
+
+fn fmSkipAssign(ts: List[FmTk], depth: Int) -> List[FmTk] {
+    match ts {
+        Nil => Nil,
+        Cons(t, rest) => match t {
+            FmTk(k, _, _, _) => if depth == 0 && k == kAssign() {
+                ts
+            } else if fmOpenK(k) {
+                fmSkipAssign(rest, depth + 1)
+            } else if fmCloseK(k) {
+                fmSkipAssign(rest, depth - 1)
+            } else {
+                fmSkipAssign(rest, depth)
+            },
+        },
+    }
+}
+
+type Skip =
+    | Skip(Int, List[FmTk])
+
+fn fmSkipGroup(ts: List[FmTk]) -> Skip {
+    match ts {
+        Nil => Skip(1, Nil),
+        Cons(t, rest) => match t {
+            FmTk(_, line, _, _) => fmSkipGroupAt(rest, 1, line),
+        },
+    }
+}
+
+fn fmSkipGroupAt(ts: List[FmTk], depth: Int, last: Int) -> Skip {
+    match ts {
+        Nil => Skip(last, Nil),
+        Cons(t, rest) => match t {
+            FmTk(k, line, _, _) => {
+                let d2 = if fmOpenK(k) {
+                    depth + 1
+                } else if fmCloseK(k) {
+                    depth - 1
+                } else {
+                    depth
+                }
+                if d2 == 0 {
+                    Skip(line, rest)
+                } else {
+                    fmSkipGroupAt(rest, d2, line)
+                }
+            },
+        },
+    }
+}
+
+fn fmSkipRest(ts: List[FmTk]) -> List[FmTk] {
+    match fmSkipGroup(ts) {
+        Skip(_, rest) => rest,
+    }
+}
+
+fn fmScanType(ts: List[FmTk]) -> List[FmTk] {
+    let rest = fmScanTypeAtom(ts)
+    if fmKindH(rest) == kArrow() {
+        fmScanType(fmDrop(rest))
+    } else {
+        rest
+    }
+}
+
+fn fmScanTypeAtom(ts: List[FmTk]) -> List[FmTk] {
+    let k = fmKindH(ts)
+    if k == kIdent() {
+        let rest = fmDrop(ts)
+        if fmKindH(rest) == kLBracket() {
+            fmSkipRest(rest)
+        } else {
+            rest
+        }
+    } else if k == kLParen() {
+        let rest = fmDrop(ts)
+        if fmKindH(rest) == kRParen() {
+            fmDrop(rest)
+        } else {
+            fmScanTypeTail(fmScanType(rest))
+        }
+    } else {
+        ts
+    }
+}
+
+fn fmScanTypeTail(ts: List[FmTk]) -> List[FmTk] {
+    if fmKindH(ts) == kComma() {
+        fmScanTypeTail(fmScanType(fmDrop(ts)))
+    } else if fmKindH(ts) == kRParen() {
+        fmDrop(ts)
+    } else {
+        ts
+    }
+}
+
+fn fmScanParams(ts: List[FmTk]) -> List[FmTk] {
+    if fmKindH(ts) == kLParen() {
+        fmScanParamsBody(fmDrop(ts))
+    } else {
+        ts
+    }
+}
+
+fn fmScanParamsBody(ts: List[FmTk]) -> List[FmTk] {
+    if fmKindH(ts) == kRParen() {
+        fmDrop(ts)
+    } else {
+        let rest = fmDrop(ts)
+        let rest2 = if fmKindH(rest) == kColon() {
+            fmScanType(fmDrop(rest))
+        } else {
+            rest
+        }
+        if fmKindH(rest2) == kComma() {
+            fmScanParamsBody(fmDrop(rest2))
+        } else if fmKindH(rest2) == kRParen() {
+            fmDrop(rest2)
+        } else {
+            rest2
+        }
+    }
+}
+
+fn fmScanPattern(ts: List[FmTk]) -> List[FmTk] {
+    let rest = fmDrop(ts)
+    if fmKindH(rest) == kLParen() {
+        fmScanPats(fmDrop(rest))
+    } else {
+        rest
+    }
+}
+
+fn fmScanPats(ts: List[FmTk]) -> List[FmTk] {
+    if fmKindH(ts) == kRParen() {
+        fmDrop(ts)
+    } else {
+        let rest = fmScanPattern(ts)
+        if fmKindH(rest) == kComma() {
+            fmScanPats(fmDrop(rest))
+        } else if fmKindH(rest) == kRParen() {
+            fmDrop(rest)
+        } else {
+            rest
+        }
+    }
+}
+
+fn fmLevel(level: Int, k: Int) -> Bool {
+    if level == 1 {
+        k == kOrOr()
+    } else if level == 2 {
+        k == kAndAnd()
+    } else if level == 3 {
+        k == kEq() || k == kNotEq()
+    } else if level == 4 {
+        k == kLt() || k == kLtEq() || k == kGt() || k == kGtEq()
+    } else if level == 5 {
+        k == kPlus() || k == kMinus() || k == kPlusPlus()
+    } else {
+        k == kStar() || k == kSlash() || k == kPercent()
+    }
+}
+
+fn fmScanLeft(st: St, ts: List[FmTk], next: (St, List[FmTk]) -> Sc, level: Int) -> Sc {
+    let Sc(st2, end, rest) = next(st, ts)
+    fmScanLeftLoop(st2, end, rest, next, level)
+}
+
+fn fmScanLeftLoop(st: St, end: Int, ts: List[FmTk], next: (St, List[FmTk]) -> Sc, level: Int) -> Sc {
+    if fmLevel(level, fmKindH(ts)) {
+        let Sc(st2, end2, rest) = next(st, fmDrop(ts))
+        fmScanLeftLoop(st2, end2, rest, next, level)
+    } else {
+        Sc(st, end, ts)
+    }
+}
+
+fn fmScanOr(st: St, ts: List[FmTk]) -> Sc {
+    fmScanLeft(st, ts, fmScanAnd, 1)
+}
+
+fn fmScanAnd(st: St, ts: List[FmTk]) -> Sc {
+    fmScanLeft(st, ts, fmScanEq, 2)
+}
+
+fn fmScanEq(st: St, ts: List[FmTk]) -> Sc {
+    fmScanLeft(st, ts, fmScanRel, 3)
+}
+
+fn fmScanRel(st: St, ts: List[FmTk]) -> Sc {
+    fmScanLeft(st, ts, fmScanAdd, 4)
+}
+
+fn fmScanAdd(st: St, ts: List[FmTk]) -> Sc {
+    fmScanLeft(st, ts, fmScanMul, 5)
+}
+
+fn fmScanMul(st: St, ts: List[FmTk]) -> Sc {
+    fmScanLeft(st, ts, fmScanUnary, 6)
+}
+
+fn fmScanUnary(st: St, ts: List[FmTk]) -> Sc {
+    let k = fmKindH(ts)
+    if k == kMinus() || k == kBang() {
+        fmScanUnary(st, fmDrop(ts))
+    } else {
+        fmScanPostfix(st, ts)
+    }
+}
+
+fn fmScanPostfix(st: St, ts: List[FmTk]) -> Sc {
+    let Sc(st2, end, rest) = fmScanPrimary(st, ts)
+    fmScanPostLoop(st2, end, rest)
+}
+
+fn fmScanPostLoop(st: St, end: Int, ts: List[FmTk]) -> Sc {
+    if fmKindH(ts) == kLParen() {
+        let Sc(st2, _, rest) = fmScanArgs(st, fmDrop(ts))
+        fmScanPostLoop(st2, fmLineH(rest), fmDrop(rest))
+    } else {
+        Sc(st, end, ts)
+    }
+}
+
+fn fmScanArgs(st: St, ts: List[FmTk]) -> Sc {
+    if fmKindH(ts) == kRParen() || fmKindH(ts) < 0 {
+        Sc(st, 0, ts)
+    } else {
+        let Sc(st2, _, rest) = fmScanOr(st, ts)
+        if fmKindH(rest) == kComma() {
+            fmScanArgs(st2, fmDrop(rest))
+        } else {
+            Sc(st2, 0, rest)
+        }
+    }
+}
+
+fn fmScanPrimary(st: St, ts: List[FmTk]) -> Sc {
+    let k = fmKindH(ts)
+    if k < 0 {
+        Sc(st, 1, ts)
+    } else if k == kInt() || k == kChar() || k == kString() || k == kTrue() || k == kFalse() || k == kIdent() {
+        Sc(st, fmLineH(ts), fmDrop(ts))
+    } else if k == kLParen() {
+        fmScanParen(st, ts)
+    } else if k == kIf() {
+        fmScanIf(st, ts)
+    } else if k == kLBrace() {
+        fmScanBlock(st, ts)
+    } else if k == kFn() {
+        fmScanLambda(st, ts)
+    } else if k == kMatch() {
+        fmScanMatch(st, ts)
+    } else {
+        Sc(st, fmLineH(ts), ts)
+    }
+}
+
+fn fmScanParen(st: St, ts: List[FmTk]) -> Sc {
+    let rest = fmDrop(ts)
+    if fmKindH(rest) == kRParen() {
+        Sc(st, fmLineH(rest), fmDrop(rest))
+    } else {
+        let Sc(st2, _, rest2) = fmScanOr(st, rest)
+        Sc(st2, fmLineH(rest2), fmDrop(rest2))
+    }
+}
+
+fn fmScanLambda(st: St, ts: List[FmTk]) -> Sc {
+    let rest = fmScanParams(fmDrop(ts))
+    let rest2 = if fmKindH(rest) == kArrow() {
+        fmScanType(fmDrop(rest))
+    } else {
+        rest
+    }
+    fmScanBlock(st, rest2)
+}
+
+fn fmScanIf(st: St, ts: List[FmTk]) -> Sc {
+    let Sc(st2, _, rest) = fmScanOr(st, fmDrop(ts))
+    let Sc(st3, _, rest2) = fmScanBlock(st2, rest)
+    let rest3 = fmDrop(rest2)
+    if fmKindH(rest3) == kIf() {
+        fmScanIf(st3, rest3)
+    } else {
+        fmScanBlock(st3, rest3)
+    }
+}
+
+fn fmScanMatch(st: St, ts: List[FmTk]) -> Sc {
+    let Sc(st2, _, rest) = fmScanOr(st, fmDrop(ts))
+    let lb = fmLineH(rest)
+    let st3 = fmPush(st2, lb + 1)
+    let Sc(st4, _, rest2) = fmScanArms(st3, fmDrop(rest))
+    let rb = fmLineH(rest2)
+    let st5 = fmPop(st4, rb - 1)
+    Sc(st5, rb, fmDrop(rest2))
+}
+
+fn fmScanArms(st: St, ts: List[FmTk]) -> Sc {
+    if fmKindH(ts) == kRBrace() || fmKindH(ts) < 0 {
+        Sc(st, 0, ts)
+    } else {
+        let start = fmLineH(ts)
+        let st2 = fmBegin(st, start)
+        let rest = fmDrop(fmScanPattern(ts))
+        let Sc(st3, end, rest2) = fmScanOr(st2, rest)
+        let st4 = fmFinish(st3, end)
+        let rest3 = if fmKindH(rest2) == kComma() {
+            fmDrop(rest2)
+        } else {
+            rest2
+        }
+        if fmKindH(rest3) == kRBrace() || fmKindH(rest3) < 0 {
+            Sc(st4, end, rest3)
+        } else {
+            fmScanArms(st4, rest3)
+        }
+    }
+}
+
+fn fmScanBlock(st: St, ts: List[FmTk]) -> Sc {
+    let lb = fmLineH(ts)
+    let st2 = fmPush(st, lb + 1)
+    let Sc(st3, _, rest) = fmScanItems(st2, fmDrop(ts))
+    let rb = fmLineH(rest)
+    let st4 = fmPop(st3, rb - 1)
+    Sc(st4, rb, fmDrop(rest))
+}
+
+fn fmScanItems(st: St, ts: List[FmTk]) -> Sc {
+    if fmKindH(ts) == kRBrace() || fmKindH(ts) < 0 {
+        Sc(st, 0, ts)
+    } else if fmKindH(ts) == kLet() {
+        let start = fmLineH(ts)
+        let st2 = fmBegin(st, start)
+        let Sc(st3, end, rest) = fmScanLet(st2, ts)
+        fmScanItems(fmFinish(st3, end), rest)
+    } else {
+        let start = fmLineH(ts)
+        let st2 = fmBegin(st, start)
+        let Sc(st3, end, rest) = fmScanOr(st2, ts)
+        Sc(fmFinish(st3, end), end, rest)
+    }
+}
+
+fn fmScanLet(st: St, ts: List[FmTk]) -> Sc {
+    let rest = fmDrop(ts)
+    let rest2 = if fmKindH(rest) == kBang() {
+        fmDrop(rest)
+    } else {
+        rest
+    }
+    let rest3 = fmDrop(fmSkipAssign(rest2, 0))
+    fmScanOr(st, rest3)
+}
+
+fn fmScanFunc(st: St, ts: List[FmTk]) -> Sc {
+    let rest = fmDrop(fmDrop(ts))
+    let rest2 = if fmKindH(rest) == kLBracket() {
+        fmSkipRest(rest)
+    } else {
+        rest
+    }
+    let rest3 = fmScanParams(rest2)
+    let rest4 = if fmKindH(rest3) == kArrow() {
+        fmScanType(fmDrop(rest3))
+    } else {
+        rest3
+    }
+    fmScanBlock(st, rest4)
+}
+
+fn fmScanCtor(st: St, ts: List[FmTk]) -> Sc {
+    let start = fmLineH(ts)
+    let st2 = fmBegin(st, start)
+    let rest = if fmKindH(ts) == kBar() {
+        fmDrop(ts)
+    } else {
+        ts
+    }
+    let nameLine = fmLineH(rest)
+    let rest2 = fmDrop(rest)
+    if fmKindH(rest2) == kLParen() {
+        match fmSkipGroup(rest2) {
+            Skip(end, rest3) => Sc(fmFinish(st2, end), end, rest3),
+        }
+    } else {
+        Sc(fmFinish(st2, nameLine), nameLine, rest2)
+    }
+}
+
+fn fmScanCtors(st: St, ts: List[FmTk], assignLine: Int, last: Int, started: Bool) -> Sc {
+    let k = fmKindH(ts)
+    if k == kBar() || k == kIdent() && !started {
+        if started {
+            let Sc(st2, end, rest) = fmScanCtor(st, ts)
+            fmScanCtors(st2, rest, assignLine, end, true)
+        } else {
+            let first = fmLineH(ts)
+            let regionStart = if first > assignLine {
+                assignLine + 1
+            } else {
+                first
+            }
+            let st2 = fmPush(st, regionStart)
+            let Sc(st3, end, rest) = fmScanCtor(st2, ts)
+            fmScanCtors(st3, rest, assignLine, end, true)
+        }
+    } else {
+        if started {
+            Sc(fmPop(st, last), last, ts)
+        } else {
+            Sc(st, last, ts)
+        }
+    }
+}
+
+fn fmScanTypeDecl(st: St, ts: List[FmTk]) -> Sc {
+    let rest = fmDrop(fmDrop(ts))
+    let rest2 = if fmKindH(rest) == kLBracket() {
+        fmSkipRest(rest)
+    } else {
+        rest
+    }
+    let assignLine = fmLineH(rest2)
+    fmScanCtors(st, fmDrop(rest2), assignLine, assignLine, false)
+}
+
+fn fmScanImport(st: St, ts: List[FmTk]) -> Sc {
+    let start = fmLineH(ts)
+    let st2 = fmBegin(st, start)
+    let rest = fmDrop(fmDrop(ts))
+    Sc(fmFinish(st2, fmLineH(fmDrop(ts))), fmLineH(fmDrop(ts)), rest)
+}
+
+fn fmScanImports(st: St, ts: List[FmTk]) -> Sc {
+    if fmKindH(ts) == kImport() {
+        let Sc(st2, _, rest) = fmScanImport(st, ts)
+        fmScanImports(st2, rest)
+    } else {
+        Sc(st, 0, ts)
+    }
+}
+
+fn fmScanDecl(st: St, ts: List[FmTk]) -> Sc {
+    let start = fmLineH(ts)
+    let st2 = fmBegin(st, start)
+    let rest = if fmKindH(ts) == kPub() {
+        fmDrop(ts)
+    } else {
+        ts
+    }
+    let Sc(st3, end, rest2) = if fmKindH(rest) == kType() {
+        fmScanTypeDecl(st2, rest)
+    } else {
+        fmScanFunc(st2, rest)
+    }
+    Sc(fmFinish(st3, end), end, rest2)
+}
+
+fn fmScanDecls(st: St, ts: List[FmTk]) -> Sc {
+    let k = fmKindH(ts)
+    if k == kPub() || k == kFn() || k == kType() {
+        let Sc(st2, _, rest) = fmScanDecl(st, ts)
+        fmScanDecls(st2, rest)
+    } else {
+        Sc(st, 0, ts)
+    }
+}
+
+fn fmLastLine(src: String) -> Int {
+    fmLastLineAt(src, 0, 1)
+}
+
+fn fmLastLineAt(src: String, i: Int, line: Int) -> Int {
+    if i >= stringLength(src) {
+        line
+    } else if stringByteAt(src, i) == 10 {
+        fmLastLineAt(src, i + 1, line + 1)
+    } else {
+        fmLastLineAt(src, i + 1, line)
+    }
+}
+
+fn fmScanFile(ts: List[FmTk], last: Int) -> St {
+    let st = fmPush(fmSt0(), 1)
+    let Sc(st2, _, rest) = fmScanImports(st, ts)
+    let Sc(st3, _, _) = fmScanDecls(st2, rest)
+    fmPop(st3, last)
+}
+
+fn fmBlankChar(s: String, i: Int) -> Bool {
+    if i >= stringLength(s) {
+        true
+    } else {
+        let b = stringByteAt(s, i)
+        if b == 32 || b == 9 || b == 13 {
+            fmBlankChar(s, i + 1)
+        } else {
+            false
+        }
+    }
+}
+
+fn fmSplit(src: String, i: Int, start: Int, acc: List[String]) -> List[String] {
+    let n = stringLength(src)
+    if i >= n {
+        reverse(Cons(stringSlice(src, start, n), acc))
+    } else if stringByteAt(src, i) == 10 {
+        fmSplit(src, i + 1, i + 1, Cons(stringSlice(src, start, i), acc))
+    } else {
+        fmSplit(src, i + 1, start, acc)
+    }
+}
+
+fn fmFlagAcc(lines: List[String], acc: List[String]) -> List[String] {
+    match lines {
+        Nil => reverse(acc),
+        Cons(l, rest) => if fmBlankChar(l, 0) {
+            fmFlagAcc(rest, Cons("1", acc))
+        } else {
+            fmFlagAcc(rest, Cons("0", acc))
+        },
+    }
+}
+
+fn fmBlanks(src: String) -> String {
+    concatBalanced(fmFlagAcc(fmSplit(src, 0, 0, Nil), Nil))
+}
+
+fn fmGap(flags: String, line: Int, until: Int) -> Bool {
+    if line >= until {
+        false
+    } else if line >= 1 && line <= stringLength(flags) && stringByteAt(flags, line - 1) == 49 {
+        true
+    } else {
+        fmGap(flags, line + 1, until)
+    }
+}
+
+fn fmPx0(notes: FmNotes, spans: IntMap[Pair[Int, Int]], src: Src) -> Px {
+    Px(0, notes, spans, src)
+}
+
+fn fmTake(px: Px) -> Pair[Int, Px] {
+    match px {
+        Px(n, notes, spans, src) => Pair(n, Px(n + 1, notes, spans, src)),
+    }
+}
+
+fn fmSpan(px: Px, id: Int) -> Pair[Int, Int] {
+    match px {
+        Px(_, _, spans, _) => match imLookup(spans, id) {
+            Some(p) => p,
+            None => Pair(0, 0),
+        },
+    }
+}
+
+fn fmRaw(px: Px, pos: Pos) -> String {
+    match px {
+        Px(_, _, _, src) => match src {
+            Src(_, texts, _, _, _) => match pos {
+                Pos(line, col) => match imLookup(texts, fmKey(line, col)) {
+                    Some(s) => s,
+                    None => "",
+                },
+            },
+        },
+    }
+}
+
+fn fmKindAt(px: Px, pos: Pos) -> Int {
+    match px {
+        Px(_, _, _, src) => match src {
+            Src(_, _, kinds, _, _) => match pos {
+                Pos(line, col) => match imLookup(kinds, fmKey(line, col)) {
+                    Some(k) => k,
+                    None => -1,
+                },
+            },
+        },
+    }
+}
+
+fn fmFlags(px: Px) -> String {
+    match px {
+        Px(_, _, _, src) => match src {
+            Src(_, _, _, flags, _) => flags,
+        },
+    }
+}
+
+fn fmNotes(px: Px) -> FmNotes {
+    match px {
+        Px(_, notes, _, _) => notes,
+    }
+}
+
+fn fmToks(px: Px) -> List[FmTk] {
+    match px {
+        Px(_, _, _, src) => match src {
+            Src(toks, _, _, _, _) => toks,
+        },
+    }
+}
+
+fn fmComments(px: Px) -> List[Comment] {
+    match px {
+        Px(_, _, _, src) => match src {
+            Src(_, _, _, _, cs) => cs,
+        },
+    }
+}
+
+fn fmIndent(level: Int) -> String {
+    fmSpaces(level * 4, "")
+}
+
+fn fmSpaces(n: Int, acc: String) -> String {
+    if n <= 0 {
+        acc
+    } else {
+        fmSpaces(n - 1, acc ++ " ")
+    }
+}
+
+fn lnText(s: String) -> Ln {
+    Ln(s, Nil)
+}
+
+fn lnPrefix(p: String, ln: Ln) -> Ln {
+    match ln {
+        Ln(first, rest) => Ln(p ++ first, rest),
+    }
+}
+
+fn lnSuffixLast(lines: List[String], suf: String, acc: List[String]) -> List[String] {
+    match lines {
+        Nil => reverse(acc),
+        Cons(x, Nil) => reverse(Cons(x ++ suf, acc)),
+        Cons(x, rest) => lnSuffixLast(rest, suf, Cons(x, acc)),
+    }
+}
+
+fn lnSuffix(ln: Ln, suf: String) -> Ln {
+    match ln {
+        Ln(first, Nil) => Ln(first ++ suf, Nil),
+        Ln(first, rest) => Ln(first, lnSuffixLast(rest, suf, Nil)),
+    }
+}
+
+fn lnAdd(ln: Ln, lines: List[String]) -> Ln {
+    match ln {
+        Ln(first, rest) => Ln(first, append(rest, lines)),
+    }
+}
+
+fn lnCat(a: Ln, b: Ln) -> Ln {
+    match b {
+        Ln(bf, br) => lnAdd(lnSuffix(a, bf), br),
+    }
+}
+
+fn lnWrap(ln: Ln) -> Ln {
+    lnSuffix(lnPrefix("(", ln), ")")
+}
+
+fn lnEol(ln: Ln, eol: String) -> Ln {
+    if eol == "" {
+        ln
+    } else {
+        match ln {
+            Ln(first, rest) => Ln(first ++ " " ++ eol, rest),
+        }
+    }
+}
+
+fn fmAsBang(px: Px, e: Expr) -> Option[Bang] {
+    match e {
+        Call(_, pos, callee, _, args) => match callee {
+            Ident(_, _, name) => if name == "bind" && fmKindAt(px, pos) == kLet() {
+                match args {
+                    Cons(value, Cons(lit, Nil)) => match lit {
+                        FuncLit(_, _, params, _, body) => match params {
+                            Cons(p, Nil) => match p {
+                                Param(_, _, pname, typ) => Some(Bang(pname, typ, value, body)),
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            } else {
+                None
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn fmAsPat(e: Expr) -> Option[PatB] {
+    match e {
+        Match(_, _, value, arms, isLet) => if isLet {
+            match arms {
+                Cons(arm, Nil) => match arm {
+                    Arm(pat, body) => Some(PatB(pat, value, body)),
+                },
+                _ => None,
+            }
+        } else {
+            None
+        },
+        _ => None,
+    }
+}
+
+fn fmRealBlock(px: Px, b: Block) -> Bool {
+    match b {
+        Block(_, pos, _, _) => fmKindAt(px, pos) == kLBrace(),
+    }
+}
+
+fn fmFlattenLets(px: Px, lets: List[LetStmt], result: Expr, acc: List[Flat]) -> List[Flat] {
+    match lets {
+        Nil => fmFlattenResult(px, result, acc),
+        Cons(stmt, rest) => match stmt {
+            LetStmt(_, _, name, _, typ, value) => fmFlattenLets(px, rest, result, Cons(FlLet(name, typ, value), acc)),
+        },
+    }
+}
+
+fn fmFlattenPat(px: Px, body: Expr, acc: List[Flat]) -> List[Flat] {
+    match body {
+        BlockE(b) => if fmRealBlock(px, b) {
+            fmFlattenResult(px, body, acc)
+        } else {
+            match b {
+                Block(_, _, lets, result) => fmFlattenLets(px, lets, result, acc),
+            }
+        },
+        _ => fmFlattenResult(px, body, acc),
+    }
+}
+
+fn fmFlattenResult(px: Px, e: Expr, acc: List[Flat]) -> List[Flat] {
+    match fmAsBang(px, e) {
+        Some(b) => match b {
+            Bang(name, typ, value, body) => match body {
+                Block(_, _, lets, result) => fmFlattenLets(px, lets, result, Cons(FlBang(name, typ, value), acc)),
+            },
+        },
+        None => match fmAsPat(e) {
+            Some(p) => match p {
+                PatB(pat, value, body) => fmFlattenPat(px, body, Cons(FlPat(pat, value), acc)),
+            },
+            None => reverse(Cons(FlRes(e), acc)),
+        },
+    }
+}
+
+fn fmFlatten(px: Px, b: Block) -> List[Flat] {
+    match b {
+        Block(_, _, lets, result) => fmFlattenLets(px, lets, result, Nil),
+    }
+}
+
+fn fmTokAt(ts: List[FmTk], line: Int, col: Int) -> List[FmTk] {
+    match ts {
+        Nil => Nil,
+        Cons(t, rest) => match t {
+            FmTk(_, l, c, _) => if l == line && c == col {
+                ts
+            } else if l > line || l == line && c > col {
+                Nil
+            } else {
+                fmTokAt(rest, line, col)
+            },
+        },
+    }
+}
+
+fn fmBraceEnd(ts: List[FmTk], depth: Int) -> Int {
+    match ts {
+        Nil => 1,
+        Cons(t, rest) => match t {
+            FmTk(k, line, _, _) => if k == kLBrace() {
+                fmBraceEnd(rest, depth + 1)
+            } else if k == kRBrace() {
+                if depth == 1 {
+                    line
+                } else {
+                    fmBraceEnd(rest, depth - 1)
+                }
+            } else {
+                fmBraceEnd(rest, depth)
+            },
+        },
+    }
+}
+
+fn fmBraceSpan(px: Px, pos: Pos) -> Pair[Int, Int] {
+    match pos {
+        Pos(line, col) => match fmTokAt(fmToks(px), line, col) {
+            Nil => Pair(1, 0),
+            Cons(_, rest) => Pair(line + 1, fmBraceEnd(rest, 1) - 1),
+        },
+    }
+}
+
+fn fmHasCmt(cs: List[Comment], start: Int, end: Int) -> Bool {
+    match cs {
+        Nil => false,
+        Cons(c, rest) => match c {
+            Comment(pos, _, _) => match pos {
+                Pos(line, _) => if start <= line && line <= end {
+                    true
+                } else {
+                    fmHasCmt(rest, start, end)
+                },
+            },
+        },
+    }
+}
+
+fn fmSpanCmt(px: Px, sp: Pair[Int, Int]) -> Bool {
+    match sp {
+        Pair(start, end) => if start > end {
+            false
+        } else {
+            fmHasCmt(fmComments(px), start, end)
+        },
+    }
+}
+
+fn fmPrec(k: Int) -> Int {
+    if k == kOrOr() {
+        1
+    } else if k == kAndAnd() {
+        2
+    } else if k == kEq() || k == kNotEq() {
+        3
+    } else if k == kLt() || k == kLtEq() || k == kGt() || k == kGtEq() {
+        4
+    } else if k == kPlus() || k == kMinus() || k == kPlusPlus() {
+        5
+    } else {
+        6
+    }
+}
+
+fn fmIsCmp(k: Int) -> Bool {
+    k == kEq() || k == kNotEq() || k == kLt() || k == kLtEq() || k == kGt() || k == kGtEq()
+}
+
+fn fmExprPrec(e: Expr) -> Int {
+    match e {
+        Binary(_, _, _, op, _, _) => fmPrec(kindAsInt(op)),
+        Unary(_, _, _, _) => 7,
+        Call(_, _, _, _, _) => 8,
+        _ => 9,
+    }
+}
+
+fn fmExprCmp(e: Expr) -> Bool {
+    match e {
+        Binary(_, _, _, op, _, _) => fmIsCmp(kindAsInt(op)),
+        _ => false,
+    }
+}
+
+fn fmNeedParen(e: Expr, parentPrec: Int, parentCmp: Bool, right: Bool) -> Bool {
+    if parentPrec <= 0 {
+        false
+    } else if parentPrec == 7 {
+        fmExprPrec(e) < 7
+    } else if parentCmp && fmExprCmp(e) {
+        true
+    } else {
+        let cp = fmExprPrec(e)
+        if cp < parentPrec {
+            true
+        } else {
+            cp == parentPrec && right
+        }
+    }
+}
+
+fn fmParenCallee(e: Expr) -> Bool {
+    match e {
+        FuncLit(_, _, _, _, _) => true,
+        Binary(_, _, _, _, _, _) => true,
+        Unary(_, _, _, _) => true,
+        _ => false,
+    }
+}
+
+fn fmJoin(xs: List[String], sep: String, acc: String) -> String {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => if acc == "" {
+            fmJoin(rest, sep, x)
+        } else {
+            fmJoin(rest, sep, acc ++ sep ++ x)
+        },
+    }
+}
+
+fn fmTypeParams(ps: List[TypeParam]) -> String {
+    match ps {
+        Nil => "",
+        _ => "[" ++ fmJoin(fmTypeNames(ps, Nil), ", ", "") ++ "]",
+    }
+}
+
+fn fmTypeNames(ps: List[TypeParam], acc: List[String]) -> List[String] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(p, rest) => match p {
+            TypeParam(_, name) => fmTypeNames(rest, Cons(name, acc)),
+        },
+    }
+}
+
+fn fmPrintType(t: TypeExpr) -> String {
+    match t {
+        NamedType(_, name, args) => match args {
+            Nil => name,
+            _ => name ++ "[" ++ fmJoin(fmTypeList(args, Nil), ", ", "") ++ "]",
+        },
+        FuncType(_, params, result) => fmFunParams(params) ++ " -> " ++ fmPrintType(result),
+    }
+}
+
+fn fmTypeList(ts: List[TypeExpr], acc: List[String]) -> List[String] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => fmTypeList(rest, Cons(fmPrintType(t), acc)),
+    }
+}
+
+fn fmFunParams(ps: List[TypeExpr]) -> String {
+    match ps {
+        Nil => "()",
+        Cons(t, Nil) => if fmIsFun(t) {
+            "(" ++ fmPrintType(t) ++ ")"
+        } else {
+            fmPrintType(t)
+        },
+        _ => "(" ++ fmJoin(fmTypeList(ps, Nil), ", ", "") ++ ")",
+    }
+}
+
+fn fmIsFun(t: TypeExpr) -> Bool {
+    match t {
+        FuncType(_, _, _) => true,
+        NamedType(_, _, _) => false,
+    }
+}
+
+fn fmOptType(t: Option[TypeExpr]) -> String {
+    match t {
+        None => "",
+        Some(ty) => ": " ++ fmPrintType(ty),
+    }
+}
+
+fn fmParams(ps: List[Param]) -> String {
+    "(" ++ fmJoin(fmParamList(ps, Nil), ", ", "") ++ ")"
+}
+
+fn fmParamList(ps: List[Param], acc: List[String]) -> List[String] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(p, rest) => match p {
+            Param(_, _, name, typ) => fmParamList(rest, Cons(name ++ fmOptType(typ), acc)),
+        },
+    }
+}
+
+fn fmResult(t: Option[TypeExpr]) -> String {
+    match t {
+        None => "",
+        Some(ty) => " -> " ++ fmPrintType(ty),
+    }
+}
+
+fn fmRawOr(px: Px, pos: Pos, fallback: String) -> String {
+    let raw = fmRaw(px, pos)
+    if raw == "" {
+        fallback
+    } else {
+        raw
+    }
+}
+
+fn fmPrintPat(px: Px, p: Pattern) -> String {
+    match p {
+        WildP(_, _) => "_",
+        VarP(_, _, name) => name,
+        CtorP(_, _, name, args) => match args {
+            Nil => name,
+            _ => name ++ "(" ++ fmJoin(fmPatList(px, args, Nil), ", ", "") ++ ")",
+        },
+        IntP(_, pos, v) => fmRawOr(px, pos, intToString(v)),
+        StrP(_, pos, s) => fmRawOr(px, pos, quoteString(s)),
+        BoolP(_, _, v) => if v {
+            "true"
+        } else {
+            "false"
+        },
+    }
+}
+
+fn fmPatList(px: Px, ps: List[Pattern], acc: List[String]) -> List[String] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(p, rest) => fmPatList(px, rest, Cons(fmPrintPat(px, p), acc)),
+    }
+}
+
+fn fmFitsArgs(px: Px, args: List[Expr]) -> Bool {
+    match args {
+        Nil => true,
+        Cons(a, rest) => if fmFits(px, a) {
+            fmFitsArgs(px, rest)
+        } else {
+            false
+        },
+    }
+}
+
+fn fmFits(px: Px, e: Expr) -> Bool {
+    match e {
+        If(_, _, _, _, _) => false,
+        Match(_, _, _, _, _) => false,
+        BlockE(_) => false,
+        FuncLit(_, _, _, _, body) => fmFitsLambda(px, body),
+        Binary(_, _, _, _, x, y) => if fmFits(px, x) {
+            fmFits(px, y)
+        } else {
+            false
+        },
+        Unary(_, _, _, x) => fmFits(px, x),
+        Call(_, _, f, _, args) => if fmFits(px, f) {
+            fmFitsArgs(px, args)
+        } else {
+            false
+        },
+        IntLit(_, _, _) => true,
+        StringLit(_, _, _) => true,
+        BoolLit(_, _, _) => true,
+        UnitLit(_, _) => true,
+        Ident(_, _, _) => true,
+    }
+}
+
+fn fmFitsLambda(px: Px, body: Block) -> Bool {
+    match fmFlatten(px, body) {
+        Cons(flat, Nil) => match flat {
+            FlRes(e) => if fmFits(px, e) {
+                match body {
+                    Block(_, pos, _, _) => !fmSpanCmt(px, fmBraceSpan(px, pos)),
+                }
+            } else {
+                false
+            },
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn fmPrintAt(px: Px, e: Expr, base: Int, parentPrec: Int, parentCmp: Bool, right: Bool) -> Out {
+    let Out(ln, px2) = fmPrintRaw(px, e, base)
+    if fmNeedParen(e, parentPrec, parentCmp, right) {
+        Out(lnWrap(ln), px2)
+    } else {
+        Out(ln, px2)
+    }
+}
+
+fn fmPrintRaw(px: Px, e: Expr, base: Int) -> Out {
+    match e {
+        IntLit(_, pos, v) => Out(lnText(fmRawOr(px, pos, intToString(v))), px),
+        StringLit(_, pos, s) => Out(lnText(fmRawOr(px, pos, quoteString(s))), px),
+        BoolLit(_, _, v) => if v {
+            Out(lnText("true"), px)
+        } else {
+            Out(lnText("false"), px)
+        },
+        UnitLit(_, _) => Out(lnText("()"), px),
+        Ident(_, _, name) => Out(lnText(name), px),
+        Unary(_, _, op, x) => fmPrintUnary(px, kindAsInt(op), x, base),
+        Binary(_, _, _, op, x, y) => fmPrintBinary(px, kindAsInt(op), x, y, base),
+        Call(_, _, f, _, args) => fmPrintCall(px, f, args, base),
+        If(_, _, cond, thenB, elseE) => fmPrintIf(px, cond, thenB, elseE, base),
+        BlockE(b) => fmPrintBlock(px, b, base),
+        FuncLit(_, _, params, res, body) => fmPrintLambda(px, params, res, body, base),
+        Match(_, _, scrut, arms, _) => fmPrintMatch(px, scrut, arms, base),
+    }
+}
+
+fn fmPrintUnary(px: Px, op: Int, x: Expr, base: Int) -> Out {
+    let text = if op == kMinus() {
+        "-"
+    } else {
+        "!"
+    }
+    let Out(ln, px2) = fmPrintAt(px, x, base, 7, false, true)
+    Out(lnPrefix(text, ln), px2)
+}
+
+fn fmOpText(op: Int) -> String {
+    binaryOpName(intAsKind(op))
+}
+
+fn fmPrintBinary(px: Px, op: Int, x: Expr, y: Expr, base: Int) -> Out {
+    let prec = fmPrec(op)
+    let cmp = fmIsCmp(op)
+    let Out(lx, px2) = fmPrintAt(px, x, base, prec, cmp, false)
+    let Out(ly, px3) = fmPrintAt(px2, y, base, prec, cmp, true)
+    Out(lnCat(lnSuffix(lx, " " ++ fmOpText(op) ++ " "), ly), px3)
+}
+
+fn fmPrintCall(px: Px, f: Expr, args: List[Expr], base: Int) -> Out {
+    let Out(ln, px2) = fmPrintAt(px, f, base, 0, false, false)
+    let ln2 = if fmParenCallee(f) {
+        lnWrap(ln)
+    } else {
+        ln
+    }
+    let Out(argsLn, px3) = fmPrintArgs(px2, args, base)
+    Out(lnSuffix(lnCat(lnSuffix(ln2, "("), argsLn), ")"), px3)
+}
+
+fn fmPrintArgs(px: Px, args: List[Expr], base: Int) -> Out {
+    match args {
+        Nil => Out(lnText(""), px),
+        Cons(a, rest) => {
+            let Out(ln, px2) = fmPrintAt(px, a, base, 0, false, false)
+            fmPrintArgsRest(px2, rest, base, ln)
+        },
+    }
+}
+
+fn fmPrintArgsRest(px: Px, args: List[Expr], base: Int, acc: Ln) -> Out {
+    match args {
+        Nil => Out(acc, px),
+        Cons(a, rest) => {
+            let Out(ln, px2) = fmPrintAt(px, a, base, 0, false, false)
+            fmPrintArgsRest(px2, rest, base, lnCat(lnSuffix(acc, ", "), ln))
+        },
+    }
+}
+
+fn fmPrintIf(px: Px, cond: Expr, thenB: Block, elseE: Expr, base: Int) -> Out {
+    let Out(cln, px2) = fmPrintAt(px, cond, base, 0, false, false)
+    let Out(tln, px3) = fmPrintBlock(px2, thenB, base)
+    let Out(eln, px4) = fmPrintElse(px3, elseE, base)
+    let opened = lnCat(lnSuffix(lnPrefix("if ", cln), " "), tln)
+    Out(lnCat(lnSuffix(opened, " else "), eln), px4)
+}
+
+fn fmPrintElse(px: Px, e: Expr, base: Int) -> Out {
+    match e {
+        If(_, _, cond, thenB, elseE) => fmPrintIf(px, cond, thenB, elseE, base),
+        BlockE(b) => fmPrintBlock(px, b, base),
+        _ => fmPrintBlock(px, Block(0, Pos(1, 1), Nil, e), base),
+    }
+}
+
+fn fmPrintMatch(px: Px, scrut: Expr, arms: List[Arm], base: Int) -> Out {
+    let Out(sln, px2) = fmPrintAt(px, scrut, base, 0, false, false)
+    let Pair(rid, px3) = fmTake(px2)
+    let Acc(rev, px4) = fmPrintArms(px3, arms, base + 1, Nil)
+    let rev2 = fmPushCmts(fmTrail(fmNotes(px4), rid), fmIndent(base + 1), rev)
+    let lines = reverse(rev2)
+    let close = fmIndent(base) ++ "}"
+    Out(lnAdd(lnSuffix(lnPrefix("match ", sln), " {"), append(lines, Cons(close, Nil))), px4)
+}
+
+fn fmPrintArms(px: Px, arms: List[Arm], base: Int, acc: List[String]) -> Acc {
+    match arms {
+        Nil => Acc(acc, px),
+        Cons(arm, rest) => match arm {
+            Arm(pat, body) => {
+                let Pair(id, px2) = fmTake(px)
+                let leads = fmLead(fmNotes(px2), id)
+                let eol = fmEol(fmNotes(px2), id)
+                let Out(bln, px3) = fmPrintAt(px2, body, base, 0, false, false)
+                let head = fmIndent(base) ++ fmPrintPat(px3, pat) ++ " => "
+                let ln = lnEol(lnSuffix(lnPrefix(head, bln), ","), eol)
+                let lines = append(fmCmtLines(fmIndent(base), leads, Nil), fmLnLines(ln))
+                fmPrintArms(px3, rest, base, fmPushLines(lines, acc))
+            },
+        },
+    }
+}
+
+type Acc =
+    | Acc(List[String], Px)
+
+fn fmLnLines(ln: Ln) -> List[String] {
+    match ln {
+        Ln(first, rest) => Cons(first, rest),
+    }
+}
+
+fn fmCmtLines(ind: String, cs: List[String], acc: List[String]) -> List[String] {
+    match cs {
+        Nil => reverse(acc),
+        Cons(c, rest) => fmCmtLines(ind, rest, Cons(ind ++ c, acc)),
+    }
+}
+
+fn fmPushLines(lines: List[String], acc: List[String]) -> List[String] {
+    match lines {
+        Nil => acc,
+        Cons(l, rest) => fmPushLines(rest, Cons(l, acc)),
+    }
+}
+
+fn fmPushCmts(cs: List[String], ind: String, acc: List[String]) -> List[String] {
+    match cs {
+        Nil => acc,
+        Cons(c, rest) => fmPushCmts(rest, ind, Cons(ind ++ c, acc)),
+    }
+}
+
+fn fmPrintLambda(px: Px, params: List[Param], res: Option[TypeExpr], body: Block, base: Int) -> Out {
+    let head = "fn" ++ fmParams(params) ++ fmResult(res) ++ " "
+    if fmFitsLambda(px, body) {
+        fmPrintLambdaFlat(px, head, body, base)
+    } else {
+        fmPrintLambdaMulti(px, head, body, base)
+    }
+}
+
+fn fmPrintLambdaFlat(px: Px, head: String, body: Block, base: Int) -> Out {
+    let Pair(_, px2) = fmTake(px)
+    let Pair(_, px3) = fmTake(px2)
+    match fmFlatten(px3, body) {
+        Cons(flat, _) => match flat {
+            FlRes(e) => {
+                let Out(ln, px4) = fmPrintAt(px3, e, base, 0, false, false)
+                Out(lnPrefix(head ++ "{ ", lnSuffix(ln, " }")), px4)
+            },
+            _ => Out(lnText(head ++ "{ () }"), px3),
+        },
+        Nil => Out(lnText(head ++ "{ () }"), px3),
+    }
+}
+
+fn fmPrintLambdaMulti(px: Px, head: String, body: Block, base: Int) -> Out {
+    let Out(bln, px2) = fmPrintBlock(px, body, base)
+    Out(lnCat(lnText(head), bln), px2)
+}
+
+fn fmPrintBlock(px: Px, b: Block, base: Int) -> Out {
+    let Pair(rid, px2) = fmTake(px)
+    let flats = fmFlatten(px2, b)
+    let Acc(rev, px3) = fmPrintFlats(px2, flats, base + 1, -1, true, Nil)
+    let rev2 = fmPushCmts(fmTrail(fmNotes(px3), rid), fmIndent(base + 1), rev)
+    let lines = reverse(rev2)
+    let close = fmIndent(base) ++ "}"
+    Out(Ln("{", append(lines, Cons(close, Nil))), px3)
+}
+
+fn fmPrintFlats(px: Px, flats: List[Flat], base: Int, prevEnd: Int, first: Bool, acc: List[String]) -> Acc {
+    match flats {
+        Nil => Acc(acc, px),
+        Cons(flat, rest) => {
+            let Pair(id, px2) = fmTake(px)
+            let Pair(start, end) = fmSpan(px2, id)
+            let blank = if first {
+                false
+            } else {
+                fmGap(fmFlags(px2), prevEnd + 1, start)
+            }
+            let leads = fmLead(fmNotes(px2), id)
+            let eol = fmEol(fmNotes(px2), id)
+            let Out(ln, px3) = fmPrintFlat(px2, flat, base)
+            let ln2 = lnEol(lnPrefix(fmIndent(base), ln), eol)
+            let body = append(fmCmtLines(fmIndent(base), leads, Nil), fmLnLines(ln2))
+            let body2 = if blank {
+                Cons("", body)
+            } else {
+                body
+            }
+            fmPrintFlats(px3, rest, base, end, false, fmPushLines(body2, acc))
+        },
+    }
+}
+
+fn fmPrintFlat(px: Px, flat: Flat, base: Int) -> Out {
+    match flat {
+        FlLet(name, typ, value) => {
+            let Out(ln, px2) = fmPrintAt(px, value, base, 0, false, false)
+            Out(lnPrefix("let " ++ name ++ fmOptType(typ) ++ " = ", ln), px2)
+        },
+        FlBang(name, typ, value) => {
+            let Out(ln, px2) = fmPrintAt(px, value, base, 0, false, false)
+            Out(lnPrefix("let! " ++ name ++ fmOptType(typ) ++ " = ", ln), px2)
+        },
+        FlPat(pat, value) => {
+            let Out(ln, px2) = fmPrintAt(px, value, base, 0, false, false)
+            Out(lnPrefix("let " ++ fmPrintPat(px2, pat) ++ " = ", ln), px2)
+        },
+        FlRes(e) => fmPrintAt(px, e, base, 0, false, false),
+    }
+}
+
+fn fmPrintImport(px: Px, imp: Import) -> Out {
+    match imp {
+        Import(_, path, pathPos) => Out(lnText("import " ++ fmRawOr(px, pathPos, quoteString(path))), px),
+    }
+}
+
+fn fmPrintFunc(px: Px, d: FuncDecl) -> Out {
+    match d {
+        FuncDecl(_, _, isPub, name, _, tps, params, res, body) => {
+            let vis = if isPub {
+                "pub "
+            } else {
+                ""
+            }
+            let head = vis ++ "fn " ++ name ++ fmTypeParams(tps) ++ fmParams(params) ++ fmResult(res) ++ " "
+            let Out(bln, px2) = fmPrintBlock(px, body, 0)
+            Out(lnCat(lnText(head), bln), px2)
+        },
+    }
+}
+
+fn fmPrintCtor(px: Px, c: CtorDecl) -> String {
+    match c {
+        CtorDecl(_, name, fields) => match fields {
+            Nil => fmIndent(1) ++ "| " ++ name,
+            _ => fmIndent(1) ++ "| " ++ name ++ "(" ++ fmJoin(fmTypeList(fields, Nil), ", ", "") ++ ")",
+        },
+    }
+}
+
+fn fmPrintCtors(px: Px, ctors: List[CtorDecl], acc: List[String]) -> Acc {
+    match ctors {
+        Nil => Acc(acc, px),
+        Cons(c, rest) => {
+            let Pair(id, px2) = fmTake(px)
+            let leads = fmLead(fmNotes(px2), id)
+            let eol = fmEol(fmNotes(px2), id)
+            let line = fmPrintCtor(px2, c)
+            let line2 = if eol == "" {
+                line
+            } else {
+                line ++ " " ++ eol
+            }
+            let lines = append(fmCmtLines(fmIndent(1), leads, Nil), Cons(line2, Nil))
+            fmPrintCtors(px2, rest, fmPushLines(lines, acc))
+        },
+    }
+}
+
+fn fmPrintTypeDecl(px: Px, d: TypeDecl) -> Out {
+    match d {
+        TypeDecl(_, _, isPub, name, _, tps, ctors) => {
+            let vis = if isPub {
+                "pub "
+            } else {
+                ""
+            }
+            let head = vis ++ "type " ++ name ++ fmTypeParams(tps) ++ " ="
+            let Pair(rid, px2) = fmTake(px)
+            let Acc(rev, px3) = fmPrintCtors(px2, ctors, Nil)
+            let rev2 = fmPushCmts(fmTrail(fmNotes(px3), rid), fmIndent(1), rev)
+            Out(Ln(head, reverse(rev2)), px3)
+        },
+    }
+}
+
+fn fmDecorate(px: Px, id: Int, base: Int, ln: Ln, prevEnd: Int, first: Bool, gap: Bool) -> Pair[List[String], Int] {
+    let Pair(start, end) = fmSpan(px, id)
+    let blank = if gap {
+        if first {
+            false
+        } else {
+            fmGap(fmFlags(px), prevEnd + 1, start)
+        }
+    } else {
+        false
+    }
+    let leads = fmLead(fmNotes(px), id)
+    let eol = fmEol(fmNotes(px), id)
+    let ln2 = lnEol(ln, eol)
+    let body = append(fmCmtLines(fmIndent(base), leads, Nil), fmLnLines(ln2))
+    let body2 = if blank {
+        Cons("", body)
+    } else {
+        body
+    }
+    Pair(body2, end)
+}
+
+fn fmPrintImports(px: Px, imps: List[Import], prevEnd: Int, first: Bool, acc: List[String]) -> Acc {
+    match imps {
+        Nil => Acc(acc, px),
+        Cons(imp, rest) => {
+            let Pair(id, px2) = fmTake(px)
+            let Out(ln, px3) = fmPrintImport(px2, imp)
+            let Pair(lines, end) = fmDecorate(px3, id, 0, ln, prevEnd, first, true)
+            fmPrintImports(px3, rest, end, false, fmPushLines(lines, acc))
+        },
+    }
+}
+
+type Decl =
+    | DType(TypeDecl)
+    | DFunc(FuncDecl)
+
+fn fmPosBefore(a: Pos, b: Pos) -> Bool {
+    match a {
+        Pos(la, ca) => match b {
+            Pos(lb, cb) => if la < lb {
+                true
+            } else if la > lb {
+                false
+            } else {
+                ca < cb
+            },
+        },
+    }
+}
+
+fn fmMergeDecls(tys: List[TypeDecl], fns: List[FuncDecl], acc: List[Decl]) -> List[Decl] {
+    match tys {
+        Nil => fmMergeFuncs(fns, acc),
+        Cons(t, trest) => match fns {
+            Nil => fmMergeTypes(tys, acc),
+            Cons(f, frest) => match t {
+                TypeDecl(_, tpos, _, _, _, _, _) => match f {
+                    FuncDecl(_, fpos, _, _, _, _, _, _, _) => if fmPosBefore(tpos, fpos) {
+                        fmMergeDecls(trest, fns, Cons(DType(t), acc))
+                    } else {
+                        fmMergeDecls(tys, frest, Cons(DFunc(f), acc))
+                    },
+                },
+            },
+        },
+    }
+}
+
+fn fmMergeTypes(tys: List[TypeDecl], acc: List[Decl]) -> List[Decl] {
+    match tys {
+        Nil => reverse(acc),
+        Cons(t, rest) => fmMergeTypes(rest, Cons(DType(t), acc)),
+    }
+}
+
+fn fmMergeFuncs(fns: List[FuncDecl], acc: List[Decl]) -> List[Decl] {
+    match fns {
+        Nil => reverse(acc),
+        Cons(f, rest) => fmMergeFuncs(rest, Cons(DFunc(f), acc)),
+    }
+}
+
+fn fmPrintDecls(px: Px, decls: List[Decl], acc: List[String], prevBlank: Bool) -> Acc {
+    match decls {
+        Nil => Acc(acc, px),
+        Cons(d, rest) => {
+            let Pair(id, px2) = fmTake(px)
+            let Out(ln, px3) = match d {
+                DType(td) => fmPrintTypeDecl(px2, td),
+                DFunc(fd) => fmPrintFunc(px2, fd),
+            }
+            let lines = fmDeclLines(px3, id, ln, prevBlank)
+            fmPrintDecls(px3, rest, fmPushLines(lines, acc), true)
+        },
+    }
+}
+
+fn fmDeclLines(px: Px, id: Int, ln: Ln, prevBlank: Bool) -> List[String] {
+    let leads = fmLead(fmNotes(px), id)
+    let eol = fmEol(fmNotes(px), id)
+    let ln2 = lnEol(ln, eol)
+    let body = append(fmCmtLines("", leads, Nil), fmLnLines(ln2))
+    if prevBlank {
+        Cons("", body)
+    } else {
+        body
+    }
+}
+
+fn fmFileLines(px: Px, file: File) -> List[String] {
+    match file {
+        File(imps, tys, fns) => {
+            let Pair(fid, px2) = fmTake(px)
+            let Acc(revI, px3) = fmPrintImports(px2, imps, -1, true, Nil)
+            let hasImp = match imps {
+                Nil => false,
+                Cons(_, _) => true,
+            }
+            let hasDecl = match tys {
+                Cons(_, _) => true,
+                Nil => match fns {
+                    Nil => false,
+                    Cons(_, _) => true,
+                },
+            }
+            let sep = if hasImp && hasDecl {
+                true
+            } else {
+                false
+            }
+            let decls = fmMergeDecls(tys, fns, Nil)
+            let Acc(revD, px4) = fmPrintDecls(px3, decls, revI, sep)
+            let revT = fmPushCmts(fmTrail(fmNotes(px4), fid), "", revD)
+            reverse(revT)
+        },
+    }
+}
+
+fn fmWithNl(lines: List[String], acc: List[String]) -> List[String] {
+    match lines {
+        Nil => reverse(acc),
+        Cons(l, rest) => fmWithNl(rest, Cons(l ++ "\n", acc)),
+    }
+}
+
+fn fmRender(lines: List[String]) -> String {
+    match lines {
+        Nil => "\n",
+        _ => concatBalanced(fmWithNl(lines, Nil)),
+    }
+}
+
+pub fn fmFormat(src: String) -> Result[String] {
+    match parseFile(src, 0) {
+        Err(e) => Err(e),
+        Ok(parsed) => match parsed {
+            Pair(file, _) => match lexWithTrivia(src) {
+                Err(e) => Err(e),
+                Ok(tr) => match tr {
+                    Pair(raws, comments) => {
+                        let toks = fmTokList(raws)
+                        let st = fmScanFile(toks, fmLastLine(src))
+                        let St(_, _, regs, spans) = st
+                        let notes = fmAnnotate(comments, regs)
+                        let srcInfo = Src(toks, fmTextMap(raws), fmKindMap(raws), fmBlanks(src), comments)
+                        let px = fmPx0(notes, spans, srcInfo)
+                        Ok(fmRender(fmFileLines(px, file)))
+                    },
+                },
+            },
+        },
+    }
+}

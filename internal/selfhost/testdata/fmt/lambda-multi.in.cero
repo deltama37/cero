@@ -1,0 +1,1 @@
+fn apply(c:Bool)->Int{let g=fn(x:Int)->Int{let y=x+1 if c{y}else{x}} g(1)}

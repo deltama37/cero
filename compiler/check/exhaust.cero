@@ -14,9 +14,11 @@ pub type CkPatK =
     | CkBoolK
     | CkStrK
 
-pub type CkSpat = | CkSpat(CkPatK, Int, Int, String, List[CkSpat], Int, Bool)
+pub type CkSpat =
+    | CkSpat(CkPatK, Int, Int, String, List[CkSpat], Int, Bool)
 
-type CkHeads = | CkHeads(CkPatK, Int, IntMap[Bool], Bool, Bool)
+type CkHeads =
+    | CkHeads(CkPatK, Int, IntMap[Bool], Bool, Bool)
 
 fn ctorFields(env: TyEnv, dataId: Int, tag: Int) -> List[Type] {
     let TyEnv(datas, _, _) = env
@@ -175,7 +177,11 @@ fn addHead(s: CkHeads, h: CkSpat) -> CkHeads {
             let kind2 = keepKind(kind, hk)
             match hk {
                 CkCtorK => {
-                    let data2 = if data < 0 { hd } else { data }
+                    let data2 = if data < 0 {
+                        hd
+                    } else {
+                        data
+                    }
                     CkHeads(kind2, data2, imInsert(ctors, htag, true), tseen, fseen)
                 },
                 CkBoolK => if hb {
@@ -293,7 +299,11 @@ fn formatSpat(env: TyEnv, p: CkSpat) -> String {
         CkWild => "_",
         CkIntK => intToString(i),
         CkStrK => quoteString(s),
-        CkBoolK => if b { "true" } else { "false" },
+        CkBoolK => if b {
+            "true"
+        } else {
+            "false"
+        },
         CkCtorK => match args {
             Nil => s,
             _ => s ++ "(" ++ formatParts(env, args, "") ++ ")",
@@ -306,8 +316,16 @@ fn formatMissing(env: TyEnv, s: CkHeads) -> String {
     match kind {
         CkCtorK => joinMissing(env, dataCtors(env, data), ctors, Nil),
         CkBoolK => {
-            let ts = if tseen { Nil } else { Cons("true", Nil) }
-            let bs = if fseen { ts } else { append(ts, Cons("false", Nil)) }
+            let ts = if tseen {
+                Nil
+            } else {
+                Cons("true", Nil)
+            }
+            let bs = if fseen {
+                ts
+            } else {
+                append(ts, Cons("false", Nil))
+            }
             join(bs, ", ")
         },
         CkIntK => "_",

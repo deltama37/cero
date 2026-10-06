@@ -1,0 +1,1 @@
+fn apply()->Int{let g=fn(x){x+1} g(1)}

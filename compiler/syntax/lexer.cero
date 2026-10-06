@@ -1,14 +1,18 @@
 import "std/list"
 import "std/option"
+import "std/pair"
 import "syntax/diag"
 import "syntax/token"
 import "util/quote"
 
-type Cur = | Cur(Int, Int, Int)
+type Cur =
+    | Cur(Int, Int, Int)
 
-type Scanned = | Scanned(Token, Int, Int, Int)
+type Scanned =
+    | Scanned(Token, Int, Int, Int)
 
-type LexDone = | LexDone(List[Token], Int, Int)
+type LexDone =
+    | LexDone(List[Token], Int, Int)
 
 type Esc =
     | EscOk(Int, Int, Int, Int)
@@ -17,6 +21,18 @@ type Esc =
 type Hex =
     | HexOk(Int, Int, Int, Int)
     | HexNone
+
+pub type Comment =
+    | Comment(Pos, String, Bool)
+
+pub type RawToken =
+    | RawToken(Pos, Kind, String)
+
+type Triv =
+    | Triv(Int, Int, Int, Bool, List[Comment])
+
+type CEnd =
+    | CEnd(Int, Int, Int)
 
 fn contByte(b: Int) -> Bool {
     b >= 128 && b <= 191
@@ -108,7 +124,7 @@ fn isDigit(b: Int) -> Bool {
 }
 
 fn isIdentStart(b: Int) -> Bool {
-    b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+    b == '_' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
 }
 
 fn isIdentPart(b: Int) -> Bool {
@@ -443,7 +459,11 @@ fn oneKind(b: Int) -> Option[Kind] {
 fn scanSymbol(src: String, i: Int, line: Int, col: Int, pos: Pos) -> Result[Scanned] {
     let b = stringByteAt(src, i)
     let n = stringLength(src)
-    let next = if i + 1 < n { stringByteAt(src, i + 1) } else { 0 }
+    let next = if i + 1 < n {
+        stringByteAt(src, i + 1)
+    } else {
+        0
+    }
     match twoKind(b, next) {
         Some(k) => Ok(Scanned(Token(k, stringSlice(src, i, i + 2), pos), i + 2, line, col + 2)),
         None => match oneKind(b) {
@@ -491,6 +511,68 @@ pub fn lex(src: String) -> Result[List[Token]] {
                 LexDone(rev, line, col) => Ok(reverse(Cons(Token(EOF, "", Pos(line, col)), rev))),
             },
         }
+    } else {
+        Err(errorf(Pos(1, 1), "invalid UTF-8 encoding"))
+    }
+}
+
+fn commentEnd(src: String, i: Int, line: Int, col: Int) -> CEnd {
+    let n = stringLength(src)
+    if i >= n {
+        CEnd(i, line, col)
+    } else {
+        let b = stringByteAt(src, i)
+        if b == '\n' {
+            CEnd(i, line, col)
+        } else if b < 128 {
+            commentEnd(src, i + 1, line, col + 1)
+        } else {
+            commentEnd(src, i + charWidth(src, i), line, col + 1)
+        }
+    }
+}
+
+fn skipTrivia(src: String, i: Int, line: Int, col: Int, bol: Bool, acc: List[Comment]) -> Triv {
+    let n = stringLength(src)
+    if i >= n {
+        Triv(i, line, col, bol, acc)
+    } else {
+        let b = stringByteAt(src, i)
+        if b == ' ' || b == '\t' || b == '\r' {
+            skipTrivia(src, i + 1, line, col + 1, bol, acc)
+        } else if b == '\n' {
+            skipTrivia(src, i + 1, line + 1, 1, true, acc)
+        } else if b == '/' && i + 1 < n && stringByteAt(src, i + 1) == '/' {
+            let CEnd(j, line2, col2) = commentEnd(src, i, line, col)
+            let text = stringSlice(src, i, j)
+            let c = Comment(Pos(line, col), text, bol)
+            skipTrivia(src, j, line2, col2, bol, Cons(c, acc))
+        } else {
+            Triv(i, line, col, bol, acc)
+        }
+    }
+}
+
+fn lexTriviaAll(src: String, i: Int, line: Int, col: Int, bol: Bool, tokAcc: List[RawToken], cmtAcc: List[Comment]) -> Result[Pair[List[RawToken], List[Comment]]] {
+    let Triv(j, line2, col2, _, cmt2) = skipTrivia(src, i, line, col, bol, cmtAcc)
+    if j >= stringLength(src) {
+        let eof = RawToken(Pos(line2, col2), EOF, "")
+        Ok(Pair(reverse(Cons(eof, tokAcc)), reverse(cmt2)))
+    } else {
+        match scan(src, j, line2, col2) {
+            Err(e) => Err(e),
+            Ok(sc) => match sc {
+                Scanned(tok, j2, line3, col3) => match tok {
+                    Token(k, _, pos) => lexTriviaAll(src, j2, line3, col3, false, Cons(RawToken(pos, k, stringSlice(src, j, j2)), tokAcc), cmt2),
+                },
+            },
+        }
+    }
+}
+
+pub fn lexWithTrivia(src: String) -> Result[Pair[List[RawToken], List[Comment]]] {
+    if utf8Valid(src) {
+        lexTriviaAll(src, 0, 1, 1, true, Nil, Nil)
     } else {
         Err(errorf(Pos(1, 1), "invalid UTF-8 encoding"))
     }

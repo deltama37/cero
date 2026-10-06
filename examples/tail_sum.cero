@@ -1,5 +1,4 @@
 // expected output: 50000005000000
-
 fn sumTo(n: Int, acc: Int) -> Int {
     if n == 0 {
         acc

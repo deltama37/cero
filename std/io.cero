@@ -31,9 +31,7 @@ fn readArgs(i: Int, n: Int) -> IO[List[String]] {
     if i >= n {
         pure(Nil)
     } else {
-        bind(argAt(i), fn(s: String) -> IO[List[String]] {
-            mapIO(readArgs(i + 1, n), fn(rest: List[String]) -> List[String] { Cons(s, rest) })
-        })
+        bind(argAt(i), fn(s: String) -> IO[List[String]] { mapIO(readArgs(i + 1, n), fn(rest: List[String]) -> List[String] { Cons(s, rest) }) })
     }
 }
 
