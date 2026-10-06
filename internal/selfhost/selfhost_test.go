@@ -2,6 +2,7 @@ package selfhost
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -253,6 +254,183 @@ func TestIR(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuild(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	files := irSources(t, root)
+	if len(files) != 280 {
+		t.Fatalf("sources = %d, want 280", len(files))
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+
+			want, err := goWasm(root, file)
+			if err != nil {
+				t.Fatalf("build %s: %v", file, err)
+			}
+			stdout, stderr, code := runCero(t, root, "build", file, "-o", "-")
+			if code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q", stderr)
+			}
+			if stdout != string(want) {
+				reportWasmDiff(t, file, stdout, string(want))
+			}
+		})
+	}
+}
+
+func TestBuildRuns(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	outDir := filepath.Join(root, "internal/selfhost/testdata/.out")
+	if err := os.RemoveAll(outDir); err != nil {
+		t.Fatalf("remove %s: %v", outDir, err)
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", outDir, err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(outDir)
+	})
+
+	files := []string{
+		"examples/fib.cero",
+		"examples/higher_order.cero",
+		"examples/list.cero",
+		"examples/strings.cero",
+		"examples/io/hello.cero",
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+
+			prog, err := goProgram(root, file)
+			if err != nil {
+				t.Fatalf("build %s: %v", file, err)
+			}
+			name := strings.ReplaceAll(file, "/", "_")
+			name = strings.TrimSuffix(name, ".cero") + ".wasm"
+			rel := filepath.Join("internal/selfhost/testdata/.out", name)
+			stdout, stderr, code := runCero(t, root, "build", file, "-o", rel)
+			if code != 0 {
+				t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q", stderr)
+			}
+			gotOut, gotErr, gotCode := runWasm(t, root, filepath.Join(root, rel), prog.Command)
+			wantOut, wantErr, wantCode := runWasm(t, root, "", prog.Command, prog.Wasm)
+			if gotCode != wantCode || gotOut != wantOut || gotErr != wantErr {
+				t.Errorf("run code %d stdout %q stderr %q, want code %d stdout %q stderr %q", gotCode, gotOut, gotErr, wantCode, wantOut, wantErr)
+			}
+		})
+	}
+}
+
+func reportWasmDiff(
+	t *testing.T,
+	file string,
+	got string,
+	want string,
+) {
+	t.Helper()
+
+	n := len(got)
+	if len(want) < n {
+		n = len(want)
+	}
+	i := 0
+	for i < n && got[i] == want[i] {
+		i++
+	}
+	t.Errorf("wasm mismatch for %s at byte %d (got %d bytes, want %d)\n got %s\nwant %s", file, i, len(got), len(want), hexWindow(got, i), hexWindow(want, i))
+}
+
+func hexWindow(b string, i int) string {
+	start := i - 16
+	if start < 0 {
+		start = 0
+	}
+	end := i + 17
+	if end > len(b) {
+		end = len(b)
+	}
+	return hex.EncodeToString([]byte(b[start:end]))
+}
+
+func goWasm(root, file string) ([]byte, error) {
+	prog, err := goProgram(root, file)
+	if err != nil {
+		return nil, err
+	}
+	return prog.Wasm, nil
+}
+
+func goProgram(root, file string) (*driver.Output, error) {
+	src, err := os.ReadFile(filepath.Join(root, file))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", file, err)
+	}
+	return driver.CompileProgram(
+		file,
+		src,
+		func(name string) ([]byte, error) {
+			body, readErr := os.ReadFile(filepath.Join(root, name))
+			if readErr != nil {
+				return nil, fmt.Errorf("read %s: %w", name, readErr)
+			}
+			return body, nil
+		},
+	)
+}
+
+func runWasm(
+	t *testing.T,
+	root string,
+	path string,
+	command bool,
+	wasm ...[]byte,
+) (string, string, int) {
+	t.Helper()
+
+	file := path
+	if len(wasm) > 0 {
+		dir := t.TempDir()
+		file = filepath.Join(dir, "main.wasm")
+		if err := os.WriteFile(file, wasm[0], 0o644); err != nil {
+			t.Fatalf("write wasm: %v", err)
+		}
+	}
+	var cmd *exec.Cmd
+	if command {
+		cmd = exec.Command("wasmtime", "run", "--dir=.", file)
+		cmd.Dir = root
+	} else {
+		cmd = exec.Command("wasmtime", "run", "--invoke", "main", file)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return stdout.String(), stderr.String(), 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return stdout.String(), stderr.String(), exitErr.ExitCode()
+	}
+	t.Fatalf("wasmtime: %v\nstderr:\n%s", err, stderr.String())
+	return "", "", 1
 }
 
 func TestCheckCorpusCoversErrors(t *testing.T) {

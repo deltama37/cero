@@ -2,6 +2,7 @@
 /bin/
 /dist/
 *.wasm
+internal/selfhost/testdata/.out/
 
 # Go
 *.test
