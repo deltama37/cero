@@ -880,6 +880,280 @@ fn main() -> Int {
 	}
 }
 
+func TestEncodeString(t *testing.T) {
+	t.Parallel()
+
+	t.Run("layout, dedup, and inline length", func(t *testing.T) {
+		t.Parallel()
+
+		m := lowerModule(t, `fn main() -> Int {
+    stringLength("ab") + stringLength("c") + stringLength("ab")
+}
+`)
+		wasm := Encode(m)
+		if got, want := sectionIDs(t, wasm), []byte{
+			secType, secFunction, secTable, secMemory, secGlobal, secExport, secCode, secData,
+		}; !bytes.Equal(got, want) {
+			t.Fatalf("section ids = %v, want %v", got, want)
+		}
+		secs := moduleSections(t, wasm)
+		wantData := []byte{0x01, 0x00, opI32Const, 0x08, opEnd}
+		wantData = appendUleb128(wantData, 32)
+		wantData = append(wantData,
+			0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			'a', 'b', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			'c', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		)
+		if !bytes.Equal(secs[secData], wantData) {
+			t.Errorf("data = %x\nwant %x", secs[secData], wantData)
+		}
+		if got := globalHeap(t, secs[secGlobal]); got != 40 {
+			t.Errorf("heap = %d, want 40", got)
+		}
+		if got := memoryMin(t, secs[secMemory]); got != 1 {
+			t.Errorf("min pages = %d, want 1", got)
+		}
+		wantBody := []byte{
+			0x00,
+			opI32Const, 0x08, opI32Load, alignI32, 0x00, opI64ExtendI32U,
+			opI32Const, 0x18, opI32Load, alignI32, 0x00, opI64ExtendI32U,
+			opI64Add,
+			opI32Const, 0x08, opI32Load, alignI32, 0x00, opI64ExtendI32U,
+			opI64Add,
+			opEnd,
+		}
+		if got := functionBodies(t, wasm)[0]; !bytes.Equal(got, wantBody) {
+			t.Errorf("main =\n%x\nwant:\n%x", got, wantBody)
+		}
+		if got, want := len(functionBodies(t, wasm)), len(m.Funcs)+1; got != want {
+			t.Errorf("function bodies = %d, want %d (no string helper)", got, want)
+		}
+	})
+
+	helpers := []struct {
+		name string
+		src  string
+		want []int
+		data bool
+		heap int64
+	}{
+		{
+			name: "length only",
+			src:  "fn main() -> Int { stringLength(\"hi\") }\n",
+			want: []int{0, 1},
+			data: true,
+			heap: 24,
+		},
+		{
+			name: "byte_at does not pull str_alloc",
+			src:  "fn main() -> Int { stringByteAt(\"A\", 0) }\n",
+			want: []int{0, 1, 2},
+			data: true,
+			heap: 24,
+		},
+		{
+			name: "eq does not pull str_alloc",
+			src:  "fn main() -> Int { if \"a\" == \"b\" { 1 } else { 0 } }\n",
+			want: []int{0, 1, 2},
+			data: true,
+			heap: 40,
+		},
+		{
+			name: "compare does not pull str_alloc",
+			src:  "fn main() -> Int { stringCompare(\"a\", \"b\") }\n",
+			want: []int{0, 1, 2},
+			data: true,
+			heap: 40,
+		},
+		{
+			name: "concat pulls str_alloc",
+			src:  "fn main() -> Int { stringLength(\"a\" ++ \"b\") }\n",
+			want: []int{0, 1, 1, 2},
+			data: true,
+			heap: 40,
+		},
+		{
+			name: "intToString without a literal",
+			src:  "fn main() -> Int { stringLength(intToString(0)) }\n",
+			want: []int{0, 1, 1, 2},
+			data: false,
+			heap: 8,
+		},
+		{
+			name: "every helper, shared type indices",
+			src: `fn main() -> Int {
+    let s = "a" ++ "b"
+    let n = stringLength(s) + stringByteAt(s, 0) + stringCompare(s, "ab")
+    let t = stringSlice(s, 0, 1)
+    let u = stringFromByte(65)
+    let v = intToString(n)
+    if t == u { stringLength(v) } else { 0 }
+}
+`,
+			want: []int{0, 1, 1, 2, 3, 4, 5, 4, 6, 6},
+			data: true,
+			heap: 8 + 16 + 16 + 16,
+		},
+	}
+
+	for _, tt := range helpers {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wasm := Encode(lowerModule(t, tt.src))
+			secs := moduleSections(t, wasm)
+			if got := funcTypeIndices(t, secs[secFunction]); !intSlicesEqual(got, tt.want) {
+				t.Errorf("function types = %v, want %v", got, tt.want)
+			}
+			_, hasData := secs[secData]
+			if hasData != tt.data {
+				t.Errorf("data section present = %v, want %v", hasData, tt.data)
+			}
+			if got := globalHeap(t, secs[secGlobal]); got != tt.heap {
+				t.Errorf("heap = %d, want %d", got, tt.heap)
+			}
+			if tt.name == "every helper, shared type indices" {
+				wantTypes := []byte{
+					0x07,
+					typeFunc, 0x00, 0x01, valI64,
+					typeFunc, 0x01, valI32, 0x01, valI32,
+					typeFunc, 0x02, valI32, valI64, 0x01, valI64,
+					typeFunc, 0x03, valI32, valI64, valI64, 0x01, valI32,
+					typeFunc, 0x01, valI64, 0x01, valI32,
+					typeFunc, 0x02, valI32, valI32, 0x01, valI64,
+					typeFunc, 0x02, valI32, valI32, 0x01, valI32,
+				}
+				if !bytes.Equal(secs[secType], wantTypes) {
+					t.Errorf("types =\n%x\nwant:\n%x", secs[secType], wantTypes)
+				}
+			}
+		})
+	}
+
+	t.Run("literal larger than 64KiB", func(t *testing.T) {
+		t.Parallel()
+
+		const n = 65537
+		src := "fn main() -> Int { stringLength(\"" + strings.Repeat("a", n) + "\") }\n"
+		wasm := Encode(lowerModule(t, src))
+		secs := moduleSections(t, wasm)
+		size := (n + 15) &^ 7
+		heap := int64(8 + size)
+		pages := int((heap + 65535) / 65536)
+		if pages < 2 {
+			t.Fatalf("pages = %d, want at least 2", pages)
+		}
+		if got := globalHeap(t, secs[secGlobal]); got != heap {
+			t.Errorf("heap = %d, want %d", got, heap)
+		}
+		if got := memoryMin(t, secs[secMemory]); got != pages {
+			t.Errorf("min pages = %d, want %d", got, pages)
+		}
+		if _, ok := secs[secData]; !ok {
+			t.Fatal("missing data section")
+		}
+	})
+
+	t.Run("string helpers follow new", func(t *testing.T) {
+		t.Parallel()
+
+		wasm := Encode(lowerModule(t, `type Box = Box(Int)
+
+fn main() -> Int {
+    match Box(1) {
+        Box(_) => stringLength("a" ++ "b"),
+    }
+}
+`))
+		got := funcTypeIndices(t, moduleSections(t, wasm)[secFunction])
+		want := []int{0, 1, 2, 1, 3}
+		if !intSlicesEqual(got, want) {
+			t.Errorf("function types = %v, want %v", got, want)
+		}
+	})
+}
+
+func funcTypeIndices(t *testing.T, payload []byte) []int {
+	t.Helper()
+
+	n, width, ok := readUleb(payload)
+	if !ok {
+		t.Fatal("truncated function section")
+	}
+	rest := payload[width:]
+	out := make([]int, 0, n)
+	for i := uint64(0); i < n; i++ {
+		v, w, ok := readUleb(rest)
+		if !ok {
+			t.Fatalf("truncated type index %d", i)
+		}
+		rest = rest[w:]
+		out = append(out, int(v))
+	}
+	if len(rest) != 0 {
+		t.Fatalf("function section has %d trailing bytes", len(rest))
+	}
+	return out
+}
+
+func globalHeap(t *testing.T, payload []byte) int64 {
+	t.Helper()
+
+	if len(payload) < 6 || payload[0] != 0x01 || payload[1] != valI32 || payload[2] != 0x01 || payload[3] != opI32Const {
+		t.Fatalf("global = %x", payload)
+	}
+	v, width, ok := readSleb(payload[4:])
+	if !ok || 4+width >= len(payload) || payload[4+width] != opEnd {
+		t.Fatalf("global init = %x", payload)
+	}
+	return v
+}
+
+func memoryMin(t *testing.T, payload []byte) int {
+	t.Helper()
+
+	if len(payload) < 3 || payload[0] != 0x01 || payload[1] != limitsMinMax {
+		t.Fatalf("memory = %x", payload)
+	}
+	n, _, ok := readUleb(payload[2:])
+	if !ok {
+		t.Fatalf("memory min = %x", payload)
+	}
+	return int(n)
+}
+
+func readSleb(b []byte) (int64, int, bool) {
+	var v int64
+	var shift uint
+	for i, c := range b {
+		if shift > 63 {
+			return 0, 0, false
+		}
+		v |= int64(c&0x7f) << shift
+		shift += 7
+		if c&0x80 == 0 {
+			if shift < 64 && c&0x40 != 0 {
+				v |= -1 << shift
+			}
+			return v, i + 1, true
+		}
+	}
+	return 0, 0, false
+}
+
+func intSlicesEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func lowerModule(t *testing.T, src string) *ir.Module {
 	t.Helper()
 
