@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs the Cero-written ceroc (bin/ceroc-cero.wasm) under wasmtime.
+# The current directory is preopened, so file paths are relative to it
+# (ADR-0014). Produce the module with `make selfhost-build`.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+exec wasmtime run --dir=. "$root/bin/ceroc-cero.wasm" "$@"
