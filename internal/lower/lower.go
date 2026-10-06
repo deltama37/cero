@@ -393,7 +393,11 @@ func (l *lowerer) lowerMatch(
 	var result ir.Expr
 	switch l.mustType(e.Scrutinee).(type) {
 	case *types.Named:
-		result = l.lowerDataMatch(fn, locals, e, s)
+		if flatMatch(e) {
+			result = l.lowerDataMatch(fn, locals, e, s)
+		} else {
+			result = l.lowerNestedMatch(fn, locals, e, s)
+		}
 	case types.IntType, types.BoolType:
 		result = l.lowerValueMatch(fn, locals, e, s)
 	default:
@@ -469,6 +473,223 @@ func (l *lowerer) lowerValueMatch(
 		}
 	}
 	return chain(0)
+}
+
+// flatMatch reports whether every arm's pattern has the v0.2 form: '_', a
+// variable, a literal, or a constructor whose arguments are all '_' or
+// variables.
+func flatMatch(m *ast.MatchExpr) bool {
+	for _, arm := range m.Arms {
+		if !flatPattern(arm.Pattern) {
+			return false
+		}
+	}
+	return true
+}
+
+func flatPattern(p ast.Pattern) bool {
+	switch p := p.(type) {
+	case *ast.WildcardPat, *ast.VarPat, *ast.IntPat, *ast.BoolPat:
+		return true
+	case *ast.CtorPat:
+		for _, arg := range p.Args {
+			switch arg.(type) {
+			case *ast.WildcardPat, *ast.VarPat:
+			default:
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *lowerer) lowerNestedMatch(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	e *ast.MatchExpr,
+	s ir.LocalID,
+) ir.Expr {
+	resultType := l.valType(l.mustType(e))
+	var chain func(int) ir.Expr
+	chain = func(i int) ir.Expr {
+		arm := e.Arms[i]
+		if i == len(e.Arms)-1 {
+			return l.bindArm(fn, locals, arm, s)
+		}
+		cond := l.patTest(fn, arm.Pattern, s, ir.Ptr)
+		if cond == nil {
+			return l.bindArm(fn, locals, arm, s)
+		}
+		return &ir.If{
+			Cond: cond,
+			Then: l.bindArm(fn, locals, arm, s),
+			Else: chain(i + 1),
+			T:    resultType,
+		}
+	}
+	return chain(0)
+}
+
+// patTest reports whether the value in local x matches p. It returns nil
+// when every value matches. vt is the value type of x.
+func (l *lowerer) patTest(
+	fn *ir.Func,
+	p ast.Pattern,
+	x ir.LocalID,
+	vt ir.ValType,
+) ir.Expr {
+	switch p := p.(type) {
+	case *ast.WildcardPat, *ast.VarPat:
+		return nil
+	case *ast.IntPat:
+		return &ir.Binary{
+			Op: ir.Eq,
+			X:  &ir.LocalGet{Local: x, T: vt},
+			Y:  &ir.IntConst{Value: p.Value},
+		}
+	case *ast.BoolPat:
+		return &ir.Binary{
+			Op: ir.Eq,
+			X:  &ir.LocalGet{Local: x, T: vt},
+			Y:  &ir.BoolConst{Value: p.Value},
+		}
+	case *ast.CtorPat:
+		ctor := l.info.CtorPats[p]
+		if ctor == nil {
+			panic(fmt.Sprintf("lower: missing constructor for pattern '%s' at %s", p.Name, p.Pos))
+		}
+		var tests []ir.Expr
+		if len(ctor.Data.Ctors) > 1 {
+			tests = append(tests, &ir.SwitchTag{
+				Local: x,
+				Cases: []*ir.TagCase{{
+					Tag:  ctor.Index,
+					Body: &ir.BoolConst{Value: true},
+				}},
+				Default: &ir.BoolConst{Value: false},
+				T:       ir.Bool,
+			})
+		}
+		for i, arg := range p.Args {
+			switch arg.(type) {
+			case *ast.WildcardPat, *ast.VarPat:
+				continue
+			}
+			avt := patValType(arg)
+			id := ir.LocalID(len(fn.Locals))
+			fn.Locals = append(fn.Locals, avt)
+			sub := l.patTest(fn, arg, id, avt)
+			if sub == nil {
+				continue
+			}
+			tests = append(tests, &ir.Block{
+				Lets: []*ir.Let{{
+					Local: id,
+					Value: &ir.Field{Local: x, Index: i, T: avt},
+				}},
+				Result: sub,
+			})
+		}
+		return andExprs(tests)
+	default:
+		panic(fmt.Sprintf("lower: unhandled pattern %T", p))
+	}
+}
+
+func andExprs(tests []ir.Expr) ir.Expr {
+	switch len(tests) {
+	case 0:
+		return nil
+	case 1:
+		return tests[0]
+	default:
+		return &ir.If{
+			Cond: tests[0],
+			Then: andExprs(tests[1:]),
+			Else: &ir.BoolConst{Value: false},
+			T:    ir.Bool,
+		}
+	}
+}
+
+func patValType(p ast.Pattern) ir.ValType {
+	switch p.(type) {
+	case *ast.CtorPat:
+		return ir.Ptr
+	case *ast.IntPat:
+		return ir.Int
+	case *ast.BoolPat:
+		return ir.Bool
+	default:
+		panic(fmt.Sprintf("lower: no value type for pattern %T", p))
+	}
+}
+
+// bindArm allocates the locals the pattern binds, then lowers the arm body.
+func (l *lowerer) bindArm(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	arm *ast.MatchArm,
+	s ir.LocalID,
+) ir.Expr {
+	var lets []*ir.Let
+	var bind func(ast.Pattern, ir.LocalID)
+	bind = func(p ast.Pattern, x ir.LocalID) {
+		switch p := p.(type) {
+		case *ast.VarPat:
+			locals[l.patVar(p)] = x
+		case *ast.CtorPat:
+			for i, arg := range p.Args {
+				switch arg := arg.(type) {
+				case *ast.VarPat:
+					sym := l.patVar(arg)
+					id := ir.LocalID(len(fn.Locals))
+					vt := l.valType(sym.Type)
+					fn.Locals = append(fn.Locals, vt)
+					lets = append(lets, &ir.Let{
+						Local: id,
+						Value: &ir.Field{Local: x, Index: i, T: vt},
+					})
+					locals[sym] = id
+				case *ast.CtorPat:
+					if !containsVar(arg) {
+						continue
+					}
+					id := ir.LocalID(len(fn.Locals))
+					fn.Locals = append(fn.Locals, ir.Ptr)
+					lets = append(lets, &ir.Let{
+						Local: id,
+						Value: &ir.Field{Local: x, Index: i, T: ir.Ptr},
+					})
+					bind(arg, id)
+				}
+			}
+		}
+	}
+	bind(arm.Pattern, s)
+	body := l.lowerExpr(fn, locals, arm.Body)
+	if len(lets) == 0 {
+		return body
+	}
+	return &ir.Block{Lets: lets, Result: body}
+}
+
+func containsVar(p ast.Pattern) bool {
+	switch p := p.(type) {
+	case *ast.VarPat:
+		return true
+	case *ast.CtorPat:
+		for _, arg := range p.Args {
+			if containsVar(arg) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // armBody allocates the locals the pattern binds, then lowers the arm body.

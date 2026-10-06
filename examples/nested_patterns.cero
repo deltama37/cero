@@ -1,0 +1,39 @@
+// expected output: 42
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Option[T] =
+    | None
+    | Some(T)
+
+type Pair[A, B] = Pair(A, B)
+
+fn sumPairs(xs: List[Int]) -> Int {
+    match xs {
+        Cons(x, Cons(y, rest)) => x + y + sumPairs(rest),
+        _ => 0,
+    }
+}
+
+fn second(xs: List[Int]) -> Int {
+    match xs {
+        Cons(_, Cons(y, _)) => y,
+        _ => 0,
+    }
+}
+
+fn classify(p: Pair[Bool, Bool]) -> Int {
+    match p {
+        Pair(true, true) => 4,
+        Pair(true, false) => 3,
+        Pair(false, true) => 2,
+        Pair(false, false) => 0,
+    }
+}
+
+fn main() -> Int {
+    let xs = Cons(7, Cons(8, Cons(9, Cons(10, Nil))))
+    sumPairs(xs) + second(xs) + classify(Pair(false, false))
+}

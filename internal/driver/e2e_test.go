@@ -1025,6 +1025,119 @@ fn main() -> Int {
 `,
 			want: "42",
 		},
+		{
+			name: "nested patterns",
+			file: "examples/nested_patterns.cero",
+			want: "42",
+		},
+		{
+			name: "second element",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn second(xs: List[Int]) -> Int {
+    match xs {
+        Cons(_, Cons(y, _)) => y,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    second(Cons(10, Cons(32, Cons(1, Nil))))
+}
+`,
+			want: "32",
+		},
+		{
+			name: "pair of booleans",
+			src: `type Pair[A, B] = Pair(A, B)
+
+fn both(p: Pair[Bool, Bool]) -> Int {
+    match p {
+        Pair(true, true) => 3,
+        Pair(true, false) => 2,
+        Pair(false, true) => 1,
+        Pair(false, false) => 0,
+    }
+}
+
+fn main() -> Int {
+    both(Pair(true, true)) + both(Pair(true, false)) + both(Pair(false, true)) + both(Pair(false, false))
+}
+`,
+			want: "6",
+		},
+		{
+			name: "three nested constructors",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Option[T] =
+    | None
+    | Some(T)
+
+fn dig(o: Option[List[Int]]) -> Int {
+    match o {
+        Some(Cons(_, Cons(x, _))) => x,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    dig(Some(Cons(1, Cons(41, Nil))))
+}
+`,
+			want: "41",
+		},
+		{
+			name: "tail recursive sum of a million pairs",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn build(n: Int, acc: List[Int]) -> List[Int] {
+    if n == 0 {
+        acc
+    } else {
+        build(n - 1, Cons(n, acc))
+    }
+}
+
+fn sumPairs(xs: List[Int], acc: Int) -> Int {
+    match xs {
+        Cons(x, Cons(y, rest)) => sumPairs(rest, acc + x + y),
+        _ => acc,
+    }
+}
+
+fn main() -> Int {
+    sumPairs(build(1000000, Nil), 0)
+}
+`,
+			want: "500000500000",
+		},
+		{
+			name: "nested integer literal",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn f(o: Option[Int]) -> Int {
+    match o {
+        Some(7) => 11,
+        Some(_) => 2,
+        None => 0,
+    }
+}
+
+fn main() -> Int {
+    f(Some(7)) + f(Some(8)) + f(None)
+}
+`,
+			want: "13",
+		},
 	}
 
 	for _, tt := range tests {

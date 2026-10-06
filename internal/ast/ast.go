@@ -257,7 +257,7 @@ func (*VarPat) pattern() {}
 
 // CtorPat matches values built with constructor Name. Name starts with an
 // uppercase ASCII letter. Args is empty when written without parentheses;
-// each element is a *VarPat or *WildcardPat.
+// each element is any Pattern.
 type CtorPat struct {
 	Pos  diag.Pos // name
 	Name string

@@ -1582,7 +1582,7 @@ fn main() -> Int {
     }
 }
 `,
-			want: "4:5: non-exhaustive match: Cons",
+			want: "4:5: non-exhaustive match: missing Cons(_, _)",
 		},
 		{
 			name: "non-exhaustive constructors in order",
@@ -1594,7 +1594,7 @@ fn main() -> Int {
     }
 }
 `,
-			want: "4:5: non-exhaustive match: Rect, Tri",
+			want: "4:5: non-exhaustive match: missing Rect(_, _), Tri(_, _)",
 		},
 		{
 			name: "non-exhaustive bool",
@@ -1605,7 +1605,7 @@ fn main() -> Int {
     }
 }
 `,
-			want: "3:5: non-exhaustive match: false",
+			want: "3:5: non-exhaustive match: missing false",
 		},
 		{
 			name: "non-exhaustive int",
@@ -1616,7 +1616,7 @@ fn main() -> Int {
     }
 }
 `,
-			want: "3:5: non-exhaustive match: Int values need a '_' or variable pattern",
+			want: "3:5: non-exhaustive match: missing _",
 		},
 		{
 			name: "match arm types differ",
@@ -2718,6 +2718,230 @@ fn main() { f(1) }
 fn main() { inc(true) }
 `,
 			want: "2:17: expected Int, found Bool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
+func TestCheckNestedPatternSuccess(t *testing.T) {
+	t.Parallel()
+
+	listOpt := `type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+`
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "nested constructors",
+			src: listOpt + `fn main() -> Int {
+    match Cons(1, Cons(2, Nil)) {
+        Cons(_, Cons(_, Nil)) => 1,
+        _ => 0,
+    }
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				list := info.Datas[typeByName(t, file, "List")]
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				outer := m.Arms[0].Pattern.(*ast.CtorPat)
+				inner := outer.Args[1].(*ast.CtorPat)
+				nilPat := inner.Args[1].(*ast.CtorPat)
+				if info.CtorPats[outer] != list.Ctors[1] || info.CtorPats[outer].Name != "Cons" {
+					t.Errorf("outer Cons = %+v", info.CtorPats[outer])
+				}
+				if info.CtorPats[inner] != list.Ctors[1] || info.CtorPats[inner].Name != "Cons" {
+					t.Errorf("inner Cons = %+v", info.CtorPats[inner])
+				}
+				if info.CtorPats[nilPat] != list.Ctors[0] || info.CtorPats[nilPat].Name != "Nil" {
+					t.Errorf("Nil = %+v", info.CtorPats[nilPat])
+				}
+			},
+		},
+		{
+			name: "nested literals",
+			src: listOpt + `fn main() -> Int {
+    match Some(true) {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => 2,
+    }
+}
+`,
+		},
+		{
+			name: "nested variable types",
+			src: listOpt + `fn main() -> Int {
+    match Cons(1, Cons(2, Nil)) {
+        Cons(x, Cons(y, _)) => x + y,
+        _ => 0,
+    }
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				outer := m.Arms[0].Pattern.(*ast.CtorPat)
+				x := outer.Args[0].(*ast.VarPat)
+				inner := outer.Args[1].(*ast.CtorPat)
+				y := inner.Args[0].(*ast.VarPat)
+				if info.PatVars[x] == nil || info.PatVars[x].Type.String() != "Int" {
+					t.Errorf("x = %+v", info.PatVars[x])
+				}
+				if info.PatVars[y] == nil || info.PatVars[y].Type.String() != "Int" {
+					t.Errorf("y = %+v", info.PatVars[y])
+				}
+			},
+		},
+		{
+			name: "infer scrutinee from a nested pattern",
+			src: listOpt + `fn f(p) {
+    match p {
+        Some(Cons(x, _)) => x,
+        _ => 0,
+    }
+}
+fn main() { f(Some(Cons(1, Nil))) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				f := funcByName(t, file, "f")
+				wantFuncScheme(t, info, f, "Option[List[Int]] -> Int")
+				m := f.Body.Result.(*ast.MatchExpr)
+				some := m.Arms[0].Pattern.(*ast.CtorPat)
+				cons := some.Args[0].(*ast.CtorPat)
+				x := cons.Args[0].(*ast.VarPat)
+				if info.CtorPats[some] == nil || info.CtorPats[some].Name != "Some" {
+					t.Errorf("Some = %+v", info.CtorPats[some])
+				}
+				if info.CtorPats[cons] == nil || info.CtorPats[cons].Name != "Cons" {
+					t.Errorf("Cons = %+v", info.CtorPats[cons])
+				}
+				if info.PatVars[x] == nil || info.PatVars[x].Type.String() != "Int" {
+					t.Errorf("x = %+v", info.PatVars[x])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckNestedPatternError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "duplicate nested variable",
+			src: `type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Cons(2, Nil)) {
+        Cons(x, Cons(x, _)) => x,
+        _ => 0,
+    }
+}
+`,
+			want: "4:22: duplicate variable 'x' in pattern",
+		},
+		{
+			name: "nested type mismatch",
+			src: `type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Nil) {
+        Cons(true, _) => 0,
+        _ => 1,
+    }
+}
+`,
+			want: "4:14: expected Int, found Bool",
+		},
+		{
+			name: "nested unknown constructor",
+			src: `type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Nil) {
+        Cons(Foo, _) => 0,
+        _ => 1,
+    }
+}
+`,
+			want: "4:14: unknown constructor 'Foo'",
+		},
+		{
+			name: "nested wrong field count",
+			src: `type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Nil) {
+        Cons(x, Cons(y)) => x,
+        _ => 0,
+    }
+}
+`,
+			want: "4:17: wrong number of fields in pattern 'Cons': expected 2, found 1",
+		},
+		{
+			name: "unreachable nested constructor",
+			src: `type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Nil) {
+        Cons(_, _) => 0,
+        Cons(_, Nil) => 1,
+        _ => 2,
+    }
+}
+`,
+			want: "5:9: unreachable match arm",
+		},
+		{
+			name: "non-exhaustive nested constructor",
+			src: `type List[T] = Nil | Cons(T, List[T])
+fn main() -> Int {
+    match Cons(1, Nil) {
+        Nil => 0,
+        Cons(_, Nil) => 1,
+    }
+}
+`,
+			want: "3:5: non-exhaustive match: missing Cons(_, Cons(_, _))",
+		},
+		{
+			name: "literal against a type parameter",
+			src: `type Option[T] = None | Some(T)
+fn f[T](o: Option[T]) -> Int {
+    match o {
+        Some(1) => 1,
+        _ => 0,
+    }
+}
+fn main() -> Int { 0 }
+`,
+			want: "4:14: expected T, found Int",
 		},
 	}
 

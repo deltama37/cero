@@ -58,6 +58,9 @@ with design documents in [`docs/design/`](docs/design/):
 * v0.6: closures that capture outer variables, such as `fn(x) { x + n }`
   ([ADR-0008](docs/adr/0008-v0.6-closures.md);
   `examples/closures.cero`)
+* v0.7: nested patterns, such as `Cons(_, Cons(y, _))`
+  ([ADR-0009](docs/adr/0009-v0.7-nested-patterns.md);
+  `examples/nested_patterns.cero`)
 
 `ceroc fmt` is not implemented yet.
 

@@ -1085,6 +1085,76 @@ fn main() -> Int { f(1) }
 				"(main 1)",
 			),
 		},
+		{
+			name: "nested constructor pattern",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn second(xs: List[Int]) -> Int {
+    match xs {
+        Cons(_, Cons(y, _)) => y,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 second (sig (Ptr) Int) (locals Ptr Ptr Ptr Ptr Int) (block (let 1 (local 0)) (if (if (switch.tag 1 (case 1 true) (default false)) (block (let 2 (field 1 1)) (switch.tag 2 (case 1 true) (default false))) false) (block (let 3 (field 1 1)) (let 4 (field 3 0)) (local 4)) 0)))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "nested pattern of a single constructor",
+			src: `type Box = Box(Int)
+
+fn f(b: Box) -> Int {
+    match b {
+        Box(1) => 10,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr Int) (block (let 1 (local 0)) (if (block (let 2 (field 1 0)) (eq (local 2) 1)) 10 0)))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
+		{
+			name: "nested literal pattern",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn f(o: Option[Int]) -> Int {
+    match o {
+        Some(1) => 10,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    0
+}
+`,
+			want: lines(
+				"(func 0 f (sig (Ptr) Int) (locals Ptr Ptr Int) (block (let 1 (local 0)) (if (if (switch.tag 1 (case 1 true) (default false)) (block (let 2 (field 1 0)) (eq (local 2) 1)) false) 10 0)))",
+				"(func 1 main (sig () Int) (locals) 0)",
+				"(table)",
+				"(main 1)",
+			),
+		},
 	}
 
 	for _, tt := range tests {
