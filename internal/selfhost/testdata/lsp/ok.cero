@@ -1,0 +1,19 @@
+import "lib"
+
+fn id[T](x: T) -> T {
+    x
+}
+
+fn use(n: Int) -> Int {
+    let y = id(n)
+    let z = stringLength("hi")
+    y + z
+}
+
+fn main() -> Int {
+    let c = Red
+    match c {
+        Red => libFun(use(1)),
+        Green(k) => k,
+    }
+}

@@ -1,0 +1,486 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "std/string"
+import "syntax/ast"
+import "syntax/diag"
+import "types/types"
+import "util/intmap"
+import "driver/load"
+import "check/state"
+
+pub type LsParsed =
+    | LsEmpty
+    | LsSyntax(List[Module])
+    | LsChecked(List[Module], Info)
+
+pub type LsLoc =
+    | LsLoc(String, Int, Int, Int)
+
+type Hit =
+    | HitIdent(Int, String, Pos)
+    | HitParam(Int, String, Pos)
+    | HitLet(Int, String, Pos)
+    | HitFunc(Int, String, Pos)
+    | HitVar(Int, String, Pos)
+    | HitCtor(Int, String, Pos)
+
+pub fn lsIngest(mods: List[Module], checked: Result[Info]) -> Pair[LsParsed, Option[Error]] {
+    match checked {
+        Ok(info) => Pair(LsChecked(mods, info), None),
+        Err(e) => Pair(LsSyntax(mods), Some(e)),
+    }
+}
+
+fn lsAt(pos: Pos, name: String, line: Int, col: Int) -> Bool {
+    let Pos(pl, pc) = pos
+    if pl != line {
+        false
+    } else {
+        let n = stringLength(name)
+        pc <= col && col < pc + n
+    }
+}
+
+fn walkExprs(xs: List[Expr], line: Int, col: Int) -> Option[Hit] {
+    match xs {
+        Nil => None,
+        Cons(e, rest) => match walkExpr(e, line, col) {
+            Some(h) => Some(h),
+            None => walkExprs(rest, line, col),
+        },
+    }
+}
+
+fn walkTwo(x: Expr, y: Expr, line: Int, col: Int) -> Option[Hit] {
+    match walkExpr(x, line, col) {
+        Some(h) => Some(h),
+        None => walkExpr(y, line, col),
+    }
+}
+
+fn walkPats(ps: List[Pattern], line: Int, col: Int) -> Option[Hit] {
+    match ps {
+        Nil => None,
+        Cons(p, rest) => match walkPat(p, line, col) {
+            Some(h) => Some(h),
+            None => walkPats(rest, line, col),
+        },
+    }
+}
+
+fn walkPat(p: Pattern, line: Int, col: Int) -> Option[Hit] {
+    match p {
+        VarP(id, pos, name) => if lsAt(pos, name, line, col) {
+            Some(HitVar(id, name, pos))
+        } else {
+            None
+        },
+        CtorP(id, pos, name, args) => if lsAt(pos, name, line, col) {
+            Some(HitCtor(id, name, pos))
+        } else {
+            walkPats(args, line, col)
+        },
+        _ => None,
+    }
+}
+
+fn walkArms(arms: List[Arm], line: Int, col: Int) -> Option[Hit] {
+    match arms {
+        Nil => None,
+        Cons(a, rest) => match walkArm(a, line, col) {
+            Some(h) => Some(h),
+            None => walkArms(rest, line, col),
+        },
+    }
+}
+
+fn walkArm(a: Arm, line: Int, col: Int) -> Option[Hit] {
+    let Arm(p, e) = a
+    match walkPat(p, line, col) {
+        Some(h) => Some(h),
+        None => walkExpr(e, line, col),
+    }
+}
+
+fn walkParams(ps: List[Param], line: Int, col: Int) -> Option[Hit] {
+    match ps {
+        Nil => None,
+        Cons(p, rest) => {
+            let Param(id, pos, name, _) = p
+            if lsAt(pos, name, line, col) {
+                Some(HitParam(id, name, pos))
+            } else {
+                walkParams(rest, line, col)
+            }
+        },
+    }
+}
+
+fn walkLets(lets: List[LetStmt], line: Int, col: Int) -> Option[Hit] {
+    match lets {
+        Nil => None,
+        Cons(stmt, rest) => match walkLet(stmt, line, col) {
+            Some(h) => Some(h),
+            None => walkLets(rest, line, col),
+        },
+    }
+}
+
+fn walkLet(stmt: LetStmt, line: Int, col: Int) -> Option[Hit] {
+    let LetStmt(id, _, name, namePos, _, value) = stmt
+    if lsAt(namePos, name, line, col) {
+        Some(HitLet(id, name, namePos))
+    } else {
+        walkExpr(value, line, col)
+    }
+}
+
+fn walkBlock(b: Block, line: Int, col: Int) -> Option[Hit] {
+    let Block(_, _, lets, result) = b
+    match walkLets(lets, line, col) {
+        Some(h) => Some(h),
+        None => walkExpr(result, line, col),
+    }
+}
+
+fn walkIf(c: Expr, t: Block, e: Expr, line: Int, col: Int) -> Option[Hit] {
+    match walkExpr(c, line, col) {
+        Some(h) => Some(h),
+        None => match walkBlock(t, line, col) {
+            Some(h) => Some(h),
+            None => walkExpr(e, line, col),
+        },
+    }
+}
+
+fn walkExpr(e: Expr, line: Int, col: Int) -> Option[Hit] {
+    match e {
+        Ident(id, pos, name) => if lsAt(pos, name, line, col) {
+            Some(HitIdent(id, name, pos))
+        } else {
+            None
+        },
+        Unary(_, _, _, x) => walkExpr(x, line, col),
+        Binary(_, _, _, _, x, y) => walkTwo(x, y, line, col),
+        Call(_, _, f, _, args) => match walkExpr(f, line, col) {
+            Some(h) => Some(h),
+            None => walkExprs(args, line, col),
+        },
+        If(_, _, c, t, e2) => walkIf(c, t, e2, line, col),
+        BlockE(b) => walkBlock(b, line, col),
+        FuncLit(_, _, ps, _, b) => match walkParams(ps, line, col) {
+            Some(h) => Some(h),
+            None => walkBlock(b, line, col),
+        },
+        Match(_, _, scrut, arms, _) => match walkExpr(scrut, line, col) {
+            Some(h) => Some(h),
+            None => walkArms(arms, line, col),
+        },
+        _ => None,
+    }
+}
+
+fn walkFuncs(fs: List[FuncDecl], line: Int, col: Int) -> Option[Hit] {
+    match fs {
+        Nil => None,
+        Cons(d, rest) => match walkFunc(d, line, col) {
+            Some(h) => Some(h),
+            None => walkFuncs(rest, line, col),
+        },
+    }
+}
+
+fn walkFunc(d: FuncDecl, line: Int, col: Int) -> Option[Hit] {
+    let FuncDecl(id, _, _, name, namePos, _, params, _, body) = d
+    if lsAt(namePos, name, line, col) {
+        Some(HitFunc(id, name, namePos))
+    } else {
+        match walkParams(params, line, col) {
+            Some(h) => Some(h),
+            None => walkBlock(body, line, col),
+        }
+    }
+}
+
+fn lsEntryAst(mods: List[Module], acc: Option[File]) -> Option[File] {
+    match mods {
+        Nil => acc,
+        Cons(m, rest) => {
+            let Module(_, _, ast, _) = m
+            lsEntryAst(rest, Some(ast))
+        },
+    }
+}
+
+fn lsFind(mods: List[Module], line: Int, col: Int) -> Option[Hit] {
+    match lsEntryAst(mods, None) {
+        None => None,
+        Some(file) => {
+            let File(_, _, fns) = file
+            walkFuncs(fns, line, col)
+        },
+    }
+}
+
+fn lsEnv(info: Info) -> TyEnv {
+    TyEnv(infoDataInfos(info), imEmpty(), imEmpty())
+}
+
+fn lsTpShow(t: Type) -> String {
+    match t {
+        TyParam(_, name) => name,
+        _ => "",
+    }
+}
+
+fn lsJoinRest(tps: List[Type], acc: String) -> String {
+    match tps {
+        Nil => acc,
+        Cons(t, rest) => lsJoinRest(rest, acc ++ ", " ++ lsTpShow(t)),
+    }
+}
+
+fn lsJoinTPs(tps: List[Type]) -> String {
+    match tps {
+        Nil => "",
+        Cons(t, rest) => lsJoinRest(rest, lsTpShow(t)),
+    }
+}
+
+fn lsFormatSym(env: TyEnv, name: String, sym: Symbol) -> String {
+    let Symbol(_, _, typ, _, _, _, tps, _) = sym
+    let ty = tyString(env, typ)
+    match tps {
+        Nil => name ++ " : " ++ ty,
+        Cons(_, _) => name ++ " : forall " ++ lsJoinTPs(tps) ++ ". " ++ ty,
+    }
+}
+
+fn lsIdentText(info: Info, env: TyEnv, id: Int, name: String) -> Option[String] {
+    match imLookup(infoTypes(info), id) {
+        None => None,
+        Some(t) => Some(name ++ " : " ++ tyString(env, t)),
+    }
+}
+
+fn lsMappedText(info: Info, env: TyEnv, m: IntMap[Int], id: Int, name: String) -> Option[String] {
+    match imLookup(m, id) {
+        None => None,
+        Some(symId) => match imLookup(infoSymbols(info), symId) {
+            None => None,
+            Some(sym) => Some(lsFormatSym(env, name, sym)),
+        },
+    }
+}
+
+fn lsCtorMatch(sym: Symbol, dataId: Int, tag: Int) -> Bool {
+    let Symbol(k, _, _, _, _, ctor, _, _) = sym
+    match k {
+        CkSymCtor => match ctor {
+            Some(Pair(d, t)) => d == dataId && t == tag,
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+fn lsFindCtor(ps: List[Pair[Int, Symbol]], dataId: Int, tag: Int) -> Option[Symbol] {
+    match ps {
+        Nil => None,
+        Cons(p, rest) => match p {
+            Pair(_, sym) => if lsCtorMatch(sym, dataId, tag) {
+                Some(sym)
+            } else {
+                lsFindCtor(rest, dataId, tag)
+            },
+        },
+    }
+}
+
+fn lsCtorText(info: Info, env: TyEnv, id: Int, name: String) -> Option[String] {
+    match imLookup(infoCtorPats(info), id) {
+        None => None,
+        Some(pair) => {
+            let Pair(dataId, tag) = pair
+            match lsFindCtor(imToList(infoSymbols(info)), dataId, tag) {
+                None => None,
+                Some(sym) => Some(lsFormatSym(env, name, sym)),
+            }
+        },
+    }
+}
+
+fn lsHoverHit(info: Info, env: TyEnv, h: Hit) -> Option[String] {
+    match h {
+        HitIdent(id, name, _) => lsIdentText(info, env, id, name),
+        HitParam(id, name, _) => lsMappedText(info, env, infoParams(info), id, name),
+        HitLet(id, name, _) => lsMappedText(info, env, infoDefs(info), id, name),
+        HitFunc(id, name, _) => lsMappedText(info, env, infoFuncs(info), id, name),
+        HitVar(id, name, _) => lsMappedText(info, env, infoPatVars(info), id, name),
+        HitCtor(id, name, _) => lsCtorText(info, env, id, name),
+    }
+}
+
+fn lsEntryFile(mods: List[Module], acc: String) -> String {
+    match mods {
+        Nil => acc,
+        Cons(m, rest) => {
+            let Module(_, file, _, _) = m
+            lsEntryFile(rest, file)
+        },
+    }
+}
+
+fn lsModFile(mods: List[Module], i: Int) -> String {
+    match mods {
+        Nil => "",
+        Cons(m, rest) => if i == 0 {
+            let Module(_, file, _, _) = m
+            file
+        } else {
+            lsModFile(rest, i - 1)
+        },
+    }
+}
+
+fn lsFuncFile(mods: List[Module], info: Info, decl: Int) -> String {
+    match imLookup(infoFuncModule(info), decl) {
+        Some(i) => lsModFile(mods, i),
+        None => lsEntryFile(mods, ""),
+    }
+}
+
+fn lsTysHave(tys: List[TypeDecl], info: Info, dataId: Int) -> Bool {
+    match tys {
+        Nil => false,
+        Cons(d, rest) => {
+            let TypeDecl(id, _, _, _, _, _, _) = d
+            match imLookup(infoDatas(info), id) {
+                Some(did) => if did == dataId {
+                    true
+                } else {
+                    lsTysHave(rest, info, dataId)
+                },
+                None => lsTysHave(rest, info, dataId),
+            }
+        },
+    }
+}
+
+fn lsModHasData(m: Module, info: Info, dataId: Int) -> Bool {
+    let Module(_, _, ast, _) = m
+    let File(_, tys, _) = ast
+    lsTysHave(tys, info, dataId)
+}
+
+fn lsDataFileAcc(mods: List[Module], info: Info, dataId: Int) -> String {
+    match mods {
+        Nil => "",
+        Cons(m, rest) => if lsModHasData(m, info, dataId) {
+            let Module(_, file, _, _) = m
+            file
+        } else {
+            lsDataFileAcc(rest, info, dataId)
+        },
+    }
+}
+
+fn lsCtorFile(mods: List[Module], info: Info, ctor: Option[Pair[Int, Int]]) -> String {
+    match ctor {
+        Some(Pair(dataId, _)) => {
+            let file = lsDataFileAcc(mods, info, dataId)
+            if file == "" {
+                lsEntryFile(mods, "")
+            } else {
+                file
+            }
+        },
+        None => lsEntryFile(mods, ""),
+    }
+}
+
+fn lsKindFile(mods: List[Module], info: Info, k: SymKind, decl: Int, ctor: Option[Pair[Int, Int]]) -> String {
+    match k {
+        CkSymFunc => lsFuncFile(mods, info, decl),
+        CkSymCtor => lsCtorFile(mods, info, ctor),
+        _ => lsEntryFile(mods, ""),
+    }
+}
+
+fn lsLocSym(mods: List[Module], info: Info, sym: Symbol) -> Option[LsLoc] {
+    let Symbol(k, name, _, pos, decl, ctor, _, _) = sym
+    match k {
+        CkSymBuiltin => None,
+        _ => {
+            let file = lsKindFile(mods, info, k, decl, ctor)
+            if file == "" {
+                None
+            } else {
+                let Pos(line, col) = pos
+                Some(LsLoc(file, line, col, stringLength(name)))
+            }
+        },
+    }
+}
+
+fn lsLocOfSym(mods: List[Module], info: Info, symId: Int) -> Option[LsLoc] {
+    match imLookup(infoSymbols(info), symId) {
+        None => None,
+        Some(sym) => lsLocSym(mods, info, sym),
+    }
+}
+
+fn lsLocOfMap(mods: List[Module], info: Info, m: IntMap[Int], id: Int) -> Option[LsLoc] {
+    match imLookup(m, id) {
+        None => None,
+        Some(symId) => lsLocOfSym(mods, info, symId),
+    }
+}
+
+fn lsLocOfCtorPat(mods: List[Module], info: Info, id: Int) -> Option[LsLoc] {
+    match imLookup(infoCtorPats(info), id) {
+        None => None,
+        Some(pair) => {
+            let Pair(dataId, tag) = pair
+            match lsFindCtor(imToList(infoSymbols(info)), dataId, tag) {
+                None => None,
+                Some(sym) => lsLocSym(mods, info, sym),
+            }
+        },
+    }
+}
+
+fn lsDefHit(mods: List[Module], info: Info, h: Hit) -> Option[LsLoc] {
+    match h {
+        HitIdent(id, _, _) => match imLookup(infoUses(info), id) {
+            None => None,
+            Some(symId) => lsLocOfSym(mods, info, symId),
+        },
+        HitParam(id, _, _) => lsLocOfMap(mods, info, infoParams(info), id),
+        HitLet(id, _, _) => lsLocOfMap(mods, info, infoDefs(info), id),
+        HitFunc(id, _, _) => lsLocOfMap(mods, info, infoFuncs(info), id),
+        HitVar(id, _, _) => lsLocOfMap(mods, info, infoPatVars(info), id),
+        HitCtor(id, _, _) => lsLocOfCtorPat(mods, info, id),
+    }
+}
+
+pub fn lsHover(p: LsParsed, line: Int, col: Int) -> Option[String] {
+    match p {
+        LsChecked(mods, info) => match lsFind(mods, line, col) {
+            None => None,
+            Some(h) => lsHoverHit(info, lsEnv(info), h),
+        },
+        _ => None,
+    }
+}
+
+pub fn lsDefine(p: LsParsed, line: Int, col: Int) -> Option[LsLoc] {
+    match p {
+        LsChecked(mods, info) => match lsFind(mods, line, col) {
+            None => None,
+            Some(h) => lsDefHit(mods, info, h),
+        },
+        _ => None,
+    }
+}
