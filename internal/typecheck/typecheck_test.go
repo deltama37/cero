@@ -7,6 +7,7 @@ import (
 	"github.com/deltama37/cero/internal/ast"
 	"github.com/deltama37/cero/internal/diag"
 	"github.com/deltama37/cero/internal/parser"
+	"github.com/deltama37/cero/internal/token"
 	"github.com/deltama37/cero/internal/types"
 )
 
@@ -3238,13 +3239,6 @@ func TestCheckStringError(t *testing.T) {
 			want: "1:35: expected Int, found String",
 		},
 		{
-			name: "function conflicts with built-in",
-			src: `fn stringLength(s: String) -> Int { 0 }
-fn main() -> Int { 1 }
-`,
-			want: "1:4: function 'stringLength' conflicts with built-in function 'stringLength'",
-		},
-		{
 			name: "redefine String",
 			src:  "type String = S\n",
 			want: "1:6: cannot redefine built-in type 'String'",
@@ -3300,29 +3294,6 @@ fn main() -> Int { 1 }
 			requireError(t, tt.src, tt.want)
 		})
 	}
-
-	t.Run("constructor conflicts with built-in", func(t *testing.T) {
-		t.Parallel()
-
-		file := &ast.File{
-			Types: []*ast.TypeDecl{{
-				Name:    "Box",
-				NamePos: diag.Pos{Line: 1, Col: 6},
-				Ctors: []*ast.CtorDecl{{
-					Pos:  diag.Pos{Line: 1, Col: 12},
-					Name: "intToString",
-				}},
-			}},
-		}
-		info, err := Check(file)
-		if info != nil {
-			t.Fatal("Check() info != nil, want nil")
-		}
-		const want = "1:12: constructor 'intToString' conflicts with built-in function 'intToString'"
-		if err == nil || err.Error() != want {
-			t.Fatalf("error = %v, want %q", err, want)
-		}
-	})
 }
 
 func TestCheckIOSuccess(t *testing.T) {
@@ -3640,6 +3611,331 @@ fn main() -> IO[Unit] { bind(1, f) }
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
+func TestCheckConveniencesSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "remainder and character literal",
+			src: `fn main() -> Int {
+    let n = 7 % 3
+    let c = 'a'
+    n + c
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				rem := lets[0].Value.(*ast.BinaryExpr)
+				if rem.Op != token.Percent {
+					t.Errorf("operator = %s, want %%", rem.Op)
+				}
+				wantType(t, info, rem, "Int")
+				lit := lets[1].Value.(*ast.IntLit)
+				if lit.Value != 97 {
+					t.Errorf("character = %d, want 97", lit.Value)
+				}
+				wantType(t, info, lit, "Int")
+			},
+		},
+		{
+			name: "bit operations",
+			src: `fn main() -> Int {
+    let a = bitAnd(12, 10)
+    let b = bitOr(12, 10)
+    let c = bitXor(12, 10)
+    let d = shiftLeft(1, 2)
+    let e = shiftRight(-8, 1)
+    let f = shiftRightUnsigned(1, 2)
+    a + b + c + d + e + f
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				lets := funcByName(t, file, "main").Body.Lets
+				want := []Builtin{
+					BuiltinBitAnd,
+					BuiltinBitOr,
+					BuiltinBitXor,
+					BuiltinShiftLeft,
+					BuiltinShiftRight,
+					BuiltinShiftRightUnsigned,
+				}
+				if len(lets) != len(want) {
+					t.Fatalf("lets = %d, want %d", len(lets), len(want))
+				}
+				for i, b := range want {
+					call := lets[i].Value.(*ast.CallExpr)
+					id := call.Fn.(*ast.Ident)
+					sym := info.Uses[id]
+					if sym == nil || sym.Kind != SymBuiltin || sym.Builtin != b {
+						t.Errorf("let %d symbol = %+v, want built-in %d", i, sym, b)
+					}
+					wantType(t, info, call, "Int")
+				}
+			},
+		},
+		{
+			name: "top-level function hides a built-in",
+			src: `fn stringLength(s: String) -> Int { 0 }
+fn main() -> Int { stringLength("abc") }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				decl := funcByName(t, file, "stringLength")
+				call := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				id := call.Fn.(*ast.Ident)
+				if info.Uses[id] != info.Funcs[decl] || info.Uses[id].Kind != SymFunc {
+					t.Errorf("stringLength resolved to %+v, want the top-level function", info.Uses[id])
+				}
+			},
+		},
+		{
+			name: "module bind used by let bang",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn bind[A, B](m: Option[A], f: A -> Option[B]) -> Option[B] {
+    match m {
+        None => None,
+        Some(x) => f(x),
+    }
+}
+
+fn main() -> Int {
+    let r = {
+        let! x = Some(1)
+        let! y = Some(x + 1)
+        Some(y)
+    }
+    match r {
+        Some(n) => n,
+        None => 0,
+    }
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				bindFn := info.Funcs[funcByName(t, file, "bind")]
+				block := funcByName(t, file, "main").Body.Lets[0].Value.(*ast.BlockExpr)
+				outer := block.Result.(*ast.CallExpr)
+				if info.Uses[outer.Fn.(*ast.Ident)] != bindFn {
+					t.Error("outer let! did not use the module's bind")
+				}
+				inner := outer.Args[1].(*ast.FuncLit).Body.Result.(*ast.CallExpr)
+				if info.Uses[inner.Fn.(*ast.Ident)] != bindFn {
+					t.Error("inner let! did not use the module's bind")
+				}
+			},
+		},
+		{
+			name: "IO let bang",
+			src: `fn main() -> IO[Unit] {
+    let! n = pure(1)
+    print(intToString(n))
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				call := funcByName(t, file, "main").Body.Result.(*ast.CallExpr)
+				sym := info.Uses[call.Fn.(*ast.Ident)]
+				if sym == nil || sym.Kind != SymBuiltin || sym.Builtin != BuiltinBind {
+					t.Errorf("bind = %+v, want the built-in", sym)
+				}
+				wantType(t, info, call, "IO[Unit]")
+			},
+		},
+		{
+			name: "let pattern of a single constructor",
+			src: `type Pair[A, B] = Pair(A, B)
+fn main() -> Int {
+    let Pair(a, b) = Pair(20, 22)
+    let s = a + b
+    s
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				if !m.Let {
+					t.Error("Let = false, want true")
+				}
+				body := m.Arms[0].Body.(*ast.BlockExpr)
+				wantType(t, info, body.Lets[0].Value, "Int")
+				wantType(t, info, body.Result, "Int")
+			},
+		},
+		{
+			name: "nested let pattern",
+			src: `type Pair[A, B] = Pair(A, B)
+type Box[T] = Box(T)
+fn main() -> Int {
+    let Box(Pair(x, y)) = Box(Pair(1, 2))
+    x + y
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				m := funcByName(t, file, "main").Body.Result.(*ast.MatchExpr)
+				if !m.Let {
+					t.Error("Let = false, want true")
+				}
+				pat := m.Arms[0].Pattern.(*ast.CtorPat)
+				inner := pat.Args[0].(*ast.CtorPat)
+				if info.PatVars[inner.Args[0].(*ast.VarPat)] == nil || info.PatVars[inner.Args[1].(*ast.VarPat)] == nil {
+					t.Error("nested pattern variables were not bound")
+				}
+				wantType(t, info, m, "Int")
+			},
+		},
+		{
+			name: "two wildcard parameters",
+			src: `fn ignore(_: Int, _: Bool) -> Int { 1 }
+fn main() -> Int { ignore(1, true) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				fn := funcByName(t, file, "ignore")
+				s0 := info.Params[fn.Params[0]]
+				s1 := info.Params[fn.Params[1]]
+				if s0 == nil || s1 == nil || s0 == s1 {
+					t.Fatalf("parameters = %v, %v", s0, s1)
+				}
+				if s0.Name != "_" || s1.Name != "_" {
+					t.Errorf("names = %q, %q, want _ and _", s0.Name, s1.Name)
+				}
+				if s0.Type.String() != "Int" || s1.Type.String() != "Bool" {
+					t.Errorf("types = %s, %s, want Int and Bool", s0.Type, s1.Type)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			file, info := mustCheck(t, tt.src)
+			tt.check(t, file, info)
+		})
+	}
+
+	t.Run("imported function hides a built-in", func(t *testing.T) {
+		t.Parallel()
+
+		mods := parseProgram(t, []programMod{
+			{path: "lib", file: "lib.cero", src: "pub fn stringLength(s: String) -> Int { 7 }\n"},
+			{path: "app", file: "app.cero", src: "import \"lib\"\nfn main() -> Int { stringLength(\"abc\") }\n"},
+		})
+		info, err := CheckProgram(mods)
+		if err != nil {
+			t.Fatalf("CheckProgram() error = %v", err)
+		}
+		lib := modByPath(t, mods, "lib")
+		app := modByPath(t, mods, "app")
+		call := funcByName(t, app.Ast, "main").Body.Result.(*ast.CallExpr)
+		id := call.Fn.(*ast.Ident)
+		if info.Uses[id] != info.Funcs[funcByName(t, lib.Ast, "stringLength")] || info.Uses[id].Kind != SymFunc {
+			t.Errorf("stringLength resolved to %+v, want the import", info.Uses[id])
+		}
+	})
+
+	t.Run("constructor hides a built-in", func(t *testing.T) {
+		t.Parallel()
+
+		id := &ast.Ident{Name: "intToString", Pos: diag.Pos{Line: 3, Col: 13}}
+		file := &ast.File{
+			Types: []*ast.TypeDecl{{
+				Name:    "Box",
+				NamePos: diag.Pos{Line: 1, Col: 6},
+				Ctors: []*ast.CtorDecl{{
+					Pos:  diag.Pos{Line: 1, Col: 12},
+					Name: "intToString",
+				}},
+			}},
+			Funcs: []*ast.FuncDecl{{
+				Name:    "main",
+				NamePos: diag.Pos{Line: 2, Col: 4},
+				Result:  &ast.NamedType{Pos: diag.Pos{Line: 2, Col: 13}, Name: "Int"},
+				Body: &ast.BlockExpr{
+					Lets: []*ast.LetStmt{{
+						Name:    "x",
+						NamePos: diag.Pos{Line: 3, Col: 9},
+						Value:   id,
+					}},
+					Result: &ast.IntLit{Value: 0, Pos: diag.Pos{Line: 4, Col: 5}},
+				},
+			}},
+		}
+		info, err := Check(file)
+		if err != nil {
+			t.Fatalf("Check() error = %v", err)
+		}
+		sym := info.Uses[id]
+		if sym == nil || sym.Kind != SymCtor || sym.Ctor == nil || sym.Ctor.Name != "intToString" {
+			t.Errorf("intToString resolved to %+v, want the constructor", sym)
+		}
+	})
+}
+
+func TestCheckConveniencesError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		src   string
+		parse bool
+		want  string
+	}{
+		{
+			name: "remainder of bool",
+			src:  "fn main() -> Int { true % 1 }\n",
+			want: "1:20: expected Int, found Bool",
+		},
+		{
+			name: "refutable let pattern",
+			src: `type Option[T] = None | Some(T)
+fn main() -> Int {
+    let Some(x) = Some(1)
+    x
+}
+`,
+			want: "3:5: refutable pattern in let: missing None",
+		},
+		{
+			name:  "referencing a wildcard parameter",
+			src:   "fn f(_: Int) -> Int { _ }\nfn main() -> Int { f(1) }\n",
+			parse: true,
+			want:  "1:23: expected expression, found '_'",
+		},
+		{
+			name: "let bang of a non-IO value",
+			src: `fn main() -> Int {
+    let! x = 1
+    x
+}
+`,
+			want: "2:14: expected IO[?A], found Int",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if tt.parse {
+				_, err := parser.ParseFile([]byte(tt.src))
+				if err == nil {
+					t.Fatal("ParseFile() error = nil")
+				}
+				if _, ok := err.(*diag.Error); !ok {
+					t.Fatalf("error type = %T, want *diag.Error", err)
+				}
+				if err.Error() != tt.want {
+					t.Errorf("error = %q, want %q", err.Error(), tt.want)
+				}
+				return
+			}
 			requireError(t, tt.src, tt.want)
 		})
 	}
