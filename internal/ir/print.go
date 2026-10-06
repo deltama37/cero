@@ -89,6 +89,15 @@ func FormatExpr(e Expr) string {
 			parts = append(parts, "(default "+FormatExpr(e.Default)+")")
 		}
 		return "(switch.tag " + strings.Join(parts, " ") + ")"
+	case *StrConst:
+		return "(str " + strconv.Quote(e.Value) + ")"
+	case *Prim:
+		parts := make([]string, 0, 1+len(e.Args))
+		parts = append(parts, primName(e.Op))
+		for _, arg := range e.Args {
+			parts = append(parts, FormatExpr(arg))
+		}
+		return "(prim " + strings.Join(parts, " ") + ")"
 	default:
 		panic(fmt.Sprintf("ir.FormatExpr: unhandled type %T", e))
 	}
@@ -137,6 +146,29 @@ func unaryName(op UnOp) string {
 		return "not"
 	default:
 		panic(fmt.Sprintf("ir.FormatExpr: unknown unary operator %d", int(op)))
+	}
+}
+
+func primName(op PrimOp) string {
+	switch op {
+	case StrLength:
+		return "string.length"
+	case StrByteAt:
+		return "string.byte_at"
+	case StrSlice:
+		return "string.slice"
+	case StrFromByte:
+		return "string.from_byte"
+	case StrCompare:
+		return "string.compare"
+	case IntToString:
+		return "int.to_string"
+	case StrConcat:
+		return "string.concat"
+	case StrEq:
+		return "string.eq"
+	default:
+		panic(fmt.Sprintf("ir.FormatExpr: unknown prim %d", int(op)))
 	}
 }
 

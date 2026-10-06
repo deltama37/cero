@@ -254,6 +254,47 @@ func (e *Field) Type() ValType { return e.T }
 // Type returns the branch type.
 func (e *SwitchTag) Type() ValType { return e.T }
 
+// StrConst is a string literal. It yields the address (Ptr) of a static
+// block laid out as in ADR-0010.
+type StrConst struct{ Value string }
+
+// PrimOp is a built-in operation on strings (ADR-0010).
+type PrimOp int
+
+const (
+	StrLength   PrimOp = iota // (Ptr) -> Int
+	StrByteAt                 // (Ptr, Int) -> Int
+	StrSlice                  // (Ptr, Int, Int) -> Ptr
+	StrFromByte               // (Int) -> Ptr
+	StrCompare                // (Ptr, Ptr) -> Int
+	IntToString               // (Int) -> Ptr
+	StrConcat                 // (Ptr, Ptr) -> Ptr
+	StrEq                     // (Ptr, Ptr) -> Bool
+)
+
+// Prim applies a built-in operation to Args.
+type Prim struct {
+	Op   PrimOp
+	Args []Expr
+}
+
+// Type returns Ptr.
+func (*StrConst) Type() ValType { return Ptr }
+
+// Type returns the result type of the built-in operation.
+func (e *Prim) Type() ValType {
+	switch e.Op {
+	case StrLength, StrByteAt, StrCompare:
+		return Int
+	case StrSlice, StrFromByte, IntToString, StrConcat:
+		return Ptr
+	case StrEq:
+		return Bool
+	default:
+		panic(fmt.Sprintf("ir.Prim.Type: unknown operation %d", int(e.Op)))
+	}
+}
+
 func (*IntConst) isExpr()     {}
 func (*BoolConst) isExpr()    {}
 func (*LocalGet) isExpr()     {}
@@ -267,6 +308,8 @@ func (*CallIndirect) isExpr() {}
 func (*Construct) isExpr()    {}
 func (*Field) isExpr()        {}
 func (*SwitchTag) isExpr()    {}
+func (*StrConst) isExpr()     {}
+func (*Prim) isExpr()         {}
 
 var (
 	_ Expr = (*IntConst)(nil)
@@ -282,4 +325,6 @@ var (
 	_ Expr = (*Construct)(nil)
 	_ Expr = (*Field)(nil)
 	_ Expr = (*SwitchTag)(nil)
+	_ Expr = (*StrConst)(nil)
+	_ Expr = (*Prim)(nil)
 )
