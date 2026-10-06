@@ -1332,14 +1332,14 @@ fn main() -> Int { 1 }
 			want: "2:6: cannot use constructor name 'Nil' as a variable",
 		},
 		{
-			name: "let uses constructor name",
+			name: "let constructor pattern on an int",
 			src: `type L = Nil
 fn main() -> Int {
     let Nil = 1
     1
 }
 `,
-			want: "3:9: cannot use constructor name 'Nil' as a variable",
+			want: "3:9: expected Int, found L",
 		},
 		{
 			name: "constructor used as value",

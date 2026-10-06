@@ -216,9 +216,9 @@ func (p *parser) parseParamList(allowUntyped bool) ([]*ast.Param, error) {
 	}
 	var params []*ast.Param
 	if p.cur().Kind != token.RParen {
-		// A parameter list is present only when an identifier follows.
+		// A parameter list is present only when an identifier or '_' follows.
 		// Anything else is reported as a missing ')'.
-		if p.cur().Kind != token.Ident {
+		if p.cur().Kind != token.Ident && p.cur().Kind != token.Underscore {
 			return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.RParen, describe(p.cur()))
 		}
 		for {
@@ -240,7 +240,7 @@ func (p *parser) parseParamList(allowUntyped bool) ([]*ast.Param, error) {
 }
 
 func (p *parser) parseParam(allowUntyped bool) (*ast.Param, error) {
-	if p.cur().Kind != token.Ident {
+	if p.cur().Kind != token.Ident && p.cur().Kind != token.Underscore {
 		return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
 	}
 	nameTok := p.cur()
@@ -353,15 +353,7 @@ func (p *parser) parseBlock() (*ast.BlockExpr, error) {
 	if err := p.expect(token.LBrace); err != nil {
 		return nil, err
 	}
-	var lets []*ast.LetStmt
-	for p.cur().Kind == token.Let {
-		letStmt, err := p.parseLet()
-		if err != nil {
-			return nil, err
-		}
-		lets = append(lets, letStmt)
-	}
-	result, err := p.parseExpr()
+	lets, result, err := p.parseBlockRest()
 	if err != nil {
 		return nil, err
 	}
@@ -371,11 +363,127 @@ func (p *parser) parseBlock() (*ast.BlockExpr, error) {
 	return &ast.BlockExpr{Pos: lbrace.Pos, Lets: lets, Result: result}, nil
 }
 
-func (p *parser) parseLet() (*ast.LetStmt, error) {
-	letTok := p.cur()
-	if err := p.expect(token.Let); err != nil {
+// parseBlockRest parses the statements of a block up to, but not including,
+// the closing '}'. A `let!` or a `let` pattern ends the list of lets: the
+// rest of the block is the body of the rewritten expression.
+func (p *parser) parseBlockRest() ([]*ast.LetStmt, ast.Expr, error) {
+	var lets []*ast.LetStmt
+	for p.cur().Kind == token.Let {
+		letTok := p.cur()
+		p.advance()
+		if p.cur().Kind == token.Bang {
+			p.advance()
+			call, err := p.parseLetBang(letTok)
+			if err != nil {
+				return nil, nil, err
+			}
+			return lets, call, nil
+		}
+		if p.cur().Kind == token.Ident && isVarName(p.cur().Text) {
+			letStmt, err := p.parseLet(letTok)
+			if err != nil {
+				return nil, nil, err
+			}
+			lets = append(lets, letStmt)
+			continue
+		}
+		m, err := p.parseLetPattern(letTok)
+		if err != nil {
+			return nil, nil, err
+		}
+		return lets, m, nil
+	}
+	result, err := p.parseExpr()
+	if err != nil {
+		return nil, nil, err
+	}
+	return lets, result, nil
+}
+
+// parseLetBang parses `x = e`, `x: T = e`, or `_ = e` after `let!` and
+// rewrites the rest of the block as bind(e, fn(x) { rest }).
+func (p *parser) parseLetBang(letTok token.Token) (ast.Expr, error) {
+	if p.cur().Kind == token.Ident && isUpperName(p.cur().Text) {
+		return nil, diag.Errorf(p.cur().Pos, "patterns are not supported in 'let!'")
+	}
+	var name string
+	var namePos diag.Pos
+	if p.cur().Kind == token.Underscore || (p.cur().Kind == token.Ident && isVarName(p.cur().Text)) {
+		name = p.cur().Text
+		namePos = p.cur().Pos
+		p.advance()
+	} else {
+		return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
+	}
+	var typ ast.TypeExpr
+	if p.cur().Kind == token.Colon {
+		p.advance()
+		var err error
+		typ, err = p.parseType()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := p.expect(token.Assign); err != nil {
 		return nil, err
 	}
+	value, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	restLets, restResult, err := p.parseBlockRest()
+	if err != nil {
+		return nil, err
+	}
+	body := &ast.BlockExpr{Pos: letTok.Pos, Lets: restLets, Result: restResult}
+	lit := &ast.FuncLit{
+		Pos:    letTok.Pos,
+		Params: []*ast.Param{{Pos: namePos, Name: name, Type: typ}},
+		Body:   body,
+	}
+	return &ast.CallExpr{
+		Pos:    letTok.Pos,
+		Fn:     &ast.Ident{Pos: letTok.Pos, Name: "bind"},
+		LParen: letTok.Pos,
+		Args:   []ast.Expr{value, lit},
+	}, nil
+}
+
+// parseLetPattern parses `PATTERN = e` after `let` and rewrites the rest of
+// the block as a one-arm match.
+func (p *parser) parseLetPattern(letTok token.Token) (ast.Expr, error) {
+	pat, err := p.parsePattern()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect(token.Assign); err != nil {
+		return nil, err
+	}
+	value, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	restLets, restResult, err := p.parseBlockRest()
+	if err != nil {
+		return nil, err
+	}
+	var body ast.Expr
+	if len(restLets) == 0 {
+		body = restResult
+	} else {
+		body = &ast.BlockExpr{Pos: letTok.Pos, Lets: restLets, Result: restResult}
+	}
+	return &ast.MatchExpr{
+		Pos:       letTok.Pos,
+		Scrutinee: value,
+		Arms:      []*ast.MatchArm{{Pattern: pat, Body: body}},
+		Let:       true,
+	}, nil
+}
+
+// parseLet parses `name = e` or `name: T = e`. The 'let' token has already
+// been consumed. letTok is that token.
+func (p *parser) parseLet(letTok token.Token) (*ast.LetStmt, error) {
 	if p.cur().Kind != token.Ident {
 		return nil, diag.Errorf(p.cur().Pos, "expected %s, found %s", token.Ident, describe(p.cur()))
 	}
@@ -432,7 +540,7 @@ func (p *parser) parseAdd() (ast.Expr, error) {
 }
 
 func (p *parser) parseMul() (ast.Expr, error) {
-	return p.parseLeft(p.parseUnary, token.Star, token.Slash)
+	return p.parseLeft(p.parseUnary, token.Star, token.Slash, token.Percent)
 }
 
 func (p *parser) parseLeft(next func() (ast.Expr, error), ops ...token.Kind) (ast.Expr, error) {
@@ -529,6 +637,10 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 			return nil, diag.Errorf(tok.Pos, "integer literal out of range: %s", tok.Text)
 		}
 		return &ast.IntLit{Pos: tok.Pos, Value: value}, nil
+	case token.Char:
+		tok := p.cur()
+		p.advance()
+		return &ast.IntLit{Pos: tok.Pos, Value: int64(tok.Text[0])}, nil
 	case token.String:
 		tok := p.cur()
 		p.advance()
@@ -606,6 +718,10 @@ func (p *parser) parseIf() (*ast.IfExpr, error) {
 
 func isUpperName(name string) bool {
 	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+func isVarName(name string) bool {
+	return !isUpperName(name)
 }
 
 func (p *parser) parseTypeDecl() (*ast.TypeDecl, error) {
@@ -783,6 +899,10 @@ func (p *parser) parsePattern() (ast.Pattern, error) {
 			return nil, diag.Errorf(tok.Pos, "integer literal out of range: %s", tok.Text)
 		}
 		return &ast.IntPat{Pos: tok.Pos, Value: value}, nil
+	case token.Char:
+		tok := p.cur()
+		p.advance()
+		return &ast.IntPat{Pos: tok.Pos, Value: int64(tok.Text[0])}, nil
 	case token.String:
 		tok := p.cur()
 		p.advance()

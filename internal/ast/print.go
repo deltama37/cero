@@ -227,6 +227,8 @@ func binaryName(kind token.Kind) string {
 		return "*"
 	case token.Slash:
 		return "/"
+	case token.Percent:
+		return "%"
 	case token.Eq:
 		return "=="
 	case token.NotEq:
