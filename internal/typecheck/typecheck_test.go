@@ -3862,3 +3862,463 @@ func walkPattern(
 		t.Errorf("unhandled pattern %T", p)
 	}
 }
+
+type programMod struct {
+	path string
+	file string
+	src  string
+}
+
+func TestCheckProgram(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name  string
+			mods  []programMod
+			check func(*testing.T, []*Module, *Info)
+		}{
+			{
+				name: "call a public function",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "pub fn inc(n: Int) -> Int { n + 1 }\n"},
+					{path: "app", file: "app.cero", src: "import \"lib\"\nfn main() -> Int { inc(41) }\n"},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					lib := modByPath(t, mods, "lib")
+					app := modByPath(t, mods, "app")
+					inc := funcByName(t, lib.Ast, "inc")
+					call := funcByName(t, app.Ast, "main").Body.Result.(*ast.CallExpr)
+					id := call.Fn.(*ast.Ident)
+					if info.Uses[id] != info.Funcs[inc] {
+						t.Errorf("inc resolved to %#v, want lib.inc", info.Uses[id])
+					}
+					wantType(t, info, call, "Int")
+				},
+			},
+			{
+				name: "public type and constructors",
+				mods: []programMod{
+					{
+						path: "shapes",
+						file: "shapes.cero",
+						src:  "pub type Shape = | Circle(Int) | Rect(Int, Int)\n",
+					},
+					{
+						path: "app",
+						file: "app.cero",
+						src: `import "shapes"
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => r,
+        Rect(w, h) => w * h
+    }
+}
+fn classify(s) {
+    match s {
+        Circle(_) => 1,
+        Rect(_, _) => 2
+    }
+}
+fn main() -> Int { area(Circle(1)) + classify(Rect(2, 3)) }
+`,
+					},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					shapes := modByPath(t, mods, "shapes")
+					app := modByPath(t, mods, "app")
+					data := info.Datas[typeByName(t, shapes.Ast, "Shape")]
+					area := funcByName(t, app.Ast, "area")
+					named, ok := info.Params[area.Params[0]].Type.(*types.Named)
+					if !ok || named.Data != data {
+						t.Errorf("area parameter type = %s, want Shape", info.Params[area.Params[0]].Type)
+					}
+					match := area.Body.Result.(*ast.MatchExpr)
+					if info.CtorPats[match.Arms[0].Pattern.(*ast.CtorPat)] != data.Ctors[0] {
+						t.Error("Circle pattern did not resolve to Shape.Circle")
+					}
+					if info.CtorPats[match.Arms[1].Pattern.(*ast.CtorPat)] != data.Ctors[1] {
+						t.Error("Rect pattern did not resolve to Shape.Rect")
+					}
+					classify := funcByName(t, app.Ast, "classify")
+					if got := info.Funcs[classify].Type.String(); got != "Shape -> Int" {
+						t.Errorf("classify type = %s, want Shape -> Int", got)
+					}
+					sum := funcByName(t, app.Ast, "main").Body.Result.(*ast.BinaryExpr)
+					circle := sum.X.(*ast.CallExpr).Args[0].(*ast.CallExpr)
+					rect := sum.Y.(*ast.CallExpr).Args[0].(*ast.CallExpr)
+					if info.Uses[circle.Fn.(*ast.Ident)].Ctor != data.Ctors[0] {
+						t.Error("Circle call did not resolve to Shape.Circle")
+					}
+					if info.Uses[rect.Fn.(*ast.Ident)].Ctor != data.Ctors[1] {
+						t.Error("Rect call did not resolve to Shape.Rect")
+					}
+				},
+			},
+			{
+				name: "public polymorphic function at two types",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "pub fn id[T](x: T) -> T { x }\n"},
+					{
+						path: "app",
+						file: "app.cero",
+						src: `import "lib"
+fn main() -> Int {
+    if id(true) { id(1) } else { 0 }
+}
+`,
+					},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					idFn := funcByName(t, modByPath(t, mods, "lib").Ast, "id")
+					wantFuncScheme(t, info, idFn, "T -> T", "T")
+					assertImportedID(t, mods, info, idFn)
+				},
+			},
+			{
+				name: "public inferred function",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "pub fn id(x) { x }\n"},
+					{
+						path: "app",
+						file: "app.cero",
+						src: `import "lib"
+fn main() -> Int {
+    if id(true) { id(1) } else { 0 }
+}
+`,
+					},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					idFn := funcByName(t, modByPath(t, mods, "lib").Ast, "id")
+					wantFuncScheme(t, info, idFn, "t1 -> t1", "t1")
+					assertImportedID(t, mods, info, idFn)
+				},
+			},
+			{
+				name: "import through one module",
+				mods: []programMod{
+					{path: "c", file: "c.cero", src: "pub fn fromC() -> Int { 1 }\n"},
+					{path: "b", file: "b.cero", src: "import \"c\"\npub fn fromB() -> Int { fromC() }\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nfn main() -> Int { fromB() }\n"},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					a := modByPath(t, mods, "a")
+					b := modByPath(t, mods, "b")
+					c := modByPath(t, mods, "c")
+					fromB := funcByName(t, b.Ast, "fromB")
+					fromC := funcByName(t, c.Ast, "fromC")
+					call := funcByName(t, a.Ast, "main").Body.Result.(*ast.CallExpr)
+					if info.Uses[call.Fn.(*ast.Ident)] != info.Funcs[fromB] {
+						t.Error("fromB did not resolve to b.fromB")
+					}
+					ids := findIdents(fromB.Body, "fromC")
+					if len(ids) != 1 || info.Uses[ids[0]] != info.Funcs[fromC] {
+						t.Error("fromC did not resolve to c.fromC")
+					}
+				},
+			},
+			{
+				name: "own declaration shadows an import",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "pub fn value() -> Int { 1 }\n"},
+					{
+						path: "app",
+						file: "app.cero",
+						src: `import "lib"
+fn value() -> Int { 2 }
+fn main() -> Int { value() }
+`,
+					},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					lib := modByPath(t, mods, "lib")
+					app := modByPath(t, mods, "app")
+					own := funcByName(t, app.Ast, "value")
+					imported := funcByName(t, lib.Ast, "value")
+					call := funcByName(t, app.Ast, "main").Body.Result.(*ast.CallExpr)
+					got := info.Uses[call.Fn.(*ast.Ident)]
+					if got != info.Funcs[own] {
+						t.Errorf("value resolved to %#v, want the entry's value", got)
+					}
+					if got == info.Funcs[imported] {
+						t.Error("value resolved to the imported function")
+					}
+				},
+			},
+			{
+				name: "shared dependency is not re-exported",
+				mods: []programMod{
+					{path: "d", file: "d.cero", src: "pub fn shared() -> Int { 1 }\n"},
+					{path: "b", file: "b.cero", src: "import \"d\"\npub fn fromB() -> Int { shared() }\n"},
+					{path: "c", file: "c.cero", src: "import \"d\"\npub fn fromC() -> Int { shared() }\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nimport \"c\"\nfn main() -> Int { fromB() + fromC() }\n"},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					b := modByPath(t, mods, "b")
+					c := modByPath(t, mods, "c")
+					d := modByPath(t, mods, "d")
+					shared := funcByName(t, d.Ast, "shared")
+					bUse := findIdents(funcByName(t, b.Ast, "fromB").Body, "shared")
+					cUse := findIdents(funcByName(t, c.Ast, "fromC").Body, "shared")
+					if len(bUse) != 1 || len(cUse) != 1 || info.Uses[bUse[0]] != info.Funcs[shared] || info.Uses[cUse[0]] != info.Funcs[shared] {
+						t.Error("shared did not resolve to the same d.shared from both importers")
+					}
+				},
+			},
+			{
+				name: "main in a non-entry module",
+				mods: []programMod{
+					{
+						path: "helper",
+						file: "helper.cero",
+						src: `fn main() { true }
+pub fn answer() -> Int {
+    if main() { 1 } else { 0 }
+}
+`,
+					},
+					{path: "app", file: "app.cero", src: "import \"helper\"\nfn main() -> Int { answer() }\n"},
+				},
+				check: func(t *testing.T, mods []*Module, info *Info) {
+					helper := modByPath(t, mods, "helper")
+					libMain := funcByName(t, helper.Ast, "main")
+					if got := info.Funcs[libMain].Type.String(); got != "() -> Bool" {
+						t.Errorf("helper main type = %s, want () -> Bool", got)
+					}
+					if info.Main == info.Funcs[libMain] {
+						t.Error("Main is the helper's main")
+					}
+					ids := findIdents(funcByName(t, helper.Ast, "answer").Body, "main")
+					if len(ids) != 1 || info.Uses[ids[0]] != info.Funcs[libMain] {
+						t.Error("answer did not call the helper's main")
+					}
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				info, mods := checkProgramOK(t, tt.mods)
+				tt.check(t, mods, info)
+			})
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name string
+			mods []programMod
+			file string
+			want string
+		}{
+			{
+				name: "private function",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "fn secret() -> Int { 1 }\n"},
+					{path: "app", file: "app.cero", src: "import \"lib\"\nfn main() -> Int { secret() }\n"},
+				},
+				file: "app.cero",
+				want: "app.cero:2:20: undefined name 'secret'",
+			},
+			{
+				name: "private type",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "type Hidden = | Hidden\n"},
+					{path: "app", file: "app.cero", src: "import \"lib\"\nfn f(x: Hidden) -> Int { 0 }\nfn main() -> Int { 0 }\n"},
+				},
+				file: "app.cero",
+				want: "app.cero:2:9: unknown type 'Hidden'",
+			},
+			{
+				name: "private constructor",
+				mods: []programMod{
+					{path: "lib", file: "lib.cero", src: "type Hidden = | Hidden\n"},
+					{
+						path: "app",
+						file: "app.cero",
+						src: `import "lib"
+fn main() -> Int {
+    match 0 {
+        Hidden => 0
+    }
+}
+`,
+					},
+				},
+				file: "app.cero",
+				want: "app.cero:4:9: unknown constructor 'Hidden'",
+			},
+			{
+				name: "import is not transitive",
+				mods: []programMod{
+					{path: "c", file: "c.cero", src: "pub fn fromC() -> Int { 1 }\n"},
+					{path: "b", file: "b.cero", src: "import \"c\"\npub fn fromB() -> Int { fromC() }\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nfn main() -> Int { fromC() }\n"},
+				},
+				file: "a.cero",
+				want: "a.cero:2:20: undefined name 'fromC'",
+			},
+			{
+				name: "two imports export the same value",
+				mods: []programMod{
+					{path: "b", file: "b.cero", src: "pub fn f() -> Int { 1 }\n"},
+					{path: "c", file: "c.cero", src: "pub fn f() -> Int { 2 }\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nimport \"c\"\nfn main() -> Int { 0 }\n"},
+				},
+				file: "a.cero",
+				want: "a.cero:2:1: 'f' is imported from both 'b' and 'c'",
+			},
+			{
+				name: "two imports export the same type",
+				mods: []programMod{
+					{path: "b", file: "b.cero", src: "pub type Box = | B\n"},
+					{path: "c", file: "c.cero", src: "pub type Box = | C\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nimport \"c\"\nfn main() -> Int { 0 }\n"},
+				},
+				file: "a.cero",
+				want: "a.cero:2:1: 'Box' is imported from both 'b' and 'c'",
+			},
+			{
+				name: "duplicate import",
+				mods: []programMod{
+					{path: "b", file: "b.cero", src: "pub fn f() -> Int { 1 }\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nimport \"b\"\nfn main() -> Int { f() }\n"},
+				},
+				file: "a.cero",
+				want: "a.cero:2:1: duplicate import 'b'",
+			},
+			{
+				name: "type error in an imported module",
+				mods: []programMod{
+					{path: "b", file: "b.cero", src: "pub fn f() -> Int { true }\n"},
+					{path: "a", file: "a.cero", src: "import \"b\"\nfn main() -> Int { f() }\n"},
+				},
+				file: "b.cero",
+				want: "b.cero:1:21: expected Int, found Bool",
+			},
+			{
+				name: "entry has no main",
+				mods: []programMod{
+					{path: "app", file: "app.cero", src: "fn f() -> Int { 0 }\n"},
+				},
+				file: "app.cero",
+				want: "app.cero:1:1: missing function 'main'",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				mods := parseProgram(t, tt.mods)
+				info, err := CheckProgram(mods)
+				if info != nil {
+					t.Fatal("CheckProgram() info != nil, want nil")
+				}
+				if err == nil {
+					t.Fatalf("CheckProgram() error = nil, want %q", tt.want)
+				}
+				de, ok := err.(*diag.Error)
+				if !ok {
+					t.Fatalf("error type = %T, want *diag.Error", err)
+				}
+				if de.File != tt.file {
+					t.Errorf("error file = %q, want %q", de.File, tt.file)
+				}
+				if de.Error() != tt.want {
+					t.Errorf("error = %q, want %q", de.Error(), tt.want)
+				}
+			})
+		}
+	})
+}
+
+func checkProgramOK(t *testing.T, specs []programMod) (*Info, []*Module) {
+	t.Helper()
+
+	mods := parseProgram(t, specs)
+	info, err := CheckProgram(mods)
+	if err != nil {
+		t.Fatalf("CheckProgram() error = %v", err)
+	}
+	if info == nil {
+		t.Fatal("CheckProgram() info = nil")
+	}
+	entry := mods[len(mods)-1]
+	mainDecl := funcByName(t, entry.Ast, "main")
+	if info.Main != info.Funcs[mainDecl] {
+		t.Errorf("Main = %v, want the entry module's main", info.Main)
+	}
+	if info.Main == nil || info.Main.Type.String() != "() -> Int" {
+		t.Errorf("Main type = %v, want () -> Int", info.Main)
+	}
+	if info.FuncModule == nil {
+		t.Fatal("FuncModule = nil")
+	}
+	for _, mod := range mods {
+		for _, d := range mod.Ast.Funcs {
+			if info.FuncModule[d] != mod {
+				t.Errorf("FuncModule[%s] = %v, want module %s", d.Name, info.FuncModule[d], mod.Path)
+			}
+		}
+	}
+	return info, mods
+}
+
+func parseProgram(t *testing.T, specs []programMod) []*Module {
+	t.Helper()
+
+	mods := make([]*Module, len(specs))
+	byPath := make(map[string]*Module, len(specs))
+	for i, spec := range specs {
+		file, err := parser.ParseFile([]byte(spec.src))
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error = %v", spec.path, err)
+		}
+		m := &Module{Path: spec.path, File: spec.file, Ast: file}
+		mods[i] = m
+		byPath[spec.path] = m
+	}
+	for _, m := range mods {
+		for _, imp := range m.Ast.Imports {
+			dep, ok := byPath[imp.Path]
+			if !ok {
+				t.Fatalf("module %s imports %q, which is not in the program", m.Path, imp.Path)
+			}
+			m.Imports = append(m.Imports, dep)
+		}
+	}
+	return mods
+}
+
+func modByPath(t *testing.T, mods []*Module, path string) *Module {
+	t.Helper()
+
+	for _, m := range mods {
+		if m.Path == path {
+			return m
+		}
+	}
+	t.Fatalf("module %s not found", path)
+	return nil
+}
+
+func assertImportedID(t *testing.T, mods []*Module, info *Info, idFn *ast.FuncDecl) {
+	t.Helper()
+
+	iff := funcByName(t, modByPath(t, mods, "app").Ast, "main").Body.Result.(*ast.IfExpr)
+	condID := iff.Cond.(*ast.CallExpr).Fn.(*ast.Ident)
+	thenID := iff.Then.Result.(*ast.CallExpr).Fn.(*ast.Ident)
+	if info.Uses[condID] != info.Funcs[idFn] || info.Uses[thenID] != info.Funcs[idFn] {
+		t.Error("id did not resolve to the imported function")
+	}
+	wantTypeArgs(t, info, condID, "Bool")
+	wantTypeArgs(t, info, thenID, "Int")
+}

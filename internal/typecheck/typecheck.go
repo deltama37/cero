@@ -66,38 +66,156 @@ type Info struct {
 	// TypeArgs holds, for every Ident whose symbol has TypeParams (including
 	// a generalized let), the type arguments of that use in TypeParams order.
 	TypeArgs map[*ast.Ident][]types.Type
+	Main     *Symbol // the entry module's 'main'
+	// FuncModule maps every top-level function declaration to its module.
+	FuncModule map[*ast.FuncDecl]*Module
 }
 
-// Check resolves names and type-checks file.
-// On error it returns (nil, *diag.Error).
+// Module is one source file of a program.
+type Module struct {
+	Path    string // module path ("std/list", "syntax/ast"); the entry module's is its file name without ".cero"
+	File    string // file name used in error messages ("std/list.cero", "examples/app/main.cero")
+	Ast     *ast.File
+	Imports []*Module // the modules of Ast.Imports, in the same order
+}
+
+// importedValue is a function or constructor brought in by import.
+type importedValue struct {
+	sym  *Symbol
+	from *Module
+}
+
+// importedData is a type brought in by import.
+type importedData struct {
+	data *types.Data
+	from *Module
+}
+
+// exports is what a module makes visible to its importers.
+type exports struct {
+	values map[string]*Symbol     // pub functions and the constructors of pub types
+	datas  map[string]*types.Data // pub types
+}
+
+// Check type-checks a program made of file alone. On error it returns
+// (nil, *diag.Error) with an empty File.
 func Check(file *ast.File) (*Info, error) {
-	c := &checker{
-		info: &Info{
-			Types:    make(map[ast.Expr]types.Type),
-			Uses:     make(map[*ast.Ident]*Symbol),
-			Defs:     make(map[*ast.LetStmt]*Symbol),
-			Params:   make(map[*ast.Param]*Symbol),
-			Funcs:    make(map[*ast.FuncDecl]*Symbol),
-			FuncLits: make(map[*ast.FuncLit]*types.Func),
-			Datas:    make(map[*ast.TypeDecl]*types.Data),
-			CtorPats: make(map[*ast.CtorPat]*types.Ctor),
-			PatVars:  make(map[*ast.VarPat]*Symbol),
-			TypeArgs: make(map[*ast.Ident][]types.Type),
-		},
-		globals: make(map[string]*Symbol),
-		datas:   make(map[string]*types.Data),
-		ctors:   make(map[string]*types.Ctor),
+	return CheckProgram([]*Module{{Path: "main", Ast: file}})
+}
+
+// CheckProgram type-checks mods, which are in dependency order: every module
+// appears after the modules it imports, and the last one is the entry
+// module. Errors are *diag.Error with File set to the module's File.
+func CheckProgram(mods []*Module) (*Info, error) {
+	info := &Info{
+		Types:      make(map[ast.Expr]types.Type),
+		Uses:       make(map[*ast.Ident]*Symbol),
+		Defs:       make(map[*ast.LetStmt]*Symbol),
+		Params:     make(map[*ast.Param]*Symbol),
+		Funcs:      make(map[*ast.FuncDecl]*Symbol),
+		FuncLits:   make(map[*ast.FuncLit]*types.Func),
+		Datas:      make(map[*ast.TypeDecl]*types.Data),
+		CtorPats:   make(map[*ast.CtorPat]*types.Ctor),
+		PatVars:    make(map[*ast.VarPat]*Symbol),
+		TypeArgs:   make(map[*ast.Ident][]types.Type),
+		FuncModule: make(map[*ast.FuncDecl]*Module),
 	}
-	c.registerBuiltins()
+	exp := make(map[*Module]*exports, len(mods))
+	for i, mod := range mods {
+		c := newChecker(info)
+		if err := c.bindImports(mod, exp); err != nil {
+			err.File = mod.File
+			return nil, err
+		}
+		if err := c.checkModule(mod.Ast, i == len(mods)-1); err != nil {
+			err.File = mod.File
+			return nil, err
+		}
+		exp[mod] = c.moduleExports(mod.Ast)
+		for _, d := range mod.Ast.Funcs {
+			info.FuncModule[d] = mod
+		}
+		c.resolveInfo()
+	}
+	if len(mods) > 0 {
+		entry := mods[len(mods)-1]
+		for _, d := range entry.Ast.Funcs {
+			if d.Name == "main" {
+				info.Main = info.Funcs[d]
+				break
+			}
+		}
+	}
+	return info, nil
+}
+
+func (c *checker) bindImports(mod *Module, exp map[*Module]*exports) *diag.Error {
+	if len(mod.Imports) != len(mod.Ast.Imports) {
+		panic("typecheck: module imports are not linked")
+	}
+	seen := make(map[*Module]bool, len(mod.Ast.Imports))
+	for i, imp := range mod.Ast.Imports {
+		dep := mod.Imports[i]
+		if seen[dep] {
+			return diag.Errorf(imp.Pos, "duplicate import '%s'", imp.Path)
+		}
+		seen[dep] = true
+		ex, ok := exp[dep]
+		if !ok {
+			panic(fmt.Sprintf("typecheck: module %q is imported before it is checked", dep.Path))
+		}
+		for name, sym := range ex.values {
+			if prev, exists := c.importedValues[name]; exists && prev.from != dep {
+				return diag.Errorf(imp.Pos, "'%s' is imported from both '%s' and '%s'", name, prev.from.Path, dep.Path)
+			}
+			c.importedValues[name] = importedValue{sym: sym, from: dep}
+		}
+		for name, data := range ex.datas {
+			if prev, exists := c.importedDatas[name]; exists && prev.from != dep {
+				return diag.Errorf(imp.Pos, "'%s' is imported from both '%s' and '%s'", name, prev.from.Path, dep.Path)
+			}
+			c.importedDatas[name] = importedData{data: data, from: dep}
+		}
+	}
+	return nil
+}
+
+func (c *checker) moduleExports(file *ast.File) *exports {
+	out := &exports{
+		values: make(map[string]*Symbol),
+		datas:  make(map[string]*types.Data),
+	}
+	for _, d := range file.Funcs {
+		if d.Pub {
+			out.values[d.Name] = c.info.Funcs[d]
+		}
+	}
+	for _, d := range file.Types {
+		if !d.Pub {
+			continue
+		}
+		data := c.info.Datas[d]
+		out.datas[d.Name] = data
+		for _, ctor := range data.Ctors {
+			out.values[ctor.Name] = c.globals[ctor.Name]
+		}
+	}
+	return out
+}
+
+// checkModule type-checks file. main is required, and must have type
+// () -> Int, only when isEntry is set.
+func (c *checker) checkModule(file *ast.File, isEntry bool) *diag.Error {
+	c.isEntry = isEntry
 
 	// Type names are registered before constructors so a field type can refer
 	// to any declared type, including this one and ones declared later.
 	for _, d := range file.Types {
 		if d.Name == "Int" || d.Name == "Bool" || d.Name == "String" {
-			return nil, diag.Errorf(d.NamePos, "cannot redefine built-in type '%s'", d.Name)
+			return diag.Errorf(d.NamePos, "cannot redefine built-in type '%s'", d.Name)
 		}
 		if _, ok := c.datas[d.Name]; ok {
-			return nil, diag.Errorf(d.NamePos, "duplicate type '%s'", d.Name)
+			return diag.Errorf(d.NamePos, "duplicate type '%s'", d.Name)
 		}
 		data := &types.Data{Name: d.Name}
 		c.datas[d.Name] = data
@@ -107,7 +225,7 @@ func Check(file *ast.File) (*Info, error) {
 	for _, d := range file.Types {
 		params, err := c.declareTypeParams(d.TypeParams)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		c.datas[d.Name].Params = params
 	}
@@ -117,16 +235,16 @@ func Check(file *ast.File) (*Info, error) {
 		c.tparams = scopeOf(data.Params)
 		for i, cd := range d.Ctors {
 			if sym := c.globals[cd.Name]; sym != nil && sym.Kind == SymBuiltin {
-				return nil, diag.Errorf(cd.Pos, "constructor '%s' conflicts with built-in function '%s'", cd.Name, cd.Name)
+				return diag.Errorf(cd.Pos, "constructor '%s' conflicts with built-in function '%s'", cd.Name, cd.Name)
 			}
 			if _, ok := c.ctors[cd.Name]; ok {
-				return nil, diag.Errorf(cd.Pos, "duplicate constructor '%s'", cd.Name)
+				return diag.Errorf(cd.Pos, "duplicate constructor '%s'", cd.Name)
 			}
 			fields := make([]types.Type, len(cd.Fields))
 			for j, f := range cd.Fields {
 				ft, err := c.resolveType(f)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				fields[j] = ft
 			}
@@ -152,17 +270,17 @@ func Check(file *ast.File) (*Info, error) {
 
 	for _, d := range file.Funcs {
 		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymBuiltin {
-			return nil, diag.Errorf(d.NamePos, "function '%s' conflicts with built-in function '%s'", d.Name, d.Name)
+			return diag.Errorf(d.NamePos, "function '%s' conflicts with built-in function '%s'", d.Name, d.Name)
 		}
 		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymCtor {
-			return nil, diag.Errorf(d.NamePos, "function '%s' conflicts with constructor '%s'", d.Name, d.Name)
+			return diag.Errorf(d.NamePos, "function '%s' conflicts with constructor '%s'", d.Name, d.Name)
 		}
 		if _, ok := c.globals[d.Name]; ok {
-			return nil, diag.Errorf(d.NamePos, "duplicate function '%s'", d.Name)
+			return diag.Errorf(d.NamePos, "duplicate function '%s'", d.Name)
 		}
 		annotated := isAnnotated(d)
 		if !annotated && len(d.TypeParams) > 0 {
-			return nil, diag.Errorf(d.TypeParams[0].Pos, "function '%s' declares type parameters, so every parameter and its result need a type annotation", d.Name)
+			return diag.Errorf(d.TypeParams[0].Pos, "function '%s' declares type parameters, so every parameter and its result need a type annotation", d.Name)
 		}
 		sym := &Symbol{
 			Kind: SymFunc,
@@ -173,16 +291,16 @@ func Check(file *ast.File) (*Info, error) {
 		if annotated {
 			tps, err := c.declareTypeParams(d.TypeParams)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			c.tparams = scopeOf(tps)
 			sig, err := c.resolveFuncType(d.Params, d.Result)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			for j, tp := range tps {
 				if !types.Mentions(sig, tp) {
-					return nil, diag.Errorf(d.TypeParams[j].Pos, "type parameter '%s' is not used in the signature of '%s'", tp.Name, d.Name)
+					return diag.Errorf(d.TypeParams[j].Pos, "type parameter '%s' is not used in the signature of '%s'", tp.Name, d.Name)
 				}
 			}
 			c.tparams = nil
@@ -220,7 +338,7 @@ func Check(file *ast.File) (*Info, error) {
 			decls[i] = inferred[idx]
 		}
 		if err := c.checkComponent(decls); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
@@ -234,38 +352,43 @@ func Check(file *ast.File) (*Info, error) {
 		c.fresh = 0
 		c.current = sym
 		if err := c.checkFunc(&funcCtx{}, d.Params, sym.Type.(*types.Func), d.Body); err != nil {
-			return nil, err
+			return err
 		}
 		if err := c.checkSolved(); err != nil {
-			return nil, err
+			return err
 		}
 		c.tparams = nil
 	}
 	c.current = nil
 
+	if !isEntry {
+		return nil
+	}
 	main, ok := c.globals["main"]
 	if !ok {
-		return nil, diag.Errorf(diag.Pos{Line: 1, Col: 1}, "missing function 'main'")
+		return diag.Errorf(diag.Pos{Line: 1, Col: 1}, "missing function 'main'")
 	}
 	if len(main.TypeParams) > 0 {
-		return nil, diag.Errorf(main.Pos, "function 'main' cannot have type parameters")
+		return diag.Errorf(main.Pos, "function 'main' cannot have type parameters")
 	}
 	want := &types.Func{Result: types.Int}
 	if !types.Equal(main.Type, want) {
-		return nil, diag.Errorf(main.Pos, "function 'main' must have type () -> Int, found %s", main.Type)
+		return diag.Errorf(main.Pos, "function 'main' must have type () -> Int, found %s", main.Type)
 	}
-	c.resolveInfo()
-	return c.info, nil
+	return nil
 }
 
 type checker struct {
-	info    *Info
-	globals map[string]*Symbol
-	datas   map[string]*types.Data
-	ctors   map[string]*types.Ctor
-	tparams map[string]*types.TypeParam // type parameters in scope; nil outside generic declarations
-	metas   []*pendingMeta              // created while checking the current top-level function, in creation order
-	fresh   int                         // number of t1, t2, ... names used in the current top-level function
+	info           *Info
+	globals        map[string]*Symbol
+	datas          map[string]*types.Data
+	ctors          map[string]*types.Ctor
+	importedValues map[string]importedValue // imported functions and constructors
+	importedDatas  map[string]importedData  // imported types
+	isEntry        bool
+	tparams        map[string]*types.TypeParam // type parameters in scope; nil outside generic declarations
+	metas          []*pendingMeta              // created while checking the current top-level function, in creation order
+	fresh          int                         // number of t1, t2, ... names used in the current top-level function
 	// comp holds the symbols of the inferred functions being checked
 	// together, while checkComponent runs; nil otherwise. A reference to
 	// one of them is not instantiated, and generalize leaves the metas in
@@ -343,7 +466,7 @@ func (c *checker) checkComponent(decls []*ast.FuncDecl) *diag.Error {
 			msg := fmt.Sprintf("cannot infer the result type of '%s'; add a type annotation", d.Name)
 			sig.Result = c.newMeta(c.freshName(), d.NamePos, msg)
 		}
-		if d.Name == "main" {
+		if c.isEntry && d.Name == "main" {
 			if len(d.Params) > 0 {
 				return diag.Errorf(sym.Pos, "function 'main' must have type () -> Int, found %s", sig)
 			}
@@ -491,6 +614,19 @@ func scopeOf(ps []*types.TypeParam) map[string]*types.TypeParam {
 	return m
 }
 
+func newChecker(info *Info) *checker {
+	c := &checker{
+		info:           info,
+		globals:        make(map[string]*Symbol),
+		datas:          make(map[string]*types.Data),
+		ctors:          make(map[string]*types.Ctor),
+		importedValues: make(map[string]importedValue),
+		importedDatas:  make(map[string]importedData),
+	}
+	c.registerBuiltins()
+	return c
+}
+
 // registerBuiltins adds the built-in functions (ADR-0010) to globals.
 func (c *checker) registerBuiltins() {
 	specs := []struct {
@@ -522,7 +658,7 @@ func (c *checker) declareTypeParams(ps []*ast.TypeParam) ([]*types.TypeParam, *d
 	seen := make(map[string]bool, len(ps))
 	out := make([]*types.TypeParam, 0, len(ps))
 	for _, p := range ps {
-		if p.Name == "Int" || p.Name == "Bool" || p.Name == "String" || c.datas[p.Name] != nil {
+		if p.Name == "Int" || p.Name == "Bool" || p.Name == "String" || c.lookupData(p.Name) != nil {
 			return nil, diag.Errorf(p.Pos, "type parameter '%s' conflicts with type '%s'", p.Name, p.Name)
 		}
 		if seen[p.Name] {
@@ -586,7 +722,7 @@ func (c *checker) resolveType(t ast.TypeExpr) (types.Type, *diag.Error) {
 				return types.String, nil
 			}
 		}
-		if data, ok := c.datas[t.Name]; ok {
+		if data := c.lookupData(t.Name); data != nil {
 			n := len(data.Params)
 			if m != n {
 				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for '%s': expected %d, found %d", t.Name, n, m)
@@ -667,7 +803,7 @@ func (c *checker) popScope(ctx *funcCtx) {
 }
 
 // lookup walks scopes from the inside out: the current function, then
-// enclosing functions, then the globals.
+// enclosing functions, then the module's declarations, built-ins, and imports.
 func (c *checker) lookup(ctx *funcCtx, name string) *Symbol {
 	for s := ctx.scope; s != nil; s = s.parent {
 		if found, ok := s.names[name]; ok {
@@ -681,8 +817,37 @@ func (c *checker) lookup(ctx *funcCtx, name string) *Symbol {
 			}
 		}
 	}
-	if found, ok := c.globals[name]; ok {
-		return found
+	return c.lookupGlobal(name)
+}
+
+// lookupGlobal returns the module's own declaration or built-in named name,
+// or else the imported one.
+func (c *checker) lookupGlobal(name string) *Symbol {
+	if sym, ok := c.globals[name]; ok {
+		return sym
+	}
+	if imp, ok := c.importedValues[name]; ok {
+		return imp.sym
+	}
+	return nil
+}
+
+// lookupData returns the module's own type named name, or else the imported one.
+func (c *checker) lookupData(name string) *types.Data {
+	if data, ok := c.datas[name]; ok {
+		return data
+	}
+	if imp, ok := c.importedDatas[name]; ok {
+		return imp.data
+	}
+	return nil
+}
+
+// lookupCtor returns the constructor named name when lookupGlobal finds one.
+func (c *checker) lookupCtor(name string) *types.Ctor {
+	sym := c.lookupGlobal(name)
+	if sym != nil && sym.Kind == SymCtor {
+		return sym.Ctor
 	}
 	return nil
 }
@@ -1062,7 +1227,7 @@ func ctorType(ctor *types.Ctor) types.Type {
 }
 
 func (c *checker) checkBindable(name string, pos diag.Pos) *diag.Error {
-	if sym := c.globals[name]; sym != nil && sym.Kind == SymCtor {
+	if c.lookupCtor(name) != nil {
 		return diag.Errorf(pos, "cannot use constructor name '%s' as a variable", name)
 	}
 	return nil
@@ -1157,7 +1322,7 @@ func (c *checker) inferScrutinee(mv *types.Meta, arms []*ast.MatchArm) *diag.Err
 func (c *checker) solveMeta(mv *types.Meta, p ast.Pattern) *diag.Error {
 	switch p := p.(type) {
 	case *ast.CtorPat:
-		ctor := c.ctors[p.Name]
+		ctor := c.lookupCtor(p.Name)
 		if ctor == nil {
 			return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
 		}
@@ -1235,7 +1400,7 @@ func (c *checker) checkPattern(
 		}
 		return nil
 	case *ast.CtorPat:
-		ctor := c.ctors[p.Name]
+		ctor := c.lookupCtor(p.Name)
 		if ctor == nil {
 			return diag.Errorf(p.Pos, "unknown constructor '%s'", p.Name)
 		}
