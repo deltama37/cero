@@ -1,0 +1,4 @@
+fn f()->Int{ // head
+    let x=1 // bound
+    x
+}

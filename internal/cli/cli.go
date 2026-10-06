@@ -1,9 +1,10 @@
 // Package cli implements the command dispatch for the ceroc compiler CLI.
 //
 // The command surface follows ADR-0001: the top-level command is `ceroc`
-// with the subcommands `build`, `run` and `fmt`. `fmt` stays unimplemented
-// in v0.1. `build` writes a WebAssembly module and `run` executes it with
-// an external wasmtime (ADR-0002).
+// with the subcommands `build`, `run` and `fmt`. `fmt` is implemented by the
+// Cero-written compiler (ADR-0016); this bootstrap prints how to run it.
+// `build` writes a WebAssembly module and `run` executes it with an external
+// wasmtime (ADR-0002).
 package cli
 
 import (
@@ -42,7 +43,7 @@ Usage:
 Commands:
     build      Compile a Cero source file to WebAssembly
     run        Compile and run a Cero source file with wasmtime
-    fmt        Format Cero source code (not yet implemented)
+    fmt        Format Cero source code (use scripts/ceroc-cero; ADR-0016)
     version    Print the ceroc version
     help       Print this help message
 
@@ -83,7 +84,7 @@ func run(
 	case "run":
 		return runSource(args[1:], stdin, stdout, stderr, getenv)
 	case "fmt":
-		fmt.Fprintf(stderr, "ceroc fmt: not yet implemented (v0.1 work in progress)\n")
+		fmt.Fprintf(stderr, "ceroc fmt: the formatter is part of the Cero-written compiler; run scripts/ceroc-cero fmt FILE (ADR-0016)\n")
 		return exitNotImplemented
 	default:
 		fmt.Fprintf(stderr, "ceroc: unknown command %q\n\n", args[0])

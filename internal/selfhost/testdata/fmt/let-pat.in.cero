@@ -1,0 +1,1 @@
+fn f(p:Pair[Int,Int])->Int{let Pair(a,b)=p let Pair(c,_)=Pair(a,b) c}

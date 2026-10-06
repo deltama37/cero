@@ -1,0 +1,3 @@
+fn f(a: Int, b: Int, c: Int, s: String) -> Bool {
+    a + b * c - (d - e) ++ s == t || p && q
+}

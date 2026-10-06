@@ -36,3 +36,6 @@ jobs:
 
       - name: self-hosting
         run: make selfhost
+
+      - name: cero fmt
+        run: make fmt-cero-check
