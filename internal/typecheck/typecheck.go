@@ -44,6 +44,12 @@ const (
 	BuiltinArgCount
 	BuiltinArgAt
 	BuiltinExit
+	BuiltinBitAnd
+	BuiltinBitOr
+	BuiltinBitXor
+	BuiltinShiftLeft
+	BuiltinShiftRight
+	BuiltinShiftRightUnsigned
 )
 
 // Symbol is one declared name. Each declaration (every let, even when
@@ -246,9 +252,6 @@ func (c *checker) checkModule(file *ast.File, isEntry bool) *diag.Error {
 		data := c.datas[d.Name]
 		c.tparams = scopeOf(data.Params)
 		for i, cd := range d.Ctors {
-			if sym := c.globals[cd.Name]; sym != nil && sym.Kind == SymBuiltin {
-				return diag.Errorf(cd.Pos, "constructor '%s' conflicts with built-in function '%s'", cd.Name, cd.Name)
-			}
 			if _, ok := c.ctors[cd.Name]; ok {
 				return diag.Errorf(cd.Pos, "duplicate constructor '%s'", cd.Name)
 			}
@@ -281,9 +284,6 @@ func (c *checker) checkModule(file *ast.File, isEntry bool) *diag.Error {
 	}
 
 	for _, d := range file.Funcs {
-		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymBuiltin {
-			return diag.Errorf(d.NamePos, "function '%s' conflicts with built-in function '%s'", d.Name, d.Name)
-		}
 		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymCtor {
 			return diag.Errorf(d.NamePos, "function '%s' conflicts with constructor '%s'", d.Name, d.Name)
 		}
@@ -414,6 +414,7 @@ func isIOUnit(t types.Type) bool {
 type checker struct {
 	info           *Info
 	globals        map[string]*Symbol
+	builtins       map[string]*Symbol // hidden by globals and imports
 	datas          map[string]*types.Data
 	ctors          map[string]*types.Ctor
 	importedValues map[string]importedValue // imported functions and constructors
@@ -659,6 +660,7 @@ func newChecker(info *Info) *checker {
 	c := &checker{
 		info:           info,
 		globals:        make(map[string]*Symbol),
+		builtins:       make(map[string]*Symbol),
 		datas:          make(map[string]*types.Data),
 		ctors:          make(map[string]*types.Ctor),
 		importedValues: make(map[string]importedValue),
@@ -668,12 +670,13 @@ func newChecker(info *Info) *checker {
 	return c
 }
 
-// registerBuiltins adds the built-in functions (ADR-0010, ADR-0012) to globals.
+// registerBuiltins adds the built-in functions (ADR-0010, ADR-0012, ADR-0013).
 func (c *checker) registerBuiltins() {
 	tParam := &types.TypeParam{Name: "T"}
 	aParam := &types.TypeParam{Name: "A"}
 	bParam := &types.TypeParam{Name: "B"}
 	ioUnit := types.IOOf(types.Unit)
+	intBin := &types.Func{Params: []types.Type{types.Int, types.Int}, Result: types.Int}
 	specs := []struct {
 		name string
 		b    Builtin
@@ -703,9 +706,15 @@ func (c *checker) registerBuiltins() {
 		{"argCount", BuiltinArgCount, &types.Func{Result: types.IOOf(types.Int)}, nil},
 		{"argAt", BuiltinArgAt, &types.Func{Params: []types.Type{types.Int}, Result: types.IOOf(types.String)}, nil},
 		{"exit", BuiltinExit, &types.Func{Params: []types.Type{types.Int}, Result: ioUnit}, nil},
+		{"bitAnd", BuiltinBitAnd, intBin, nil},
+		{"bitOr", BuiltinBitOr, intBin, nil},
+		{"bitXor", BuiltinBitXor, intBin, nil},
+		{"shiftLeft", BuiltinShiftLeft, intBin, nil},
+		{"shiftRight", BuiltinShiftRight, intBin, nil},
+		{"shiftRightUnsigned", BuiltinShiftRightUnsigned, intBin, nil},
 	}
 	for _, spec := range specs {
-		c.globals[spec.name] = &Symbol{
+		c.builtins[spec.name] = &Symbol{
 			Kind:       SymBuiltin,
 			Name:       spec.name,
 			Type:       spec.sig,
@@ -844,12 +853,6 @@ func (c *checker) checkFunc(
 ) *diag.Error {
 	ctx.scope = &scope{names: make(map[string]*Symbol)}
 	for i, p := range params {
-		if err := c.checkBindable(p.Name, p.Pos); err != nil {
-			return err
-		}
-		if _, exists := ctx.scope.names[p.Name]; exists {
-			return diag.Errorf(p.Pos, "duplicate parameter '%s'", p.Name)
-		}
 		sym := &Symbol{
 			Kind: SymParam,
 			Name: p.Name,
@@ -857,6 +860,15 @@ func (c *checker) checkFunc(
 			Pos:  p.Pos,
 		}
 		c.info.Params[p] = sym
+		if p.Name == "_" {
+			continue
+		}
+		if err := c.checkBindable(p.Name, p.Pos); err != nil {
+			return err
+		}
+		if _, exists := ctx.scope.names[p.Name]; exists {
+			return diag.Errorf(p.Pos, "duplicate parameter '%s'", p.Name)
+		}
 		ctx.scope.names[p.Name] = sym
 	}
 	if sig.Result == nil {
@@ -879,7 +891,7 @@ func (c *checker) popScope(ctx *funcCtx) {
 }
 
 // lookup walks scopes from the inside out: the current function, then
-// enclosing functions, then the module's declarations, built-ins, and imports.
+// enclosing functions, then the module's declarations, imports, and built-ins.
 func (c *checker) lookup(ctx *funcCtx, name string) *Symbol {
 	for s := ctx.scope; s != nil; s = s.parent {
 		if found, ok := s.names[name]; ok {
@@ -896,14 +908,17 @@ func (c *checker) lookup(ctx *funcCtx, name string) *Symbol {
 	return c.lookupGlobal(name)
 }
 
-// lookupGlobal returns the module's own declaration or built-in named name,
-// or else the imported one.
+// lookupGlobal returns the module's own declaration of name, or else an
+// imported one, or else a built-in function.
 func (c *checker) lookupGlobal(name string) *Symbol {
 	if sym, ok := c.globals[name]; ok {
 		return sym
 	}
 	if imp, ok := c.importedValues[name]; ok {
 		return imp.sym
+	}
+	if sym, ok := c.builtins[name]; ok {
+		return sym
 	}
 	return nil
 }
@@ -1054,7 +1069,7 @@ func (c *checker) inferUnary(ctx *funcCtx, e *ast.UnaryExpr) (types.Type, *diag.
 
 func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *diag.Error) {
 	switch e.Op {
-	case token.Plus, token.Minus, token.Star, token.Slash:
+	case token.Plus, token.Minus, token.Star, token.Slash, token.Percent:
 		if err := c.expect(ctx, e.X, types.Int); err != nil {
 			return nil, err
 		}
@@ -1381,6 +1396,9 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 		rows = append(rows, q)
 	}
 	if msg := missingMessage(rows); msg != "" {
+		if m.Let {
+			return nil, diag.Errorf(m.Pos, "refutable pattern in let: missing %s", msg)
+		}
 		return nil, diag.Errorf(m.Pos, "non-exhaustive match: missing %s", msg)
 	}
 	return result, nil

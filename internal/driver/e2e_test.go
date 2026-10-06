@@ -1145,6 +1145,126 @@ fn main() -> Int {
 			want: "42",
 		},
 		{
+			name: "conveniences example",
+			file: "examples/conveniences.cero",
+			want: "42",
+		},
+		{
+			name: "remainder signs",
+			src: `fn main() -> Int {
+    (7 % 3) * 100 + (-7 % 3) * 10 + (7 % -3)
+}
+`,
+			want: "91",
+		},
+		{
+			name: "character a plus one",
+			src:  "fn main() -> Int { 'a' + 1 }\n",
+			want: "98",
+		},
+		{
+			name: "character newline",
+			src:  "fn main() -> Int { '\\n' }\n",
+			want: "10",
+		},
+		{
+			name: "bit and",
+			src:  "fn main() -> Int { bitAnd(12, 10) }\n",
+			want: "8",
+		},
+		{
+			name: "bit or",
+			src:  "fn main() -> Int { bitOr(12, 10) }\n",
+			want: "14",
+		},
+		{
+			name: "bit xor",
+			src:  "fn main() -> Int { bitXor(12, 10) }\n",
+			want: "6",
+		},
+		{
+			name: "shift left",
+			src:  "fn main() -> Int { shiftLeft(1, 62) }\n",
+			want: "4611686018427387904",
+		},
+		{
+			name: "shift right",
+			src:  "fn main() -> Int { shiftRight(-8, 1) }\n",
+			want: "-4",
+		},
+		{
+			name: "shift right unsigned",
+			src:  "fn main() -> Int { shiftRightUnsigned(-1, 60) }\n",
+			want: "15",
+		},
+		{
+			name: "shift by 64 leaves the value",
+			src: `fn main() -> Int {
+    if shiftLeft(42, 64) == 42 && shiftRight(-8, 64) == -8 && shiftRightUnsigned(15, 64) == 15 {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "signed leb128 of -123456",
+			src: `fn slebSum(n: Int) -> Int {
+    let b = bitAnd(n, 127)
+    let next = shiftRight(n, 7)
+    if (next == 0 && bitAnd(b, 64) == 0) || (next == -1 && bitAnd(b, 64) != 0) {
+        b
+    } else {
+        bitOr(b, 128) + slebSum(next)
+    }
+}
+
+fn main() -> Int {
+    slebSum(-123456)
+}
+`,
+			want: "499",
+		},
+		{
+			name: "option bind with let bang",
+			src: `type Option[T] =
+    | None
+    | Some(T)
+
+fn bind[A, B](m: Option[A], f: A -> Option[B]) -> Option[B] {
+    match m {
+        None => None,
+        Some(x) => f(x),
+    }
+}
+
+fn main() -> Int {
+    let r = {
+        let! x = Some(20)
+        let! y = Some(x + 22)
+        Some(y)
+    }
+    match r {
+        Some(n) => n,
+        None => 0,
+    }
+}
+`,
+			want: "42",
+		},
+		{
+			name: "let pair pattern",
+			src: `type Pair[A, B] = Pair(A, B)
+fn main() -> Int {
+    let Pair(a, b) = Pair(19, 23)
+    a + b
+}
+`,
+			want: "42",
+		},
+		{
 			name: "string concatenation length",
 			src:  "fn main() -> Int { stringLength(\"hello\" ++ \", \" ++ \"world\") }\n",
 			want: "12",
@@ -1606,6 +1726,10 @@ func TestE2ERuntimeTrap(t *testing.T) {
 			name: "stringSlice end past the length",
 			src:  "fn main() -> Int { stringLength(stringSlice(\"ab\", 0, 3)) }\n",
 		},
+		{
+			name: "remainder by zero",
+			src:  "fn main() -> Int { 0 % 0 }\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1700,6 +1824,17 @@ func TestE2EIO(t *testing.T) {
 			stdin:       "hello world\n",
 			checkStdout: true,
 			wantStdout:  "1 2 12\n",
+		},
+		{
+			name: "let bang sequences IO",
+			src: `fn main() -> IO[Unit] {
+    let! n = pure(40)
+    let! m = pure(n + 2)
+    print(intToString(m))
+}
+`,
+			checkStdout: true,
+			wantStdout:  "42",
 		},
 		{
 			name: "pure and bind",

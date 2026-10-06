@@ -1,0 +1,49 @@
+// expected output: 42
+
+type Option[T] =
+    | None
+    | Some(T)
+
+type Pair[A, B] = Pair(A, B)
+
+fn bind[A, B](m: Option[A], f: A -> Option[B]) -> Option[B] {
+    match m {
+        None => None,
+        Some(x) => f(x),
+    }
+}
+
+fn isDigit(b: Int) -> Bool {
+    b >= '0' && b <= '9'
+}
+
+fn countRuns(s: String, i: Int, inRun: Bool, n: Int) -> Int {
+    if i >= stringLength(s) {
+        n
+    } else {
+        let b = stringByteAt(s, i)
+        if isDigit(b) {
+            if inRun {
+                countRuns(s, i + 1, true, n)
+            } else {
+                countRuns(s, i + 1, true, n + 1)
+            }
+        } else {
+            countRuns(s, i + 1, false, n)
+        }
+    }
+}
+
+fn main() -> Int {
+    let runs = countRuns("12 3", 0, false, 0)
+    let Pair(mask, rem) = Pair(bitAnd(15, 7), 100 % 17)
+    let answer = {
+        let! total = Some(runs * mask * 3 + rem)
+        let! out = Some(total - rem)
+        Some(out)
+    }
+    match answer {
+        Some(n) => n,
+        None => 0,
+    }
+}

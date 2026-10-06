@@ -15,6 +15,7 @@ const (
 	Ident       // foo
 	Int         // 123
 	String      // string literal; Token.Text holds the decoded bytes
+	Char        // character literal; Token.Text holds the decoded byte
 
 	// Keywords
 	Fn         // fn
@@ -49,6 +50,7 @@ const (
 	Minus    // -
 	Star     // *
 	Slash    // /
+	Percent  // %
 	Eq       // ==
 	NotEq    // !=
 	Lt       // <
@@ -76,6 +78,8 @@ func (k Kind) String() string {
 		return "integer literal"
 	case String:
 		return "string literal"
+	case Char:
+		return "character literal"
 	case Fn:
 		return "'fn'"
 	case Let:
@@ -132,6 +136,8 @@ func (k Kind) String() string {
 		return "'*'"
 	case Slash:
 		return "'/'"
+	case Percent:
+		return "'%'"
 	case Eq:
 		return "'=='"
 	case NotEq:
@@ -171,9 +177,10 @@ var Keywords = map[string]Kind{
 }
 
 // Token is a lexical token. Text is the source spelling, empty for EOF.
-// A string literal's Text is the decoded bytes.
+// A string literal's Text is the decoded bytes. A character literal's Text
+// is its one decoded byte.
 type Token struct {
 	Kind Kind
-	Text string   // source text; decoded bytes for a string literal; "" for EOF
+	Text string   // source text; decoded bytes for a string or character literal; "" for EOF
 	Pos  diag.Pos // position of the first character
 }

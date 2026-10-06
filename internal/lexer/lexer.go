@@ -108,6 +108,8 @@ func (l *lexer) scan() (token.Token, error) {
 		return l.scanNumber(start)
 	case r == '"':
 		return l.scanString(start)
+	case r == '\'':
+		return l.scanChar(start)
 	default:
 		return l.scanSymbol(start)
 	}
@@ -150,6 +152,43 @@ func (l *lexer) scanString(start diag.Pos) (token.Token, error) {
 	}
 }
 
+func (l *lexer) scanChar(start diag.Pos) (token.Token, error) {
+	l.advance()
+	var buf []byte
+	for {
+		if l.done() || l.peek() == '\n' {
+			return token.Token{}, diag.Errorf(start, "unterminated character literal")
+		}
+		if l.peek() == '\'' {
+			l.advance()
+			switch len(buf) {
+			case 0:
+				return token.Token{}, diag.Errorf(start, "empty character literal")
+			case 1:
+				return token.Token{Kind: token.Char, Text: string(buf), Pos: start}, nil
+			default:
+				return token.Token{}, diag.Errorf(start, "character literal must be a single byte")
+			}
+		}
+		if l.peek() == '\\' {
+			escPos := diag.Pos{Line: l.line, Col: l.col}
+			l.advance()
+			if l.done() || l.peek() == '\n' {
+				return token.Token{}, diag.Errorf(start, "unterminated character literal")
+			}
+			b, err := l.scanEscape(escPos)
+			if err != nil {
+				return token.Token{}, err
+			}
+			buf = append(buf, b)
+			continue
+		}
+		begin := l.i
+		l.advance()
+		buf = append(buf, l.src[begin:l.i]...)
+	}
+}
+
 func (l *lexer) scanEscape(escPos diag.Pos) (byte, error) {
 	switch l.peek() {
 	case 'n':
@@ -167,6 +206,9 @@ func (l *lexer) scanEscape(escPos diag.Pos) (byte, error) {
 	case '"':
 		l.advance()
 		return '"', nil
+	case '\'':
+		l.advance()
+		return '\'', nil
 	case '0':
 		l.advance()
 		return 0, nil
@@ -303,6 +345,8 @@ func matchOne(r rune) (token.Kind, string, bool) {
 		return token.Star, "*", true
 	case '/':
 		return token.Slash, "/", true
+	case '%':
+		return token.Percent, "%", true
 	case '<':
 		return token.Lt, "<", true
 	case '>':

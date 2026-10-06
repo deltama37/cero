@@ -34,15 +34,15 @@ pub fn endsWith(s: String, suffix: String) -> Bool {
 }
 
 pub fn isDigit(b: Int) -> Bool {
-    b >= stringByteAt("0", 0) && b <= stringByteAt("9", 0)
+    b >= '0' && b <= '9'
 }
 
 pub fn isAlpha(b: Int) -> Bool {
-    let upper = b >= stringByteAt("A", 0) && b <= stringByteAt("Z", 0)
-    let lower = b >= stringByteAt("a", 0) && b <= stringByteAt("z", 0)
+    let upper = b >= 'A' && b <= 'Z'
+    let lower = b >= 'a' && b <= 'z'
     upper || lower
 }
 
 pub fn isSpace(b: Int) -> Bool {
-    b == stringByteAt(" ", 0) || b == stringByteAt("\t", 0) || b == stringByteAt("\n", 0) || b == stringByteAt("\r", 0)
+    b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }

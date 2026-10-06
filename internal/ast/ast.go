@@ -242,12 +242,13 @@ func (*FuncLit) expr() {}
 
 // MatchExpr is a match expression.
 type MatchExpr struct {
-	Pos       diag.Pos // 'match'
+	Pos       diag.Pos // 'match', or 'let' when Let is set
 	Scrutinee Expr
 	Arms      []*MatchArm // at least one
+	Let       bool        // written as `let PATTERN = value` (ADR-0013)
 }
 
-// Position returns the position of 'match'.
+// Position returns the position of 'match', or of 'let' when Let is set.
 func (e *MatchExpr) Position() diag.Pos { return e.Pos }
 
 func (*MatchExpr) expr() {}

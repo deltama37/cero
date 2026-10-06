@@ -14,6 +14,7 @@ func TestKindString(t *testing.T) {
 		{name: "Ident", kind: Ident, want: "identifier"},
 		{name: "Int", kind: Int, want: "integer literal"},
 		{name: "String", kind: String, want: "string literal"},
+		{name: "Char", kind: Char, want: "character literal"},
 		{name: "Fn", kind: Fn, want: "'fn'"},
 		{name: "Type", kind: Type, want: "'type'"},
 		{name: "Match", kind: Match, want: "'match'"},
@@ -27,6 +28,7 @@ func TestKindString(t *testing.T) {
 		{name: "RBracket", kind: RBracket, want: "']'"},
 		{name: "AndAnd", kind: AndAnd, want: "'&&'"},
 		{name: "PlusPlus", kind: PlusPlus, want: "'++'"},
+		{name: "Percent", kind: Percent, want: "'%'"},
 	}
 
 	for _, tt := range tests {
