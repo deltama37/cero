@@ -845,6 +845,63 @@ fn main() -> Int {
 			file: "examples/inference.cero",
 			want: "42",
 		},
+		{
+			name: "top-level inference example",
+			file: "examples/toplevel_inference.cero",
+			want: "42",
+		},
+		{
+			name: "inferred mutual recursion",
+			src: `fn isEven(n) {
+    if n == 0 { true } else { isOdd(n - 1) }
+}
+
+fn isOdd(n) {
+    if n == 0 { false } else { isEven(n - 1) }
+}
+
+fn main() {
+    if isEven(10) { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "inferred polymorphic function at Int, Bool, and List",
+			src: `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn id(x) { x }
+
+fn length(xs) {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => 1 + length(rest),
+    }
+}
+
+fn main() {
+    let n = id(40)
+    let b = id(true)
+    let xs = id(Cons(1, Nil))
+    if b { n + length(xs) + 1 } else { 0 }
+}
+`,
+			want: "42",
+		},
+		{
+			name: "inferred tail recursion",
+			src: `fn sum(n, acc) {
+    if n == 0 { acc } else { sum(n - 1, acc + n) }
+}
+
+fn main() {
+    sum(1000000, 0)
+}
+`,
+			want: "500000500000",
+		},
 	}
 
 	for _, tt := range tests {

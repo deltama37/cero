@@ -199,6 +199,36 @@ func TestParseFile(t *testing.T) {
 			funcs: 1,
 		},
 		{
+			name:  "omitted parameter and result types",
+			src:   "fn f(x) { x }",
+			want:  "(fn f ((x _)) _ (block x))",
+			funcs: 1,
+		},
+		{
+			name:  "omitted parameter type",
+			src:   "fn f(x) -> Int { x }",
+			want:  "(fn f ((x _)) Int (block x))",
+			funcs: 1,
+		},
+		{
+			name:  "partially omitted parameter types",
+			src:   "fn f(x: Int, y) -> Int { x }",
+			want:  "(fn f ((x Int) (y _)) Int (block x))",
+			funcs: 1,
+		},
+		{
+			name:  "omitted result type",
+			src:   "fn f() { 1 }",
+			want:  "(fn f () _ (block 1))",
+			funcs: 1,
+		},
+		{
+			name:  "main with omitted result type",
+			src:   "fn main() { 1 }",
+			want:  "(fn main () _ (block 1))",
+			funcs: 1,
+		},
+		{
 			name: "abs",
 			src: `fn abs(x: Int) -> Int {
     if x < 0 {
@@ -731,16 +761,6 @@ func TestParseError(t *testing.T) {
 			src:  "fn[T](x: T) -> T { x }",
 			expr: true,
 			want: "1:3: expected '(', found '['",
-		},
-		{
-			name: "func decl param without type",
-			src:  "fn f(x) -> Int { x }",
-			want: "1:7: expected ':', found ')'",
-		},
-		{
-			name: "func decl without result type",
-			src:  "fn f() { 1 }",
-			want: "1:8: expected '->', found '{'",
 		},
 		{
 			name: "func lit without body",

@@ -247,6 +247,15 @@ func TestFormat(t *testing.T) {
 			want: "(fn add ((a Int) (b Int)) Int (block (+ a b)))",
 		},
 		{
+			name: "func decl omitted types",
+			got: FormatFunc(&FuncDecl{
+				Name:   "identity",
+				Params: []*Param{{Name: "x"}},
+				Body:   block(ident("x")),
+			}),
+			want: "(fn identity ((x _)) _ (block x))",
+		},
+		{
 			name: "func decl no type params",
 			got:  FormatFunc(id),
 			want: "(fn id () Bool (block false))",

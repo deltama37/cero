@@ -23,7 +23,7 @@ func FormatFile(f *File) string {
 
 // FormatFunc formats a function declaration as an S-expression.
 func FormatFunc(d *FuncDecl) string {
-	return "(fn " + d.Name + formatTypeParams(d.TypeParams) + " (" + formatParams(d.Params) + ") " + FormatType(d.Result) + " " + FormatExpr(d.Body) + ")"
+	return "(fn " + d.Name + formatTypeParams(d.TypeParams) + " (" + formatParams(d.Params) + ") " + formatOptType(d.Result) + " " + FormatExpr(d.Body) + ")"
 }
 
 // FormatTypeDecl formats a type declaration as an S-expression.

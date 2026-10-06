@@ -1,0 +1,33 @@
+// expected output: 42
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn identity(x) {
+    x
+}
+
+fn map(xs, f) {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+
+fn foldl(xs, acc, f) {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn length(xs) {
+    foldl(xs, 0, fn(n, x) { n + 1 })
+}
+
+fn main() {
+    let xs = map(Cons(1, Cons(2, Cons(3, Nil))), identity)
+    let doubled = map(xs, fn(x) { x * 2 })
+    foldl(doubled, 0, fn(acc, x) { acc + x }) + length(xs) * 10
+}

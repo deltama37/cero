@@ -43,7 +43,7 @@ type FuncDecl struct {
 	NamePos    diag.Pos
 	TypeParams []*TypeParam // nil when written without brackets
 	Params     []*Param
-	Result     TypeExpr
+	Result     TypeExpr // nil when omitted
 	Body       *BlockExpr
 }
 
@@ -51,7 +51,7 @@ type FuncDecl struct {
 type Param struct {
 	Pos  diag.Pos // name
 	Name string
-	Type TypeExpr // nil when omitted; only parameters of a FuncLit can omit it
+	Type TypeExpr // nil when omitted
 }
 
 // TypeExpr is a type written in source.
