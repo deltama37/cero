@@ -50,6 +50,9 @@ type Module struct {
 	// parameters of the source-level function type.
 	Table []FuncID
 	Main  FuncID
+	// Command reports that main returns an IO[Unit] closure; the module
+	// exports _start (ADR-0012).
+	Command bool
 }
 
 // Func is a top-level function, including lifted anonymous functions.
@@ -258,18 +261,28 @@ func (e *SwitchTag) Type() ValType { return e.T }
 // block laid out as in ADR-0010.
 type StrConst struct{ Value string }
 
-// PrimOp is a built-in operation on strings (ADR-0010).
+// PrimOp is a built-in operation. String operations are ADR-0010.
+// IO operations call WASI and appear only inside IO action bodies (ADR-0012).
 type PrimOp int
 
 const (
-	StrLength   PrimOp = iota // (Ptr) -> Int
-	StrByteAt                 // (Ptr, Int) -> Int
-	StrSlice                  // (Ptr, Int, Int) -> Ptr
-	StrFromByte               // (Int) -> Ptr
-	StrCompare                // (Ptr, Ptr) -> Int
-	IntToString               // (Int) -> Ptr
-	StrConcat                 // (Ptr, Ptr) -> Ptr
-	StrEq                     // (Ptr, Ptr) -> Bool
+	StrLength    PrimOp = iota // (Ptr) -> Int
+	StrByteAt                  // (Ptr, Int) -> Int
+	StrSlice                   // (Ptr, Int, Int) -> Ptr
+	StrFromByte                // (Int) -> Ptr
+	StrCompare                 // (Ptr, Ptr) -> Int
+	IntToString                // (Int) -> Ptr
+	StrConcat                  // (Ptr, Ptr) -> Ptr
+	StrEq                      // (Ptr, Ptr) -> Bool
+	IOPrint                    // (Ptr) -> Bool
+	IOEPrint                   // (Ptr) -> Bool
+	IOReadStdin                // () -> Ptr
+	IOReadFile                 // (Ptr) -> Ptr
+	IOFileExists               // (Ptr) -> Bool
+	IOWriteFile                // (Ptr, Ptr) -> Bool
+	IOArgCount                 // () -> Int
+	IOArgAt                    // (Int) -> Ptr
+	IOExit                     // (Int) -> Bool
 )
 
 // Prim applies a built-in operation to Args.
@@ -284,11 +297,11 @@ func (*StrConst) Type() ValType { return Ptr }
 // Type returns the result type of the built-in operation.
 func (e *Prim) Type() ValType {
 	switch e.Op {
-	case StrLength, StrByteAt, StrCompare:
+	case StrLength, StrByteAt, StrCompare, IOArgCount:
 		return Int
-	case StrSlice, StrFromByte, IntToString, StrConcat:
+	case StrSlice, StrFromByte, IntToString, StrConcat, IOReadStdin, IOReadFile, IOArgAt:
 		return Ptr
-	case StrEq:
+	case StrEq, IOPrint, IOEPrint, IOFileExists, IOWriteFile, IOExit:
 		return Bool
 	default:
 		panic(fmt.Sprintf("ir.Prim.Type: unknown operation %d", int(e.Op)))
