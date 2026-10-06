@@ -1,0 +1,11 @@
+// expected output: 42
+
+import "std/list"
+import "shapes"
+import "util/math"
+
+fn main() -> Int {
+    let xs = Cons(1, Cons(2, Cons(3, Cons(4, Nil))))
+    let n = length(xs)
+    area(Rect(n, 5)) + clamp(square(3), 0, 100) + n + length(map(xs, fn(x: Int) -> Int { x })) + 5
+}

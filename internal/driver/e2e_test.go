@@ -1284,6 +1284,260 @@ fn main() -> Int {
 			src:  "fn main() -> Int { stringLength(\"" + strings.Repeat("a", 70000) + "\") }\n",
 			want: "70000",
 		},
+		{
+			name: "std list length",
+			src: `import "std/list"
+fn main() -> Int {
+    let empty: List[Int] = Nil
+    length(Cons(1, Cons(2, Cons(3, Nil)))) * 10 + length(empty)
+}
+`,
+			want: "30",
+		},
+		{
+			name: "std list map",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(map(Cons(1, Cons(2, Cons(3, Nil))), fn(x: Int) -> Int { x + 1 }))
+}
+`,
+			want: "234",
+		},
+		{
+			name: "std list filter",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(filter(Cons(1, Cons(2, Cons(3, Cons(4, Nil)))), fn(x: Int) -> Bool { x / 2 * 2 == x }))
+}
+`,
+			want: "24",
+		},
+		{
+			name: "std list foldl",
+			src: `import "std/list"
+fn main() -> Int {
+    foldl(Cons(1, Cons(2, Cons(3, Nil))), 0, fn(acc: Int, x: Int) -> Int { acc - x })
+}
+`,
+			want: "-6",
+		},
+		{
+			name: "std list foldr order",
+			src: `import "std/list"
+fn main() -> Int {
+    foldr(Cons(1, Cons(2, Cons(3, Nil))), 0, fn(x: Int, acc: Int) -> Int { x - acc })
+}
+`,
+			want: "2",
+		},
+		{
+			name: "std list reverse",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(reverse(Cons(1, Cons(2, Cons(3, Nil)))))
+}
+`,
+			want: "321",
+		},
+		{
+			name: "std list append",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(append(Cons(1, Cons(2, Nil)), Cons(3, Cons(4, Nil))))
+}
+`,
+			want: "1234",
+		},
+		{
+			name: "std list concat",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(concat(Cons(Cons(1, Cons(2, Nil)), Cons(Cons(3, Nil), Nil))))
+}
+`,
+			want: "123",
+		},
+		{
+			name: "std list any",
+			src: `import "std/list"
+fn b(x: Bool) -> Int { if x { 1 } else { 0 } }
+fn main() -> Int {
+    b(any(Cons(1, Cons(2, Nil)), fn(x: Int) -> Bool { x == 2 })) * 100 + b(any(Cons(1, Nil), fn(x: Int) -> Bool { x == 2 })) * 10 + b(any(Nil, fn(x: Int) -> Bool { x == 1 }))
+}
+`,
+			want: "100",
+		},
+		{
+			name: "std list all",
+			src: `import "std/list"
+fn b(x: Bool) -> Int { if x { 1 } else { 0 } }
+fn main() -> Int {
+    b(all(Cons(1, Cons(2, Nil)), fn(x: Int) -> Bool { x > 0 })) * 100 + b(all(Cons(0, Nil), fn(x: Int) -> Bool { x > 0 })) * 10 + b(all(Nil, fn(x: Int) -> Bool { x > 0 }))
+}
+`,
+			want: "101",
+		},
+		{
+			name: "std list range empty",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    if length(range(3, 3)) == 0 && length(range(5, 2)) == 0 && pack(range(1, 4)) == 123 { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std list sum",
+			src: `import "std/list"
+fn main() -> Int { sum(range(1, 5)) }
+`,
+			want: "10",
+		},
+		{
+			name: "std list take and drop boundaries",
+			src: `import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    let xs = Cons(1, Cons(2, Cons(3, Cons(4, Nil))))
+    if pack(take(xs, 0)) == 0 && pack(take(xs, -3)) == 0 && pack(take(xs, 2)) == 12 && pack(take(xs, 9)) == 1234 && pack(drop(xs, 0)) == 1234 && pack(drop(xs, -1)) == 1234 && pack(drop(xs, 2)) == 34 && pack(drop(xs, 9)) == 0 {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std option withDefault",
+			src: `import "std/option"
+fn main() -> Int { withDefault(Some(41), 0) + withDefault(None, 1) }
+`,
+			want: "42",
+		},
+		{
+			name: "std option mapOption",
+			src: `import "std/option"
+fn main() -> Int {
+    withDefault(mapOption(Some(21), fn(x: Int) -> Int { x * 2 }), 0) + withDefault(mapOption(None, fn(x: Int) -> Int { x }), 0)
+}
+`,
+			want: "42",
+		},
+		{
+			name: "std option andThen",
+			src: `import "std/option"
+fn main() -> Int {
+    withDefault(andThen(Some(20), fn(x: Int) -> Option[Int] { Some(x + 1) }), 0) + withDefault(andThen(None, fn(x: Int) -> Option[Int] { Some(x) }), 5) + withDefault(andThen(Some(1), fn(x: Int) -> Option[Int] { None }), 16)
+}
+`,
+			want: "42",
+		},
+		{
+			name: "std option isSome and isNone",
+			src: `import "std/option"
+fn main() -> Int {
+    let missing: Option[Int] = None
+    if isSome(Some(0)) && !isSome(missing) && isNone(missing) && !isNone(Some(0)) { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std pair fst and snd",
+			src: `import "std/pair"
+fn main() -> Int { fst(Pair(40, 1)) + snd(Pair(0, 2)) }
+`,
+			want: "42",
+		},
+		{
+			name: "std string join empty and several",
+			src: `import "std/list"
+import "std/string"
+fn main() -> Int {
+    let empty: List[String] = Nil
+    if join(empty, ",") == "" && join(Cons("a", Nil), ",") == "a" && join(Cons("a", Cons("b", Cons("c", Nil))), "-") == "a-b-c" { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std string startsWith",
+			src: `import "std/string"
+fn main() -> Int {
+    if startsWith("hello", "hel") && startsWith("hello", "") && !startsWith("hello", "hi") && !startsWith("ab", "abc") { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std string endsWith",
+			src: `import "std/string"
+fn main() -> Int {
+    if endsWith("hello", "llo") && endsWith("hello", "") && !endsWith("hello", "hi") && !endsWith("ab", "cab") { 1 } else { 0 }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std string isDigit isAlpha isSpace",
+			src: `import "std/string"
+fn byte(s: String) -> Int { stringByteAt(s, 0) }
+fn main() -> Int {
+    if isDigit(byte("0")) && isDigit(byte("9")) && !isDigit(byte("a")) && !isDigit(byte("/")) && isAlpha(byte("A")) && isAlpha(byte("Z")) && isAlpha(byte("a")) && isAlpha(byte("z")) && !isAlpha(byte("0")) && !isAlpha(byte(" ")) && isSpace(byte(" ")) && isSpace(byte("\t")) && isSpace(byte("\n")) && isSpace(byte("\r")) && !isSpace(byte("a")) && !isSpace(byte("0")) {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "std list million elements",
+			src: `import "std/list"
+fn main() -> Int {
+    let xs = range(0, 1000000)
+    let ys = filter(map(xs, fn(x: Int) -> Int { x + 1 }), fn(x: Int) -> Bool { x > 0 })
+    if length(ys) == 1000000 && foldr(xs, 0, fn(x: Int, acc: Int) -> Int { acc + 1 }) == 1000000 && length(xs) == 1000000 {
+        1
+    } else {
+        0
+    }
+}
+`,
+			want: "1",
+		},
+		{
+			name: "modules example",
+			file: "examples/modules/main.cero",
+			want: "42",
+		},
+		{
+			name: "stdlib example",
+			file: "examples/stdlib.cero",
+			want: "42",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1293,9 +1547,9 @@ fn main() -> Int {
 			src := []byte(tt.src)
 			filename := "main.cero"
 			if tt.file != "" {
-				filename = tt.file
+				filename = filepath.Join(root, tt.file)
 				var err error
-				src, err = os.ReadFile(filepath.Join(root, tt.file))
+				src, err = os.ReadFile(filename)
 				if err != nil {
 					t.Fatalf("read %s: %v", tt.file, err)
 				}
