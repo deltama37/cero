@@ -1,0 +1,530 @@
+import "std/list"
+import "std/option"
+import "ir/ir"
+import "util/intmap"
+import "util/strmap"
+import "x86/asm"
+import "x86/runtime"
+
+type X6Strs =
+    | X6Strs(StrMap[Int], List[String], Int)
+
+type X6Mod =
+    | X6Mod(Int, IntMap[Int], StrMap[Int])
+
+type X6Cx =
+    | X6Cx(X6Mod, Int, Int)
+
+type X6Sw =
+    | X6Sw(List[Int], Int, Int)
+
+pub type X6Obj =
+    | X6Obj(X6Code, List[String])
+
+fn cgI(i: X6Ins) -> X6Code {
+    x6One(i)
+}
+
+fn cgSlot(j: Int) -> Int {
+    -8 * (j + 1)
+}
+
+fn cgKids(e: IrExpr, stack: List[IrExpr]) -> List[IrExpr] {
+    match e {
+        IrIntConst(_) => stack,
+        IrBoolConst(_) => stack,
+        IrStrConst(_) => stack,
+        IrLocalGet(_, _) => stack,
+        IrField(_, _, _) => stack,
+        IrFuncValue(_, env) => match env {
+            None => stack,
+            Some(x) => Cons(x, stack),
+        },
+        IrUnary(_, x) => Cons(x, stack),
+        IrBinary(_, x, y) => Cons(x, Cons(y, stack)),
+        IrIf(c, t, el, _) => Cons(c, Cons(t, Cons(el, stack))),
+        IrBlock(lets, result) => append(cgLetVals(lets, Nil), Cons(result, stack)),
+        IrCall(_, args, _, _) => append(args, stack),
+        IrCallIndirect(callee, _, args, _) => Cons(callee, append(args, stack)),
+        IrConstruct(_, fields) => append(fields, stack),
+        IrSwitchTag(_, cases, def, _) => append(cgCaseVals(cases, Nil), cgPushDef(def, stack)),
+        IrPrim(_, args) => append(args, stack),
+    }
+}
+
+fn cgLetVals(lets: List[IrLet], acc: List[IrExpr]) -> List[IrExpr] {
+    match lets {
+        Nil => reverse(acc),
+        Cons(one, rest) => match one {
+            IrLet(_, v) => cgLetVals(rest, Cons(v, acc)),
+        },
+    }
+}
+
+fn cgCaseVals(cases: List[IrTagCase], acc: List[IrExpr]) -> List[IrExpr] {
+    match cases {
+        Nil => reverse(acc),
+        Cons(c, rest) => match c {
+            IrTagCase(_, body) => cgCaseVals(rest, Cons(body, acc)),
+        },
+    }
+}
+
+fn cgPushDef(def: Option[IrExpr], stack: List[IrExpr]) -> List[IrExpr] {
+    match def {
+        None => stack,
+        Some(e) => Cons(e, stack),
+    }
+}
+
+fn cgWalk[S](stack: List[IrExpr], s: S, f: (S, IrExpr) -> S) -> S {
+    match stack {
+        Nil => s,
+        Cons(e, rest) => cgWalk(cgKids(e, rest), f(s, e), f),
+    }
+}
+
+fn cgNote(acc: X6Strs, s: String) -> X6Strs {
+    match acc {
+        X6Strs(m, rev, next) => match smLookup(m, s) {
+            Some(_) => acc,
+            None => X6Strs(smInsert(m, s, next), Cons(s, rev), next + 1),
+        },
+    }
+}
+
+fn cgStrStep(acc: X6Strs, e: IrExpr) -> X6Strs {
+    match e {
+        IrStrConst(s) => cgNote(acc, s),
+        _ => acc,
+    }
+}
+
+fn cgStrFuns(fs: List[IrFunc], acc: X6Strs) -> X6Strs {
+    match fs {
+        Nil => acc,
+        Cons(func, rest) => match func {
+            IrFunc(_, _, _, body) => cgStrFuns(rest, cgWalk(Cons(body, Nil), acc, cgStrStep)),
+        },
+    }
+}
+
+fn cgTab(xs: List[Int], i: Int, m: IntMap[Int]) -> IntMap[Int] {
+    match xs {
+        Nil => m,
+        Cons(id, rest) => cgTab(rest, i + 1, imInsert(m, id, i)),
+    }
+}
+
+fn cgIdx(cx: X6Cx, fid: Int) -> Int {
+    match cx {
+        X6Cx(md, _, _) => match md {
+            X6Mod(_, tab, _) => withDefault(imLookup(tab, fid), 0),
+        },
+    }
+}
+
+fn cgN(cx: X6Cx) -> Int {
+    match cx {
+        X6Cx(md, _, _) => match md {
+            X6Mod(n, _, _) => n,
+        },
+    }
+}
+
+fn cgStrLab(cx: X6Cx, s: String) -> Int {
+    match cx {
+        X6Cx(md, _, _) => match md {
+            X6Mod(_, _, sm) => withDefault(smLookup(sm, s), 0),
+        },
+    }
+}
+
+fn cgCopyIn(i: Int, n: Int) -> X6Code {
+    if i >= n {
+        X6Nil
+    } else {
+        let src = 16 + 8 * (n - 1 - i)
+        let dst = cgSlot(i)
+        let one = x6Seq(Cons(cgI(x6Load64(Rax, Rbp, src)), Cons(cgI(x6Store64(Rax, Rbp, dst)), Nil)))
+        x6Cat(one, cgCopyIn(i + 1, n))
+    }
+}
+
+fn cgPrologue(id: Int, nparams: Int, nlocals: Int) -> X6Code {
+    let frame = if nlocals > 0 {
+        cgI(x6SubRI(Rsp, 8 * nlocals))
+    } else {
+        X6Nil
+    }
+    x6Seq(Cons(cgI(X6Label(id)), Cons(cgI(x6Push(Rbp)), Cons(cgI(x6MovRR(Rbp, Rsp)), Cons(frame, Cons(cgCopyIn(0, nparams), Nil))))))
+}
+
+fn cgEpilogue(nparams: Int) -> X6Code {
+    x6Seq(Cons(cgI(x6MovRR(Rsp, Rbp)), Cons(cgI(x6Pop(Rbp)), Cons(cgI(x6RetN(8 * nparams)), Nil))))
+}
+
+fn cgCopyTail(i: Int, m: Int, nparams: Int, tmp: X6Reg) -> X6Code {
+    if i >= m {
+        X6Nil
+    } else {
+        let src = 8 * (m - 1 - i)
+        let dst = 8 * (nparams + 1 - i)
+        let one = x6Seq(Cons(cgI(x6Load64(tmp, Rsp, src)), Cons(cgI(x6Store64(tmp, Rbp, dst)), Nil)))
+        x6Cat(one, cgCopyTail(i + 1, m, nparams, tmp))
+    }
+}
+
+fn cgTail(m: Int, nparams: Int, tmp: X6Reg, jump: X6Code) -> X6Code {
+    let disp = 8 * (nparams - m + 1)
+    x6Seq(Cons(cgI(x6Load64(R10, Rbp, 8)), Cons(cgI(x6Load64(R11, Rbp, 0)), Cons(cgCopyTail(0, m, nparams, tmp), Cons(cgI(x6Lea(Rsp, Rbp, disp)), Cons(cgI(x6Store64(R10, Rsp, 0)), Cons(cgI(x6MovRR(Rbp, R11)), Cons(jump, Nil))))))))
+}
+
+fn cgPushArgs(args: List[IrExpr], cx: X6Cx, fresh: Int, acc: X6Code) -> X6Gen {
+    match args {
+        Nil => X6Gen(acc, fresh),
+        Cons(a, rest) => {
+            let X6Gen(c, f2) = x6Expr(a, cx, fresh)
+            cgPushArgs(rest, cx, f2, x6Cat(acc, x6Cat(c, cgI(x6Push(Rax)))))
+        },
+    }
+}
+
+fn cgIndirect(cx: X6Cx) -> X6Code {
+    let table = x6LabTable(cgN(cx))
+    x6Seq(Cons(cgI(x6MovRR(Rdx, Rax)), Cons(cgI(x6ShrRI(Rdx, 32)), Cons(cgI(x6Push(Rdx)), Cons(cgI(x6MovRR32(Rcx, Rax)), Cons(cgI(X6MovLabel(R9, table)), Cons(cgI(x6ShlRI(Rcx, 3)), Cons(cgI(x6AddRR(R9, Rcx)), Cons(cgI(x6Load64(Rax, R9, 0)), Nil)))))))))
+}
+
+fn cgCmp(c: X6Cond) -> X6Code {
+    x6Seq(Cons(cgI(x6CmpRR(Rax, Rcx)), Cons(cgI(x6Setcc(c, Rax)), Cons(cgI(x6MovzxB(Rax, Rax)), Nil))))
+}
+
+fn cgDivRem(rem: Bool, cx: X6Cx, fresh: Int) -> X6Gen {
+    let sp = fresh
+    let done = fresh + 1
+    let trap = x6LabTrap(cgN(cx))
+    let special = if rem {
+        cgI(x6XorRR(Rax, Rax))
+    } else {
+        x6Seq(Cons(cgI(x6MovRI(R11, shiftLeft(1, 63))), Cons(cgI(x6CmpRR(Rax, R11)), Cons(cgI(X6Jcc(CEq, trap)), Cons(cgI(x6Neg(Rax)), Nil)))))
+    }
+    let after = if rem {
+        cgI(x6MovRR(Rax, Rdx))
+    } else {
+        X6Nil
+    }
+    let code = x6Seq(Cons(cgI(x6CmpRI(Rcx, 0)), Cons(cgI(X6Jcc(CEq, trap)), Cons(cgI(x6CmpRI(Rcx, -1)), Cons(cgI(X6Jcc(CEq, sp)), Cons(cgI(x6Cqo()), Cons(cgI(x6IdivR(Rcx)), Cons(after, Cons(cgI(X6Jmp(done)), Cons(cgI(X6Label(sp)), Cons(special, Cons(cgI(X6Label(done)), Nil))))))))))))
+    X6Gen(code, fresh + 2)
+}
+
+fn cgApply(op: BinOp) -> X6Code {
+    match op {
+        IrAdd => cgI(x6AddRR(Rax, Rcx)),
+        IrSub => cgI(x6SubRR(Rax, Rcx)),
+        IrMul => cgI(x6ImulRR(Rax, Rcx)),
+        IrEq => cgCmp(CEq),
+        IrNe => cgCmp(CNe),
+        IrLt => cgCmp(CLt),
+        IrLe => cgCmp(CLe),
+        IrGt => cgCmp(CGt),
+        IrGe => cgCmp(CGe),
+        IrDiv => X6Nil,
+        IrRem => X6Nil,
+    }
+}
+
+fn cgBin(op: BinOp, x: IrExpr, y: IrExpr, cx: X6Cx, fresh: Int) -> X6Gen {
+    let X6Gen(cx1, f1) = x6Expr(x, cx, fresh)
+    let X6Gen(cy, f2) = x6Expr(y, cx, f1)
+    let mid = x6Seq(Cons(cgI(x6Push(Rax)), Cons(cy, Cons(cgI(x6MovRR(Rcx, Rax)), Cons(cgI(x6Pop(Rax)), Nil)))))
+    match op {
+        IrDiv => {
+            let X6Gen(d, f3) = cgDivRem(false, cx, f2)
+            X6Gen(x6Cat(cx1, x6Cat(mid, d)), f3)
+        },
+        IrRem => {
+            let X6Gen(d, f3) = cgDivRem(true, cx, f2)
+            X6Gen(x6Cat(cx1, x6Cat(mid, d)), f3)
+        },
+        _ => X6Gen(x6Cat(cx1, x6Cat(mid, cgApply(op))), f2),
+    }
+}
+
+fn cgIf(cond: IrExpr, th: IrExpr, el: IrExpr, cx: X6Cx, fresh: Int) -> X6Gen {
+    let els = fresh
+    let end = fresh + 1
+    let X6Gen(cc, f1) = x6Expr(cond, cx, fresh + 2)
+    let X6Gen(ct, f2) = x6Expr(th, cx, f1)
+    let X6Gen(ce, f3) = x6Expr(el, cx, f2)
+    let code = x6Seq(Cons(cc, Cons(cgI(x6CmpRI(Rax, 0)), Cons(cgI(X6Jcc(CEq, els)), Cons(ct, Cons(cgI(X6Jmp(end)), Cons(cgI(X6Label(els)), Cons(ce, Cons(cgI(X6Label(end)), Nil)))))))))
+    X6Gen(code, f3)
+}
+
+fn cgLets(lets: List[IrLet], cx: X6Cx, fresh: Int, acc: X6Code) -> X6Gen {
+    match lets {
+        Nil => X6Gen(acc, fresh),
+        Cons(one, rest) => match one {
+            IrLet(id, v) => {
+                let X6Gen(c, f2) = x6Expr(v, cx, fresh)
+                let st = cgI(x6Store64(Rax, Rbp, cgSlot(id)))
+                cgLets(rest, cx, f2, x6Cat(acc, x6Cat(c, st)))
+            },
+        },
+    }
+}
+
+fn cgPopFields(i: Int) -> X6Code {
+    if i < 0 {
+        X6Nil
+    } else {
+        let one = x6Seq(Cons(cgI(x6Pop(Rcx)), Cons(cgI(x6Store64(Rcx, Rax, 8 + 8 * i)), Nil)))
+        x6Cat(one, cgPopFields(i - 1))
+    }
+}
+
+fn cgConstruct(tag: Int, fields: List[IrExpr], cx: X6Cx, fresh: Int) -> X6Gen {
+    let X6Gen(pushed, f2) = cgPushArgs(fields, cx, fresh, X6Nil)
+    let k = length(fields)
+    let alloc = x6LabAlloc(cgN(cx))
+    let head = x6Seq(Cons(cgI(x6PushI(8 + 8 * k)), Cons(cgI(X6Call(alloc)), Cons(cgI(x6MovRI(Rcx, tag)), Cons(cgI(x6Store32(Rcx, Rax, 0)), Cons(cgI(x6XorRR(Rcx, Rcx)), Cons(cgI(x6Store32(Rcx, Rax, 4)), Nil)))))))
+    X6Gen(x6Cat(pushed, x6Cat(head, cgPopFields(k - 1))), f2)
+}
+
+fn cgLoadTag(local: Int) -> X6Code {
+    x6Seq(Cons(cgI(x6Load64(Rax, Rbp, cgSlot(local))), Cons(cgI(x6Load32(Rax, Rax, 0)), Nil)))
+}
+
+fn cgLast(xs: List[IrTagCase]) -> Bool {
+    match xs {
+        Nil => true,
+        Cons(_, _) => false,
+    }
+}
+
+fn cgChain(cases: List[IrTagCase], labs: List[Int], local: Int, noDef: Bool) -> X6Code {
+    match cases {
+        Nil => X6Nil,
+        Cons(one, rest) => match one {
+            IrTagCase(tag, _) => match labs {
+                Nil => X6Nil,
+                Cons(lab, lrest) => if cgLast(rest) && noDef {
+                    cgI(X6Jmp(lab))
+                } else {
+                    let cmp = x6Seq(Cons(cgLoadTag(local), Cons(cgI(x6CmpRI(Rax, tag)), Cons(cgI(X6Jcc(CEq, lab)), Nil))))
+                    x6Cat(cmp, cgChain(rest, lrest, local, noDef))
+                },
+            },
+        },
+    }
+}
+
+fn cgAllocLabs(cases: List[IrTagCase], fresh: Int, acc: List[Int]) -> X6Sw {
+    match cases {
+        Nil => X6Sw(reverse(acc), fresh, fresh + 1),
+        Cons(_, rest) => cgAllocLabs(rest, fresh + 1, Cons(fresh, acc)),
+    }
+}
+
+fn cgBodies(cases: List[IrTagCase], labs: List[Int], cx: X6Cx, fresh: Int, end: Int) -> X6Gen {
+    match cases {
+        Nil => X6Gen(X6Nil, fresh),
+        Cons(one, rest) => match one {
+            IrTagCase(_, body) => match labs {
+                Nil => X6Gen(X6Nil, fresh),
+                Cons(lab, lrest) => {
+                    let X6Gen(c, f2) = x6Expr(body, cx, fresh)
+                    let piece = x6Seq(Cons(cgI(X6Label(lab)), Cons(c, Cons(cgI(X6Jmp(end)), Nil))))
+                    let X6Gen(more, f3) = cgBodies(rest, lrest, cx, f2, end)
+                    X6Gen(x6Cat(piece, more), f3)
+                },
+            },
+        },
+    }
+}
+
+fn cgDef(def: Option[IrExpr], cx: X6Cx, fresh: Int, end: Int) -> X6Gen {
+    match def {
+        None => X6Gen(X6Nil, fresh),
+        Some(e) => {
+            let X6Gen(c, f2) = x6Expr(e, cx, fresh)
+            X6Gen(x6Cat(c, cgI(X6Jmp(end))), f2)
+        },
+    }
+}
+
+fn cgSwitch(local: Int, cases: List[IrTagCase], def: Option[IrExpr], cx: X6Cx, fresh: Int) -> X6Gen {
+    let noDef = match def {
+        None => true,
+        Some(_) => false,
+    }
+    let X6Sw(labs, end, f0) = cgAllocLabs(cases, fresh, Nil)
+    let chain = cgChain(cases, labs, local, noDef)
+    let X6Gen(defC, f1) = cgDef(def, cx, f0, end)
+    let X6Gen(bodC, f2) = cgBodies(cases, labs, cx, f1, end)
+    X6Gen(x6Seq(Cons(chain, Cons(defC, Cons(bodC, Cons(cgI(X6Label(end)), Nil))))), f2)
+}
+
+fn cgHelp(op: PrimOp) -> Int {
+    match op {
+        IrStrByteAt => 0,
+        IrStrSlice => 1,
+        IrStrFromByte => 2,
+        IrStrCompare => 3,
+        IrIntToString => 4,
+        IrStrConcat => 5,
+        IrStrEq => 6,
+        IrIOPrint => 7,
+        IrIOEPrint => 8,
+        IrIOReadStdin => 9,
+        IrIOReadFile => 10,
+        IrIOFileExists => 11,
+        IrIOWriteFile => 12,
+        IrIOArgCount => 13,
+        IrIOArgAt => 14,
+        IrIOExit => 15,
+        IrIOReadStdinChunk => 16,
+        _ => 0,
+    }
+}
+
+fn cgBit(x: IrExpr, y: IrExpr, cx: X6Cx, fresh: Int, opC: X6Code) -> X6Gen {
+    let X6Gen(cx1, f1) = x6Expr(x, cx, fresh)
+    let X6Gen(cy, f2) = x6Expr(y, cx, f1)
+    let mid = x6Seq(Cons(cgI(x6Push(Rax)), Cons(cy, Cons(cgI(x6MovRR(Rcx, Rax)), Cons(cgI(x6Pop(Rax)), Cons(opC, Nil))))))
+    X6Gen(x6Cat(cx1, mid), f2)
+}
+
+fn cgPrim(op: PrimOp, args: List[IrExpr], cx: X6Cx, fresh: Int) -> X6Gen {
+    match op {
+        IrStrLength => match args {
+            Cons(a, _) => {
+                let X6Gen(c, f2) = x6Expr(a, cx, fresh)
+                X6Gen(x6Cat(c, cgI(x6Load32(Rax, Rax, 0))), f2)
+            },
+            Nil => X6Gen(cgI(x6MovRI(Rax, 0)), fresh),
+        },
+        IrBitAnd => match args {
+            Cons(x, Cons(y, _)) => cgBit(x, y, cx, fresh, cgI(x6AndRR(Rax, Rcx))),
+            _ => X6Gen(X6Nil, fresh),
+        },
+        IrBitOr => match args {
+            Cons(x, Cons(y, _)) => cgBit(x, y, cx, fresh, cgI(x6OrRR(Rax, Rcx))),
+            _ => X6Gen(X6Nil, fresh),
+        },
+        IrBitXor => match args {
+            Cons(x, Cons(y, _)) => cgBit(x, y, cx, fresh, cgI(x6XorRR(Rax, Rcx))),
+            _ => X6Gen(X6Nil, fresh),
+        },
+        IrShiftLeft => match args {
+            Cons(x, Cons(y, _)) => cgBit(x, y, cx, fresh, cgI(x6ShlCl(Rax))),
+            _ => X6Gen(X6Nil, fresh),
+        },
+        IrShiftRight => match args {
+            Cons(x, Cons(y, _)) => cgBit(x, y, cx, fresh, cgI(x6SarCl(Rax))),
+            _ => X6Gen(X6Nil, fresh),
+        },
+        IrShiftRightUnsigned => match args {
+            Cons(x, Cons(y, _)) => cgBit(x, y, cx, fresh, cgI(x6ShrCl(Rax))),
+            _ => X6Gen(X6Nil, fresh),
+        },
+        _ => {
+            let X6Gen(pushed, f2) = cgPushArgs(args, cx, fresh, X6Nil)
+            X6Gen(x6Cat(pushed, cgI(X6Call(x6LabHelper(cgN(cx), cgHelp(op))))), f2)
+        },
+    }
+}
+
+fn x6Expr(e: IrExpr, cx: X6Cx, fresh: Int) -> X6Gen {
+    match e {
+        IrIntConst(n) => X6Gen(cgI(x6MovRI(Rax, n)), fresh),
+        IrBoolConst(b) => X6Gen(cgI(x6MovRI(Rax, if b {
+            1
+        } else {
+            0
+        })), fresh),
+        IrStrConst(s) => X6Gen(cgI(X6MovLabel(Rax, cgStrLab(cx, s))), fresh),
+        IrLocalGet(j, _) => X6Gen(cgI(x6Load64(Rax, Rbp, cgSlot(j))), fresh),
+        IrFuncValue(fid, env) => {
+            let idx = cgIdx(cx, fid)
+            match env {
+                None => X6Gen(cgI(x6MovRI(Rax, idx)), fresh),
+                Some(inner) => {
+                    let X6Gen(c, f2) = x6Expr(inner, cx, fresh)
+                    let rest = x6Seq(Cons(cgI(x6ShlRI(Rax, 32)), Cons(cgI(x6OrRI(Rax, idx)), Nil)))
+                    X6Gen(x6Cat(c, rest), f2)
+                },
+            }
+        },
+        IrUnary(op, x) => {
+            let X6Gen(c, f2) = x6Expr(x, cx, fresh)
+            let opC = match op {
+                IrNeg => cgI(x6Neg(Rax)),
+                IrNot => cgI(x6XorRI(Rax, 1)),
+            }
+            X6Gen(x6Cat(c, opC), f2)
+        },
+        IrBinary(op, x, y) => cgBin(op, x, y, cx, fresh),
+        IrIf(c, t, el, _) => cgIf(c, t, el, cx, fresh),
+        IrBlock(lets, result) => {
+            let X6Gen(cl, f2) = cgLets(lets, cx, fresh, X6Nil)
+            let X6Gen(cr, f3) = x6Expr(result, cx, f2)
+            X6Gen(x6Cat(cl, cr), f3)
+        },
+        IrCall(fid, args, _, tail) => {
+            let X6Gen(pushed, f2) = cgPushArgs(args, cx, fresh, X6Nil)
+            let m = length(args)
+            if tail {
+                let X6Cx(_, nparams, _) = cx
+                X6Gen(x6Cat(pushed, cgTail(m, nparams, Rax, cgI(X6Jmp(fid)))), f2)
+            } else {
+                X6Gen(x6Cat(pushed, cgI(X6Call(fid))), f2)
+            }
+        },
+        IrCallIndirect(callee, _, args, tail) => {
+            let X6Gen(pushed, f2) = cgPushArgs(args, cx, fresh, X6Nil)
+            let X6Gen(cev, f3) = x6Expr(callee, cx, f2)
+            let prep = x6Cat(pushed, x6Cat(cev, cgIndirect(cx)))
+            if tail {
+                let X6Cx(_, nparams, _) = cx
+                let m = length(args) + 1
+                X6Gen(x6Cat(prep, cgTail(m, nparams, Rdx, cgI(x6JmpR(Rax)))), f3)
+            } else {
+                X6Gen(x6Cat(prep, cgI(x6CallR(Rax))), f3)
+            }
+        },
+        IrConstruct(tag, fields) => cgConstruct(tag, fields, cx, fresh),
+        IrField(local, index, _) => X6Gen(x6Seq(Cons(cgI(x6Load64(Rax, Rbp, cgSlot(local))), Cons(cgI(x6Load64(Rax, Rax, 8 + 8 * index)), Nil))), fresh),
+        IrSwitchTag(local, cases, def, _) => cgSwitch(local, cases, def, cx, fresh),
+        IrPrim(op, args) => cgPrim(op, args, cx, fresh),
+    }
+}
+
+fn cgFun(f: IrFunc, id: Int, md: X6Mod, fresh: Int) -> X6Gen {
+    let IrFunc(_, sig, locals, body) = f
+    let IrSig(ps, _) = sig
+    let nparams = length(ps)
+    let nlocals = length(locals)
+    let cx = X6Cx(md, nparams, nlocals)
+    let X6Gen(bodyC, f2) = x6Expr(body, cx, fresh)
+    X6Gen(x6Cat(cgPrologue(id, nparams, nlocals), x6Cat(bodyC, cgEpilogue(nparams))), f2)
+}
+
+fn cgFuns(fs: List[IrFunc], id: Int, md: X6Mod, fresh: Int, acc: X6Code) -> X6Gen {
+    match fs {
+        Nil => X6Gen(acc, fresh),
+        Cons(f, rest) => {
+            let X6Gen(c, f2) = cgFun(f, id, md, fresh)
+            cgFuns(rest, id + 1, md, f2, x6Cat(acc, c))
+        },
+    }
+}
+
+pub fn x6Lower(m: IrModule) -> X6Obj {
+    let IrModule(fs, table, main, cmd) = m
+    let n = length(fs)
+    let X6Strs(sm, rev, fresh0) = cgStrFuns(fs, X6Strs(smEmpty(), Nil, x6LabFresh(n)))
+    let md = X6Mod(n, cgTab(table, 0, imEmpty()), sm)
+    let X6Gen(code, fresh1) = cgFuns(fs, 0, md, fresh0, X6Nil)
+    let X6Gen(rt, _) = x6Runtime(n, main, cmd, fresh1)
+    X6Obj(x6Cat(code, rt), reverse(rev))
+}

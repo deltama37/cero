@@ -10,9 +10,10 @@ import "lower/lower"
 import "wasm/encode"
 import "fmt/fmt"
 import "lsp/server"
+import "x86/link"
 
 fn usage() -> String {
-    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT] | fmt [-w|--check] FILE... | lsp\n"
+    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build [--target wasm32|x86_64-linux] FILE [-o OUT] | fmt [-w|--check] FILE... | lsp\n"
 }
 
 fn die(code: Int, msg: String) -> IO[Unit] {
@@ -22,7 +23,7 @@ fn die(code: Int, msg: String) -> IO[Unit] {
 
 type Parsed =
     | Usage
-    | Cmd(String, String, String, String)
+    | Cmd(String, String, String, String, String)
     | FmtCmd(String, List[String])
 
 fn splitStd(xs: List[String], stdDir: String, acc: List[String]) -> Parsed {
@@ -41,9 +42,9 @@ fn splitStd(xs: List[String], stdDir: String, acc: List[String]) -> Parsed {
 
 fn parseCheck(stdDir: String, xs: List[String]) -> Parsed {
     match xs {
-        Cons(file, Nil) => Cmd(stdDir, "check", file, ""),
+        Cons(file, Nil) => Cmd(stdDir, "check", file, "", ""),
         Cons(flag, Cons(file, Nil)) => if flag == "--types" {
-            Cmd(stdDir, "check", file, "--types")
+            Cmd(stdDir, "check", file, "--types", "")
         } else {
             Usage
         },
@@ -55,13 +56,13 @@ fn parseCmd(stdDir: String, xs: List[String]) -> Parsed {
     match xs {
         Cons(cmd, rest) => if cmd == "parse" || cmd == "ir" {
             match rest {
-                Cons(file, Nil) => Cmd(stdDir, cmd, file, ""),
+                Cons(file, Nil) => Cmd(stdDir, cmd, file, "", ""),
                 _ => Usage,
             }
         } else if cmd == "check" {
             parseCheck(stdDir, rest)
         } else if cmd == "build" {
-            parseBuild(stdDir, rest, "", "")
+            parseBuild(stdDir, rest, "", "", "wasm32")
         } else if cmd == "fmt" {
             parseFmt(rest)
         } else if cmd == "lsp" {
@@ -75,7 +76,7 @@ fn parseCmd(stdDir: String, xs: List[String]) -> Parsed {
 
 fn parseLsp(stdDir: String, xs: List[String]) -> Parsed {
     match xs {
-        Nil => Cmd(stdDir, "lsp", "", ""),
+        Nil => Cmd(stdDir, "lsp", "", "", ""),
         _ => Usage,
     }
 }
@@ -113,24 +114,37 @@ fn parseFmtFiles(xs: List[String], mode: String, acc: List[String]) -> Parsed {
     }
 }
 
-fn parseBuild(stdDir: String, xs: List[String], file: String, out: String) -> Parsed {
+fn knownTarget(name: String) -> Bool {
+    name == "wasm32" || name == "x86_64-linux"
+}
+
+fn parseBuild(stdDir: String, xs: List[String], file: String, out: String, target: String) -> Parsed {
     match xs {
         Nil => if file == "" {
             Usage
         } else {
-            Cmd(stdDir, "build", file, out)
+            Cmd(stdDir, "build", file, out, target)
         },
         Cons(a, rest) => if a == "-o" {
             match rest {
                 Nil => Usage,
-                Cons(o, rest2) => parseBuild(stdDir, rest2, file, o),
+                Cons(o, rest2) => parseBuild(stdDir, rest2, file, o, target),
+            }
+        } else if a == "--target" {
+            match rest {
+                Nil => Usage,
+                Cons(tg, rest2) => if knownTarget(tg) {
+                    parseBuild(stdDir, rest2, file, out, tg)
+                } else {
+                    Usage
+                },
             }
         } else if stringLength(a) > 0 && stringByteAt(a, 0) == '-' {
             Usage
         } else if file != "" {
             Usage
         } else {
-            parseBuild(stdDir, rest, a, out)
+            parseBuild(stdDir, rest, a, out, target)
         },
     }
 }
@@ -183,15 +197,21 @@ fn runIr(stdDir: String, file: String) -> IO[Unit] {
     }
 }
 
-fn defaultOutput(input: String) -> String {
-    if endsWith(input, ".cero") {
+fn defaultOutput(input: String, target: String) -> String {
+    if target == "x86_64-linux" {
+        if endsWith(input, ".cero") {
+            stringSlice(input, 0, stringLength(input) - 5)
+        } else {
+            input ++ ".out"
+        }
+    } else if endsWith(input, ".cero") {
         stringSlice(input, 0, stringLength(input) - 5) ++ ".wasm"
     } else {
         input ++ ".wasm"
     }
 }
 
-fn runBuild(stdDir: String, file: String, out: String) -> IO[Unit] {
+fn runBuild(stdDir: String, file: String, out: String, target: String) -> IO[Unit] {
     let! ok = fileExists(file)
     if ok {
         let! result = loadProgram(file, stdDir)
@@ -200,9 +220,14 @@ fn runBuild(stdDir: String, file: String, out: String) -> IO[Unit] {
             Loaded(mods, _) => match checkProgram(mods) {
                 Err(e) => die(1, formatError(e) ++ "\n"),
                 Ok(info) => {
-                    let wasm = encodeModule(lowerProgram(mods, info))
+                    let lowered = lowerProgram(mods, info)
+                    let wasm = if target == "x86_64-linux" {
+                        x6Encode(lowered)
+                    } else {
+                        encodeModule(lowered)
+                    }
                     let dest = if out == "" {
-                        defaultOutput(file)
+                        defaultOutput(file, target)
                     } else {
                         out
                     }
@@ -269,11 +294,11 @@ fn fmtAll(files: List[String], mode: String, bad: Bool) -> IO[Unit] {
     }
 }
 
-fn dispatch(stdDir: String, cmd: String, file: String, flag: String) -> IO[Unit] {
+fn dispatch(stdDir: String, cmd: String, file: String, flag: String, target: String) -> IO[Unit] {
     if cmd == "lsp" {
         lsRun(stdDir)
     } else if cmd == "build" {
-        runBuild(stdDir, file, flag)
+        runBuild(stdDir, file, flag, target)
     } else if cmd == "ir" {
         runIr(stdDir, file)
     } else if cmd == "check" {
@@ -296,7 +321,7 @@ fn main() -> IO[Unit] {
     let! argv = args()
     match splitStd(argv, "std", Nil) {
         Usage => die(2, usage()),
-        Cmd(stdDir, cmd, file, flag) => dispatch(stdDir, cmd, file, flag),
+        Cmd(stdDir, cmd, file, flag, target) => dispatch(stdDir, cmd, file, flag, target),
         FmtCmd(mode, files) => fmtAll(files, mode, false),
     }
 }

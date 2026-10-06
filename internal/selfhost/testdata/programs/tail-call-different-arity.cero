@@ -1,0 +1,27 @@
+fn wide(a: Int, b: Int, c: Int, d: Int) -> Int {
+    a + b + c + d
+}
+
+fn narrow(n: Int) -> Int {
+    if n == 0 {
+        wide(10, 20, 30, 40)
+    } else {
+        narrow(n - 1)
+    }
+}
+
+fn finish(a: Int, b: Int, c: Int) -> Int {
+    a + b + c
+}
+
+fn step(n: Int, acc: Int) -> Int {
+    if n == 0 {
+        finish(acc, 1, 2)
+    } else {
+        step(n - 1, acc + 1)
+    }
+}
+
+fn main() -> Int {
+    step(10000000, 0) + narrow(1000)
+}

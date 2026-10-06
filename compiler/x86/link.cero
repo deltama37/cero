@@ -1,0 +1,156 @@
+import "std/list"
+import "std/option"
+import "ir/ir"
+import "util/intmap"
+import "wasm/bytes"
+import "x86/asm"
+import "x86/codegen"
+import "x86/elf"
+
+type X6At =
+    | X6At(Int, IntMap[Int])
+
+type X6Lay =
+    | X6Lay(Bytes, Int, IntMap[Int])
+
+fn x6Align(n: Int) -> Int {
+    bitAnd(n + 4095, bitXor(-1, 4095))
+}
+
+fn x6Place(xs: List[X6Ins], pc: Int, m: IntMap[Int]) -> X6At {
+    match xs {
+        Nil => X6At(pc, m),
+        Cons(i, rest) => match i {
+            X6Label(id) => x6Place(rest, pc, imInsert(m, id, pc)),
+            _ => x6Place(rest, pc + x6Size(i), m),
+        },
+    }
+}
+
+fn x6Rel(target: Int, pc: Int, size: Int, m: IntMap[Int]) -> Int {
+    withDefault(imLookup(m, target), 0) - (pc + size)
+}
+
+fn x6EncIns(i: X6Ins, pc: Int, m: IntMap[Int]) -> Bytes {
+    match i {
+        X6Bytes(bs) => waBytes(bs),
+        X6Label(_) => waEmpty(),
+        X6Jmp(t) => waBytes(x6JmpBytes(x6Rel(t, pc, 5, m))),
+        X6Call(t) => waBytes(x6CallBytes(x6Rel(t, pc, 5, m))),
+        X6Jcc(c, t) => waBytes(x6JccBytes(c, x6Rel(t, pc, 6, m))),
+        X6MovLabel(r, t) => match x6MovRI64(r, withDefault(imLookup(m, t), 0)) {
+            X6Bytes(bs) => waBytes(bs),
+            _ => waEmpty(),
+        },
+    }
+}
+
+fn x6EncGo(xs: List[X6Ins], pc: Int, m: IntMap[Int], acc: Bytes) -> Bytes {
+    match xs {
+        Nil => acc,
+        Cons(i, rest) => x6EncGo(rest, pc + x6Size(i), m, waCat(acc, x6EncIns(i, pc, m))),
+    }
+}
+
+fn x6Zeros(n: Int) -> Bytes {
+    if n <= 0 {
+        waEmpty()
+    } else {
+        waCat(waByte(0), x6Zeros(n - 1))
+    }
+}
+
+fn x6ZGo(n: Int, acc: String) -> String {
+    if n <= 0 {
+        acc
+    } else {
+        x6ZGo(n - 1, stringFromByte(0) ++ acc)
+    }
+}
+
+fn x6PadGo(n: Int, chunk: String, acc: Bytes) -> Bytes {
+    if n >= 256 {
+        x6PadGo(n - 256, chunk, waCat(acc, waString(chunk)))
+    } else if n > 0 {
+        waCat(acc, waString(x6ZGo(n, "")))
+    } else {
+        acc
+    }
+}
+
+fn x6Pad(n: Int) -> Bytes {
+    x6PadGo(n, x6ZGo(256, ""), waEmpty())
+}
+
+fn x6StrBlock(s: String) -> Bytes {
+    let n = stringLength(s)
+    let size = bitAnd(n + 15, bitXor(-1, 7))
+    let pad = size - 8 - n
+    waCat(waCat(waCat(waBytes(x6LE32(n)), x6Zeros(4)), waString(s)), x6Zeros(pad))
+}
+
+fn x6CatRev(xs: List[Bytes], acc: Bytes) -> Bytes {
+    match xs {
+        Nil => acc,
+        Cons(b, rest) => x6CatRev(rest, waCat(acc, b)),
+    }
+}
+
+fn x6Strs(ss: List[String], lab: Int, base: Int, off: Int, m: IntMap[Int], rev: List[Bytes]) -> X6Lay {
+    match ss {
+        Nil => X6Lay(x6CatRev(reverse(rev), waEmpty()), off, m),
+        Cons(s, rest) => {
+            let blk = x6StrBlock(s)
+            x6Strs(rest, lab + 1, base, off + waLength(blk), imInsert(m, lab, base + off), Cons(blk, rev))
+        },
+    }
+}
+
+fn x6Tab(ids: List[Int], m: IntMap[Int], acc: Bytes) -> Bytes {
+    match ids {
+        Nil => acc,
+        Cons(id, rest) => x6Tab(rest, m, waCat(acc, waBytes(x6LE64(withDefault(imLookup(m, id), 0))))),
+    }
+}
+
+fn x6Globals(base: Int, off: Int, n: Int, m: IntMap[Int]) -> X6Lay {
+    let heap = waBytes(x6LE64(1073741824))
+    let heapEnd = waBytes(x6LE64(4294901760))
+    let zero = waBytes(x6LE64(0))
+    let msg = waString("error: runtime trap\n")
+    let bytes = waCat(waCat(waCat(waCat(heap, heapEnd), waCat(zero, zero)), msg), waEmpty())
+    let m1 = imInsert(m, x6LabHeap(n), base + off)
+    let m2 = imInsert(m1, x6LabHeapEnd(n), base + off + 8)
+    let m3 = imInsert(m2, x6LabArgc(n), base + off + 16)
+    let m4 = imInsert(m3, x6LabArgv(n), base + off + 24)
+    let m5 = imInsert(m4, x6LabMsg(n), base + off + 32)
+    X6Lay(bytes, off + 32 + 20, m5)
+}
+
+fn x6Data(strs: List[String], table: List[Int], n: Int, base: Int, codeAt: IntMap[Int]) -> X6Lay {
+    let X6Lay(sb, off1, m1) = x6Strs(strs, x6LabFresh(n), base, 0, codeAt, Nil)
+    let tb = x6Tab(table, codeAt, waEmpty())
+    let m2 = imInsert(m1, x6LabTable(n), base + off1)
+    let off2 = off1 + 8 * length(table)
+    let X6Lay(gb, off3, m3) = x6Globals(base, off2, n, m2)
+    X6Lay(waCat(waCat(sb, tb), gb), off3, m3)
+}
+
+pub fn x6Encode(m: IrModule) -> String {
+    let IrModule(funcs, table, _, _) = m
+    let n = length(funcs)
+    let X6Obj(code, strs) = x6Lower(m)
+    let ins = x6Flatten(code)
+    let codeBase = 4194304 + 176
+    let X6At(codeEnd, codeAt) = x6Place(ins, codeBase, imEmpty())
+    let codeLen = codeEnd - codeBase
+    let fileEnd = 176 + codeLen
+    let dataOff = x6Align(fileEnd)
+    let dataBase = 4194304 + dataOff
+    let X6Lay(data, dataLen, at) = x6Data(strs, table, n, dataBase, codeAt)
+    let text = x6EncGo(ins, codeBase, at, waEmpty())
+    let pad = x6Pad(dataOff - fileEnd)
+    let entry = withDefault(imLookup(at, x6LabStart(n)), codeBase)
+    let hdr = x6Elf(entry, dataOff, dataOff, dataLen)
+    waToString(waCat(hdr, waCat(text, waCat(pad, data))))
+}

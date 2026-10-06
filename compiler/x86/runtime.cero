@@ -1,0 +1,98 @@
+import "std/list"
+import "x86/asm"
+
+fn rtSeq(xs: List[X6Code]) -> X6Code {
+    x6Seq(xs)
+}
+
+fn rtI(i: X6Ins) -> X6Code {
+    x6One(i)
+}
+
+fn rtArgs(n: Int) -> X6Code {
+    let argc = x6LabArgc(n)
+    let argv = x6LabArgv(n)
+    rtSeq(Cons(rtI(x6Load64(Rax, Rsp, 0)), Cons(rtI(X6MovLabel(R11, argc)), Cons(rtI(x6Store64(Rax, R11, 0)), Cons(rtI(x6Lea(Rax, Rsp, 8)), Cons(rtI(X6MovLabel(R11, argv)), Cons(rtI(x6Store64(Rax, R11, 0)), Nil)))))))
+}
+
+fn rtMmap(n: Int, ok: Int) -> X6Code {
+    let trap = x6LabTrap(n)
+    rtSeq(Cons(rtI(x6MovRI(Rax, 9)), Cons(rtI(x6MovRI(Rdi, 1073741824)), Cons(rtI(x6MovRI(Rsi, 3221159936)), Cons(rtI(x6MovRI(Rdx, 3)), Cons(rtI(x6MovRI(R10, 1064994)), Cons(rtI(x6MovRI(R8, -1)), Cons(rtI(x6MovRI(R9, 0)), Cons(rtI(x6Syscall()), Cons(rtI(x6CmpRI(Rax, -4095)), Cons(rtI(X6Jcc(CB, ok)), Cons(rtI(X6Jmp(trap)), Cons(rtI(X6Label(ok)), Nil)))))))))))))
+}
+
+fn rtHeap(n: Int) -> X6Code {
+    let heap = x6LabHeap(n)
+    let heapEnd = x6LabHeapEnd(n)
+    rtSeq(Cons(rtI(x6MovRI(Rax, 1073741824)), Cons(rtI(X6MovLabel(R11, heap)), Cons(rtI(x6Store64(Rax, R11, 0)), Cons(rtI(x6MovRI(Rax, 4294901760)), Cons(rtI(X6MovLabel(R11, heapEnd)), Cons(rtI(x6Store64(Rax, R11, 0)), Nil)))))))
+}
+
+fn rtExit0() -> X6Code {
+    rtSeq(Cons(rtI(x6XorRR(Rdi, Rdi)), Cons(rtI(x6MovRI(Rax, 231)), Cons(rtI(x6Syscall()), Nil))))
+}
+
+fn rtCallClosure(n: Int) -> X6Code {
+    let table = x6LabTable(n)
+    rtSeq(Cons(rtI(x6MovRR(Rdx, Rax)), Cons(rtI(x6ShrRI(Rdx, 32)), Cons(rtI(x6Push(Rdx)), Cons(rtI(x6MovRR32(Rcx, Rax)), Cons(rtI(X6MovLabel(R9, table)), Cons(rtI(x6ShlRI(Rcx, 3)), Cons(rtI(x6AddRR(R9, Rcx)), Cons(rtI(x6Load64(Rax, R9, 0)), Cons(rtI(x6CallR(Rax)), Nil))))))))))
+}
+
+fn rtNewline() -> X6Code {
+    rtSeq(Cons(rtI(x6PushI(10)), Cons(rtI(x6MovRI(Rax, 1)), Cons(rtI(x6MovRI(Rdi, 1)), Cons(rtI(x6MovRR(Rsi, Rsp)), Cons(rtI(x6MovRI(Rdx, 1)), Cons(rtI(x6Syscall()), Nil)))))))
+}
+
+fn rtInt(n: Int, main: Int) -> X6Code {
+    let print = x6LabPrint(n)
+    rtSeq(Cons(rtI(X6Call(main)), Cons(rtI(x6Push(Rax)), Cons(rtI(X6Call(print)), Cons(rtNewline(), Cons(rtExit0(), Nil))))))
+}
+
+fn rtCmd(n: Int, main: Int) -> X6Code {
+    rtSeq(Cons(rtI(X6Call(main)), Cons(rtCallClosure(n), Cons(rtExit0(), Nil))))
+}
+
+fn rtStart(n: Int, main: Int, cmd: Bool, ok: Int) -> X6Code {
+    let body = if cmd {
+        rtCmd(n, main)
+    } else {
+        rtInt(n, main)
+    }
+    rtSeq(Cons(rtI(X6Label(x6LabStart(n))), Cons(rtArgs(n), Cons(rtMmap(n, ok), Cons(rtHeap(n), Cons(body, Nil))))))
+}
+
+fn rtAlloc(n: Int) -> X6Code {
+    let heap = x6LabHeap(n)
+    let heapEnd = x6LabHeapEnd(n)
+    let trap = x6LabTrap(n)
+    rtSeq(Cons(rtI(X6Label(x6LabAlloc(n))), Cons(rtI(x6Push(Rbp)), Cons(rtI(x6MovRR(Rbp, Rsp)), Cons(rtI(X6MovLabel(R11, heap)), Cons(rtI(x6Load64(Rax, R11, 0)), Cons(rtI(x6Load64(Rcx, Rbp, 16)), Cons(rtI(x6AddRI(Rcx, 7)), Cons(rtI(x6AndRI(Rcx, -8)), Cons(rtI(x6AddRR(Rcx, Rax)), Cons(rtI(X6MovLabel(R10, heapEnd)), Cons(rtI(x6Load64(R10, R10, 0)), Cons(rtI(x6CmpRR(Rcx, R10)), Cons(rtI(X6Jcc(CA, trap)), Cons(rtI(x6Store64(Rcx, R11, 0)), Cons(rtI(x6MovRR(Rsp, Rbp)), Cons(rtI(x6Pop(Rbp)), Cons(rtI(x6RetN(8)), Nil))))))))))))))))))
+}
+
+fn rtTrap(n: Int) -> X6Code {
+    let msg = x6LabMsg(n)
+    rtSeq(Cons(rtI(X6Label(x6LabTrap(n))), Cons(rtI(X6MovLabel(Rsi, msg)), Cons(rtI(x6MovRI(Rdx, 20)), Cons(rtI(x6MovRI(Rdi, 2)), Cons(rtI(x6MovRI(Rax, 1)), Cons(rtI(x6Syscall()), Cons(rtI(x6MovRI(Rdi, 134)), Cons(rtI(x6MovRI(Rax, 231)), Cons(rtI(x6Syscall()), Nil))))))))))
+}
+
+fn rtPrint(n: Int, pos: Int, count: Int, write: Int, skip: Int) -> X6Code {
+    let trap = x6LabTrap(n)
+    let a = rtSeq(Cons(rtI(X6Label(x6LabPrint(n))), Cons(rtI(x6Push(Rbp)), Cons(rtI(x6MovRR(Rbp, Rsp)), Cons(rtI(x6SubRI(Rsp, 32)), Cons(rtI(x6Load64(Rax, Rbp, 16)), Cons(rtI(x6XorRR(R8, R8)), Cons(rtI(x6CmpRI(Rax, 0)), Cons(rtI(X6Jcc(CGe, pos)), Cons(rtI(x6MovRI(R8, 1)), Cons(rtI(x6Neg(Rax)), Cons(rtI(X6Label(pos)), Cons(rtI(x6MovRR(R10, Rax)), Cons(rtI(x6XorRR(Rcx, Rcx)), Nil))))))))))))))
+    let b = rtSeq(Cons(rtI(X6Label(count)), Cons(rtI(x6AddRI(Rcx, 1)), Cons(rtI(x6XorRR(Rdx, Rdx)), Cons(rtI(x6MovRI(R9, 10)), Cons(rtI(x6DivR(R9)), Cons(rtI(x6CmpRI(Rax, 0)), Cons(rtI(X6Jcc(CNe, count)), Cons(rtI(x6MovRR(Rsi, Rcx)), Cons(rtI(x6AddRR(Rsi, R8)), Cons(rtI(x6MovRR(R9, Rsi)), Cons(rtI(x6MovRR(Rax, R10)), Nil))))))))))))
+    let c = rtSeq(Cons(rtI(X6Label(write)), Cons(rtI(x6SubRI(R9, 1)), Cons(rtI(x6XorRR(Rdx, Rdx)), Cons(rtI(x6MovRI(R11, 10)), Cons(rtI(x6DivR(R11)), Cons(rtI(x6AddRI(Rdx, 48)), Cons(rtI(x6Lea(Rbx, Rbp, -32)), Cons(rtI(x6AddRR(Rbx, R9)), Cons(rtI(x6Store8(Rdx, Rbx, 0)), Cons(rtI(x6CmpRR(R9, R8)), Cons(rtI(X6Jcc(CA, write)), Nil))))))))))))
+    let d = rtSeq(Cons(rtI(x6CmpRI(R8, 0)), Cons(rtI(X6Jcc(CEq, skip)), Cons(rtI(x6Lea(Rbx, Rbp, -32)), Cons(rtI(x6MovRI(Rcx, 45)), Cons(rtI(x6Store8(Rcx, Rbx, 0)), Cons(rtI(X6Label(skip)), Cons(rtI(x6Lea(Rbx, Rbp, -32)), Cons(rtI(x6MovRR(Rdx, Rsi)), Cons(rtI(x6MovRR(Rsi, Rbx)), Cons(rtI(x6MovRI(Rdi, 1)), Cons(rtI(x6MovRI(Rax, 1)), Cons(rtI(x6Syscall()), Cons(rtI(x6CmpRR(Rax, Rdx)), Cons(rtI(X6Jcc(CNe, trap)), Cons(rtI(x6MovRR(Rsp, Rbp)), Cons(rtI(x6Pop(Rbp)), Cons(rtI(x6RetN(8)), Nil))))))))))))))))))
+    rtSeq(Cons(a, Cons(b, Cons(c, Cons(d, Nil)))))
+}
+
+fn rtStubs(n: Int, k: Int, acc: X6Code) -> X6Code {
+    if k >= x6HelperCount() {
+        acc
+    } else {
+        let one = rtSeq(Cons(rtI(X6Label(x6LabHelper(n, k))), Cons(rtI(X6Jmp(x6LabTrap(n))), Nil)))
+        rtStubs(n, k + 1, x6Cat(acc, one))
+    }
+}
+
+pub fn x6Runtime(n: Int, main: Int, cmd: Bool, fresh: Int) -> X6Gen {
+    let ok = fresh
+    let pos = fresh + 1
+    let count = fresh + 2
+    let write = fresh + 3
+    let skip = fresh + 4
+    let code = rtSeq(Cons(rtStart(n, main, cmd, ok), Cons(rtAlloc(n), Cons(rtTrap(n), Cons(rtPrint(n, pos, count, write, skip), Cons(rtStubs(n, 0, X6Nil), Nil))))))
+    X6Gen(code, fresh + 5)
+}
