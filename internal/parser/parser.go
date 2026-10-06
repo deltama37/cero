@@ -123,16 +123,17 @@ func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
 		}
 	}
 
-	params, err := p.parseParamList(false)
+	params, err := p.parseParamList(true)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.expect(token.Arrow); err != nil {
-		return nil, err
-	}
-	result, err := p.parseType()
-	if err != nil {
-		return nil, err
+	var result ast.TypeExpr
+	if p.cur().Kind == token.Arrow {
+		p.advance()
+		result, err = p.parseType()
+		if err != nil {
+			return nil, err
+		}
 	}
 	body, err := p.parseBlock()
 	if err != nil {

@@ -132,48 +132,87 @@ func Check(file *ast.File) (*Info, error) {
 		c.tparams = nil
 	}
 
-	sigs := make([]*types.Func, len(file.Funcs))
-	for i, d := range file.Funcs {
+	for _, d := range file.Funcs {
 		if sym := c.globals[d.Name]; sym != nil && sym.Kind == SymCtor {
 			return nil, diag.Errorf(d.NamePos, "function '%s' conflicts with constructor '%s'", d.Name, d.Name)
 		}
 		if _, ok := c.globals[d.Name]; ok {
 			return nil, diag.Errorf(d.NamePos, "duplicate function '%s'", d.Name)
 		}
-		tps, err := c.declareTypeParams(d.TypeParams)
-		if err != nil {
-			return nil, err
+		annotated := isAnnotated(d)
+		if !annotated && len(d.TypeParams) > 0 {
+			return nil, diag.Errorf(d.TypeParams[0].Pos, "function '%s' declares type parameters, so every parameter and its result need a type annotation", d.Name)
 		}
-		c.tparams = scopeOf(tps)
-		sig, err := c.resolveFuncType(d.Params, d.Result)
-		if err != nil {
-			return nil, err
-		}
-		for j, tp := range tps {
-			if !types.Mentions(sig, tp) {
-				return nil, diag.Errorf(d.TypeParams[j].Pos, "type parameter '%s' is not used in the signature of '%s'", tp.Name, d.Name)
-			}
-		}
-		c.tparams = nil
-		sigs[i] = sig
 		sym := &Symbol{
-			Kind:       SymFunc,
-			Name:       d.Name,
-			Type:       sig,
-			Pos:        d.NamePos,
-			Decl:       d,
-			TypeParams: tps,
+			Kind: SymFunc,
+			Name: d.Name,
+			Pos:  d.NamePos,
+			Decl: d,
+		}
+		if annotated {
+			tps, err := c.declareTypeParams(d.TypeParams)
+			if err != nil {
+				return nil, err
+			}
+			c.tparams = scopeOf(tps)
+			sig, err := c.resolveFuncType(d.Params, d.Result)
+			if err != nil {
+				return nil, err
+			}
+			for j, tp := range tps {
+				if !types.Mentions(sig, tp) {
+					return nil, diag.Errorf(d.TypeParams[j].Pos, "type parameter '%s' is not used in the signature of '%s'", tp.Name, d.Name)
+				}
+			}
+			c.tparams = nil
+			sym.Type = sig
+			sym.TypeParams = tps
 		}
 		c.globals[d.Name] = sym
 		c.info.Funcs[d] = sym
 	}
 
-	for i, d := range file.Funcs {
-		c.tparams = scopeOf(c.info.Funcs[d].TypeParams)
+	var inferred []*ast.FuncDecl
+	for _, d := range file.Funcs {
+		if !isAnnotated(d) {
+			inferred = append(inferred, d)
+		}
+	}
+	indexOf := make(map[string]int, len(inferred))
+	for i, d := range inferred {
+		indexOf[d.Name] = i
+	}
+	edges := make([][]int, len(inferred))
+	for i, d := range inferred {
+		for _, name := range funcRefs(d.Params, d.Body, func(name string) bool {
+			sym := c.globals[name]
+			return sym != nil && sym.Kind == SymFunc
+		}) {
+			if j, ok := indexOf[name]; ok {
+				edges[i] = append(edges[i], j)
+			}
+		}
+	}
+	for _, comp := range sccs(len(inferred), edges) {
+		decls := make([]*ast.FuncDecl, len(comp))
+		for i, idx := range comp {
+			decls[i] = inferred[idx]
+		}
+		if err := c.checkComponent(decls); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, d := range file.Funcs {
+		if !isAnnotated(d) {
+			continue
+		}
+		sym := c.info.Funcs[d]
+		c.tparams = scopeOf(sym.TypeParams)
 		c.metas = nil
 		c.fresh = 0
-		ctx := &funcCtx{}
-		if err := c.checkFunc(ctx, d.Params, sigs[i], d.Body); err != nil {
+		c.current = sym
+		if err := c.checkFunc(&funcCtx{}, d.Params, sym.Type.(*types.Func), d.Body); err != nil {
 			return nil, err
 		}
 		if err := c.checkSolved(); err != nil {
@@ -181,6 +220,7 @@ func Check(file *ast.File) (*Info, error) {
 		}
 		c.tparams = nil
 	}
+	c.current = nil
 
 	main, ok := c.globals["main"]
 	if !ok {
@@ -205,14 +245,217 @@ type checker struct {
 	tparams map[string]*types.TypeParam // type parameters in scope; nil outside generic declarations
 	metas   []*pendingMeta              // created while checking the current top-level function, in creation order
 	fresh   int                         // number of t1, t2, ... names used in the current top-level function
+	// comp holds the symbols of the inferred functions being checked
+	// together, while checkComponent runs; nil otherwise. A reference to
+	// one of them is not instantiated, and generalize leaves the metas in
+	// their types alone.
+	comp map[*Symbol]bool
+	// compRefs records the references to symbols in comp, with the
+	// function whose body contains each one.
+	compRefs []compRef
+	// compTPs are the type parameters created by generalizeTop while
+	// checking the current component.
+	compTPs map[*types.TypeParam]bool
+	// current is the top-level function being checked.
+	current *Symbol
+}
+
+type compRef struct {
+	id    *ast.Ident
+	sym   *Symbol // the referenced function
+	owner *Symbol // the function whose body contains id
 }
 
 // pendingMeta remembers where a unification variable was created so that an
 // unsolved one can be reported.
 type pendingMeta struct {
-	meta *types.Meta
-	pos  diag.Pos
-	msg  string // the error message reported when meta is still unsolved
+	meta  *types.Meta
+	pos   diag.Pos
+	msg   string  // the error message reported when meta is still unsolved
+	owner *Symbol // top-level function being checked when meta was created
+}
+
+// isAnnotated reports whether every parameter and the result of d have a
+// type annotation.
+func isAnnotated(d *ast.FuncDecl) bool {
+	if d.Result == nil {
+		return false
+	}
+	for _, p := range d.Params {
+		if p.Type == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *checker) checkComponent(decls []*ast.FuncDecl) *diag.Error {
+	c.metas = nil
+	c.fresh = 0
+	c.comp = make(map[*Symbol]bool, len(decls))
+	c.compRefs = nil
+	c.compTPs = make(map[*types.TypeParam]bool)
+
+	for _, d := range decls {
+		sym := c.info.Funcs[d]
+		sig := &types.Func{Params: make([]types.Type, len(d.Params))}
+		c.current = sym
+		for i, p := range d.Params {
+			if p.Type != nil {
+				pt, err := c.resolveType(p.Type)
+				if err != nil {
+					return err
+				}
+				sig.Params[i] = pt
+				continue
+			}
+			msg := fmt.Sprintf("cannot infer the type of parameter '%s'; add a type annotation", p.Name)
+			sig.Params[i] = c.newMeta(c.freshName(), p.Pos, msg)
+		}
+		if d.Result != nil {
+			rt, err := c.resolveType(d.Result)
+			if err != nil {
+				return err
+			}
+			sig.Result = rt
+		} else {
+			msg := fmt.Sprintf("cannot infer the result type of '%s'; add a type annotation", d.Name)
+			sig.Result = c.newMeta(c.freshName(), d.NamePos, msg)
+		}
+		if d.Name == "main" {
+			if len(d.Params) > 0 {
+				return diag.Errorf(sym.Pos, "function 'main' must have type () -> Int, found %s", sig)
+			}
+			if !unify(sig.Result, types.Int) {
+				return diag.Errorf(sym.Pos, "function 'main' must have type () -> Int, found %s", sig)
+			}
+		}
+		sym.Type = sig
+		c.comp[sym] = true
+	}
+
+	for _, d := range decls {
+		sym := c.info.Funcs[d]
+		c.current = sym
+		if err := c.checkFunc(&funcCtx{}, d.Params, sym.Type.(*types.Func), d.Body); err != nil {
+			return err
+		}
+	}
+
+	for _, d := range decls {
+		sym := c.info.Funcs[d]
+		t, tps := c.generalizeTop(sym.Type)
+		sym.Type = t
+		sym.TypeParams = tps
+	}
+
+	if err := c.checkComponentMetas(); err != nil {
+		return err
+	}
+
+	for _, r := range c.compRefs {
+		if len(r.sym.TypeParams) > 0 {
+			args := make([]types.Type, len(r.sym.TypeParams))
+			for i, tp := range r.sym.TypeParams {
+				args[i] = tp
+			}
+			c.info.TypeArgs[r.id] = args
+		}
+		for _, tp := range r.sym.TypeParams {
+			if containsTypeParam(r.owner.TypeParams, tp) {
+				continue
+			}
+			return diag.Errorf(
+				r.id.Pos,
+				"cannot infer type argument '%s' of '%s'; add a type annotation",
+				tp.Name,
+				r.sym.Name,
+			)
+		}
+	}
+
+	c.comp = nil
+	c.compRefs = nil
+	c.compTPs = nil
+	c.current = nil
+	return nil
+}
+
+// generalizeTop turns the unsolved metas of t into type parameters, in order
+// of first occurrence in t, and also includes type parameters created earlier
+// in this component that occur in t. Shared metas are solved by the first
+// function that generalizes them, so a later function reuses those type
+// parameters.
+func (c *checker) generalizeTop(t types.Type) (types.Type, []*types.TypeParam) {
+	var tps []*types.TypeParam
+	seenMeta := make(map[*types.Meta]bool)
+	seenTP := make(map[*types.TypeParam]bool)
+	var walk func(types.Type)
+	walk = func(t types.Type) {
+		t = types.Prune(t)
+		switch t := t.(type) {
+		case *types.Meta:
+			if seenMeta[t] {
+				return
+			}
+			seenMeta[t] = true
+			tp := &types.TypeParam{Name: t.Name}
+			t.Solution = tp
+			c.compTPs[tp] = true
+			seenTP[tp] = true
+			tps = append(tps, tp)
+		case *types.TypeParam:
+			if !c.compTPs[t] || seenTP[t] {
+				return
+			}
+			seenTP[t] = true
+			tps = append(tps, t)
+		case *types.Func:
+			for _, p := range t.Params {
+				walk(p)
+			}
+			walk(t.Result)
+		case *types.Named:
+			for _, a := range t.Args {
+				walk(a)
+			}
+		}
+	}
+	walk(t)
+	if len(tps) == 0 {
+		return types.Resolve(t), nil
+	}
+	return types.Resolve(t), tps
+}
+
+func (c *checker) checkComponentMetas() *diag.Error {
+	for _, pm := range c.metas {
+		if _, ok := types.Prune(pm.meta).(*types.Meta); ok {
+			return diag.Errorf(pm.pos, "%s", pm.msg)
+		}
+		resolved := types.Resolve(pm.meta)
+		for sym := range c.comp {
+			for _, tp := range sym.TypeParams {
+				if !types.Mentions(resolved, tp) {
+					continue
+				}
+				if pm.owner != nil && containsTypeParam(pm.owner.TypeParams, tp) {
+					continue
+				}
+				return diag.Errorf(pm.pos, "%s", pm.msg)
+			}
+		}
+	}
+	return nil
+}
+
+func containsTypeParam(tps []*types.TypeParam, tp *types.TypeParam) bool {
+	for _, p := range tps {
+		if p == tp {
+			return true
+		}
+	}
+	return false
 }
 
 // scopeOf returns a name-to-parameter map, or nil when ps is empty.
@@ -461,6 +704,13 @@ func (c *checker) inferIdent(ctx *funcCtx, e *ast.Ident) (types.Type, *diag.Erro
 		return nil, diag.Errorf(e.Pos, "constructor '%s' cannot be used as a value; call it with its fields", sym.Name)
 	}
 	c.info.Uses[e] = sym
+	if c.comp[sym] {
+		c.compRefs = append(c.compRefs, compRef{id: e, sym: sym, owner: c.current})
+		return sym.Type, nil
+	}
+	if sym.Type == nil {
+		panic(fmt.Sprintf("typecheck: function '%s' is used before its type is inferred", sym.Name))
+	}
 	return c.instantiate(sym, e), nil
 }
 
@@ -468,7 +718,7 @@ func (c *checker) inferIdent(ctx *funcCtx, e *ast.Ident) (types.Type, *diag.Erro
 // that checkSolved can report msg at pos if it stays unsolved.
 func (c *checker) newMeta(name string, pos diag.Pos, msg string) *types.Meta {
 	m := &types.Meta{Name: name}
-	c.metas = append(c.metas, &pendingMeta{meta: m, pos: pos, msg: msg})
+	c.metas = append(c.metas, &pendingMeta{meta: m, pos: pos, msg: msg, owner: c.current})
 	return m
 }
 
@@ -705,9 +955,10 @@ func generalizable(e ast.Expr) bool {
 }
 
 // generalize turns the unsolved metas of t that do not occur in the type of
-// any local symbol in scope into new type parameters, by solving each such
-// meta to its type parameter. It returns t resolved and the type parameters
-// in order of first occurrence in t, or (t, nil) when there are none.
+// any local symbol in scope, or in the type of a function in the current
+// component, into new type parameters, by solving each such meta to its type
+// parameter. It returns t resolved and the type parameters in order of first
+// occurrence in t, or (t, nil) when there are none.
 func (c *checker) generalize(ctx *funcCtx, t types.Type) (types.Type, []*types.TypeParam) {
 	cand := types.Metas(t)
 	if len(cand) == 0 {
@@ -721,6 +972,11 @@ func (c *checker) generalize(ctx *funcCtx, t types.Type) (types.Type, []*types.T
 					inEnv[m] = true
 				}
 			}
+		}
+	}
+	for sym := range c.comp {
+		for _, m := range types.Metas(sym.Type) {
+			inEnv[m] = true
 		}
 	}
 	var tps []*types.TypeParam
@@ -1055,6 +1311,9 @@ func (c *checker) resolveInfo() {
 		for i := range args {
 			args[i] = types.Resolve(args[i])
 		}
+	}
+	for _, sym := range c.info.Funcs {
+		sym.Type = types.Resolve(sym.Type)
 	}
 }
 

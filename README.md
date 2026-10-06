@@ -52,6 +52,9 @@ with design documents in [`docs/design/`](docs/design/):
   `let id = fn(x) { x }`
   ([ADR-0006](docs/adr/0006-v0.4-let-polymorphism-and-local-inference.md);
   `examples/inference.cero`)
+* v0.5: type inference for top-level functions, such as `fn identity(x) { x }`
+  ([ADR-0007](docs/adr/0007-v0.5-top-level-type-inference.md);
+  `examples/toplevel_inference.cero`)
 
 `ceroc fmt` is not implemented yet.
 

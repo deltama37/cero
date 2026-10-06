@@ -2393,6 +2393,295 @@ func TestCheckInferError(t *testing.T) {
 	}
 }
 
+func TestCheckTopLevelInferSuccess(t *testing.T) {
+	t.Parallel()
+
+	list := `type List[T] =
+    | Nil
+    | Cons(T, List[T])
+`
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "identity",
+			src: `fn identity(x) { x }
+fn main() { identity(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "identity"), "t1 -> t1", "t1")
+			},
+		},
+		{
+			name: "identity at two types",
+			src: `fn identity(x) { x }
+fn main() { if identity(true) { identity(1) } else { 0 } }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "identity"), "t1 -> t1", "t1")
+				iff := funcByName(t, file, "main").Body.Result.(*ast.IfExpr)
+				wantTypeArgs(t, info, iff.Cond.(*ast.CallExpr).Fn.(*ast.Ident), "Bool")
+				wantTypeArgs(t, info, iff.Then.Result.(*ast.CallExpr).Fn.(*ast.Ident), "Int")
+			},
+		},
+		{
+			name: "parameter inferred as Int",
+			src: `fn inc(x) { x + 1 }
+fn main() { inc(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "inc"), "Int -> Int")
+			},
+		},
+		{
+			name: "partial annotation",
+			src: `fn f(x: Int, y) { y }
+fn main() { if f(1, true) { 1 } else { 0 } }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "f"), "(Int, t1) -> t1", "t1")
+			},
+		},
+		{
+			name: "calls an annotated function",
+			src: `fn add(a: Int, b: Int) -> Int { a + b }
+fn f(x) { add(x, 1) }
+fn main() { f(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "f"), "Int -> Int")
+				wantFuncScheme(t, info, funcByName(t, file, "add"), "(Int, Int) -> Int")
+			},
+		},
+		{
+			name: "annotated function calls an inferred function",
+			src: `fn identity(x) { x }
+fn main() -> Int { identity(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "identity"), "t1 -> t1", "t1")
+			},
+		},
+		{
+			name: "reference before the declaration",
+			src: `fn main() { identity(1) }
+fn identity(x) { x }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "identity"), "t1 -> t1", "t1")
+			},
+		},
+		{
+			name: "self recursion",
+			src: list + `fn length(xs) { match xs { Nil => 0, Cons(_, r) => 1 + length(r) } }
+fn main() { length(Cons(1, Nil)) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				length := funcByName(t, file, "length")
+				wantFuncScheme(t, info, length, "List[T] -> Int", "T")
+				ids := findIdents(length.Body, "length")
+				if len(ids) != 1 {
+					t.Fatalf("length references = %d, want 1", len(ids))
+				}
+				args := info.TypeArgs[ids[0]]
+				tps := info.Funcs[length].TypeParams
+				if len(args) != len(tps) {
+					t.Fatalf("type args = %d, want %d", len(args), len(tps))
+				}
+				for i := range tps {
+					if args[i] != tps[i] {
+						t.Errorf("type arg %d = %v, want length's type parameter", i, args[i])
+					}
+				}
+			},
+		},
+		{
+			name: "mutual recursion",
+			src: `fn isEven(n) { if n == 0 { true } else { isOdd(n - 1) } }
+fn isOdd(n) { if n == 0 { false } else { isEven(n - 1) } }
+fn main() { if isEven(4) { 1 } else { 0 } }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "isEven"), "Int -> Bool")
+				wantFuncScheme(t, info, funcByName(t, file, "isOdd"), "Int -> Bool")
+			},
+		},
+		{
+			name: "mutual recursion shares type parameters",
+			src: `fn f(x) { g(x) }
+fn g(y) { f(y) }
+fn main() { f(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				fs := info.Funcs[funcByName(t, file, "f")]
+				gs := info.Funcs[funcByName(t, file, "g")]
+				if len(fs.TypeParams) == 0 || len(fs.TypeParams) != len(gs.TypeParams) {
+					t.Fatalf("type params f = %d, g = %d", len(fs.TypeParams), len(gs.TypeParams))
+				}
+				for i := range fs.TypeParams {
+					if fs.TypeParams[i] != gs.TypeParams[i] {
+						t.Errorf("type param %d is not shared", i)
+					}
+				}
+			},
+		},
+		{
+			name: "higher-order function",
+			src: `fn twice(f, x) { f(f(x)) }
+fn main() { twice(fn(n) { n + 1 }, 0) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "twice"), "(t2 -> t2, t2) -> t2", "t2")
+			},
+		},
+		{
+			name: "inferred function outside the component is polymorphic",
+			src: `fn identity(x) { x }
+fn pair(x) { identity(x) }
+fn main() { if pair(true) { identity(1) } else { pair(0) } }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "identity"), "t1 -> t1", "t1")
+				wantFuncScheme(t, info, funcByName(t, file, "pair"), "t1 -> t1", "t1")
+				idTP := info.Funcs[funcByName(t, file, "identity")].TypeParams[0]
+				pairTP := info.Funcs[funcByName(t, file, "pair")].TypeParams[0]
+				if idTP == pairTP {
+					t.Error("identity and pair share a type parameter")
+				}
+			},
+		},
+		{
+			name: "inferred main",
+			src:  "fn main() { 42 }\n",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				wantFuncScheme(t, info, funcByName(t, file, "main"), "() -> Int")
+			},
+		},
+		{
+			name: "let does not generalize a component type",
+			src: `fn f(x) { let g = f g(x) }
+fn main() { f(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				sym := info.Defs[funcByName(t, file, "f").Body.Lets[0]]
+				if len(sym.TypeParams) != 0 {
+					t.Errorf("g type params = %d, want 0", len(sym.TypeParams))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			if tt.check != nil {
+				tt.check(t, file, info)
+			}
+		})
+	}
+}
+
+func TestCheckTopLevelInferError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "type parameters require annotations",
+			src:  "fn f[T](x) -> T { x }\n",
+			want: "1:6: function 'f' declares type parameters, so every parameter and its result need a type annotation",
+		},
+		{
+			name: "polymorphic recursion",
+			src: `type List[T] = | Nil | Cons(T, List[T])
+fn f(x) { if true { x } else { f(Cons(x, Nil)) } }
+fn main() { 0 }
+`,
+			want: "2:34: expected ?T, found List[?T]",
+		},
+		{
+			name: "unsolved meta used only in the body",
+			src: `type List[T] = | Nil | Cons(T, List[T])
+fn length[T](xs: List[T]) -> Int { match xs { Nil => 0, Cons(_, r) => 1 + length(r) } }
+fn f(x) { let n = length(Nil) x }
+fn main() { f(1) }
+`,
+			want: "3:19: cannot infer type argument 'T' of 'length'; add a type annotation",
+		},
+		{
+			name: "other function's type parameter",
+			src: `type Option[T] = | None | Some(T)
+fn f(x) { g(x, None) }
+fn g(p, q) { f(p) }
+fn main() { f(1) }
+`,
+			want: "2:16: cannot infer type argument 'T' of 'None'; add a type annotation",
+		},
+		{
+			name: "main with a parameter",
+			src:  "fn main(x) { 1 }\n",
+			want: "1:4: function 'main' must have type () -> Int, found ?t1 -> ?t2",
+		},
+		{
+			name: "main returning Bool",
+			src:  "fn main() { true }\n",
+			want: "1:13: expected Int, found Bool",
+		},
+		{
+			name: "argument type mismatch",
+			src: `fn inc(x) { x + 1 }
+fn main() { inc(true) }
+`,
+			want: "2:17: expected Int, found Bool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireError(t, tt.src, tt.want)
+		})
+	}
+}
+
+// wantFuncScheme checks that d's symbol has type want and type parameters
+// named names, in order. names is empty for a monomorphic function.
+func wantFuncScheme(
+	t *testing.T,
+	info *Info,
+	d *ast.FuncDecl,
+	want string,
+	names ...string,
+) {
+	t.Helper()
+
+	sym := info.Funcs[d]
+	if sym == nil || sym.Type == nil {
+		t.Fatalf("missing type for %s", d.Name)
+	}
+	if sym.Type.String() != want {
+		t.Errorf("%s type = %s, want %s", d.Name, sym.Type, want)
+	}
+	if len(sym.TypeParams) != len(names) {
+		t.Errorf("%s type params = %d, want %d", d.Name, len(sym.TypeParams), len(names))
+		return
+	}
+	for i, name := range names {
+		if sym.TypeParams[i].Name != name {
+			t.Errorf("%s type param %d = %s, want %s", d.Name, i, sym.TypeParams[i].Name, name)
+		}
+	}
+}
+
 // wantScheme checks that the let's symbol has type want and type parameters
 // named names, in order. names is empty for a monomorphic let.
 func wantScheme(
