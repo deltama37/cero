@@ -1,0 +1,1 @@
+fn f() -> Int { match x { Nil() => 0 } }
