@@ -335,6 +335,64 @@ func TestTokenize(t *testing.T) {
 				eof(1, 4),
 			},
 		},
+		{
+			name: "percent",
+			src:  "a%b",
+			want: []token.Token{
+				tok(token.Ident, "a", 1, 1),
+				tok(token.Percent, "%", 1, 2),
+				tok(token.Ident, "b", 1, 3),
+				eof(1, 4),
+			},
+		},
+		{
+			name: "character a",
+			src:  `'a'`,
+			want: []token.Token{
+				tok(token.Char, "a", 1, 1),
+				eof(1, 4),
+			},
+		},
+		{
+			name: "character newline escape",
+			src:  `'\n'`,
+			want: []token.Token{
+				tok(token.Char, "\n", 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "character quote escape",
+			src:  `'\''`,
+			want: []token.Token{
+				tok(token.Char, "'", 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "character hex",
+			src:  `'\x41'`,
+			want: []token.Token{
+				tok(token.Char, "A", 1, 1),
+				eof(1, 7),
+			},
+		},
+		{
+			name: "character double quote",
+			src:  `'"'`,
+			want: []token.Token{
+				tok(token.Char, `"`, 1, 1),
+				eof(1, 4),
+			},
+		},
+		{
+			name: "string escaped single quote",
+			src:  `"\'"`,
+			want: []token.Token{
+				tok(token.String, "'", 1, 1),
+				eof(1, 5),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -424,6 +482,36 @@ func TestTokenizeError(t *testing.T) {
 			name: "invalid hex escape non-hex",
 			src:  []byte(`"\xGG"`),
 			want: `1:2: invalid escape sequence '\x'`,
+		},
+		{
+			name: "unterminated character at eof",
+			src:  []byte("'a"),
+			want: "1:1: unterminated character literal",
+		},
+		{
+			name: "unterminated character with newline",
+			src:  []byte("'a\n'"),
+			want: "1:1: unterminated character literal",
+		},
+		{
+			name: "empty character",
+			src:  []byte("''"),
+			want: "1:1: empty character literal",
+		},
+		{
+			name: "character two bytes",
+			src:  []byte("'ab'"),
+			want: "1:1: character literal must be a single byte",
+		},
+		{
+			name: "character multibyte",
+			src:  []byte("'é'"),
+			want: "1:1: character literal must be a single byte",
+		},
+		{
+			name: "invalid character escape",
+			src:  []byte(`'\q'`),
+			want: `1:2: invalid escape sequence '\q'`,
 		},
 	}
 
