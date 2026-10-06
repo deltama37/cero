@@ -1,0 +1,109 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+
+pub type IntMap[V] =
+    | IMEmpty
+    | IMNode(IntMap[V], Int, V, IntMap[V], Int)
+
+pub fn imEmpty[V]() -> IntMap[V] {
+    IMEmpty
+}
+
+fn imHeight[V](m: IntMap[V]) -> Int {
+    match m {
+        IMEmpty => 0,
+        IMNode(_, _, _, _, h) => h,
+    }
+}
+
+fn imNode[V](l: IntMap[V], k: Int, v: V, r: IntMap[V]) -> IntMap[V] {
+    let hl = imHeight(l)
+    let hr = imHeight(r)
+    let h = if hl > hr { hl + 1 } else { hr + 1 }
+    IMNode(l, k, v, r, h)
+}
+
+fn imBalance[V](l: IntMap[V], k: Int, v: V, r: IntMap[V]) -> IntMap[V] {
+    let hl = imHeight(l)
+    let hr = imHeight(r)
+    if hl > hr + 1 {
+        match l {
+            IMEmpty => imNode(l, k, v, r),
+            IMNode(ll, lk, lv, lr, _) => if imHeight(ll) >= imHeight(lr) {
+                imNode(ll, lk, lv, imNode(lr, k, v, r))
+            } else {
+                match lr {
+                    IMEmpty => imNode(l, k, v, r),
+                    IMNode(lrl, lrk, lrv, lrr, _) => imNode(imNode(ll, lk, lv, lrl), lrk, lrv, imNode(lrr, k, v, r)),
+                }
+            },
+        }
+    } else if hr > hl + 1 {
+        match r {
+            IMEmpty => imNode(l, k, v, r),
+            IMNode(rl, rk, rv, rr, _) => if imHeight(rr) >= imHeight(rl) {
+                imNode(imNode(l, k, v, rl), rk, rv, rr)
+            } else {
+                match rl {
+                    IMEmpty => imNode(l, k, v, r),
+                    IMNode(rll, rlk, rlv, rlr, _) => imNode(imNode(l, k, v, rll), rlk, rlv, imNode(rlr, rk, rv, rr)),
+                }
+            },
+        }
+    } else {
+        imNode(l, k, v, r)
+    }
+}
+
+pub fn imInsert[V](m: IntMap[V], k: Int, v: V) -> IntMap[V] {
+    match m {
+        IMEmpty => imNode(imEmpty(), k, v, imEmpty()),
+        IMNode(l, mk, mv, r, _) => if k == mk {
+            imNode(l, k, v, r)
+        } else if k < mk {
+            imBalance(imInsert(l, k, v), mk, mv, r)
+        } else {
+            imBalance(l, mk, mv, imInsert(r, k, v))
+        },
+    }
+}
+
+pub fn imLookup[V](m: IntMap[V], k: Int) -> Option[V] {
+    match m {
+        IMEmpty => None,
+        IMNode(l, mk, mv, r, _) => if k == mk {
+            Some(mv)
+        } else if k < mk {
+            imLookup(l, k)
+        } else {
+            imLookup(r, k)
+        },
+    }
+}
+
+pub fn imMember[V](m: IntMap[V], k: Int) -> Bool {
+    isSome(imLookup(m, k))
+}
+
+fn imSizeAcc[V](m: IntMap[V], n: Int) -> Int {
+    match m {
+        IMEmpty => n,
+        IMNode(l, _, _, r, _) => imSizeAcc(l, imSizeAcc(r, n + 1)),
+    }
+}
+
+pub fn imSize[V](m: IntMap[V]) -> Int {
+    imSizeAcc(m, 0)
+}
+
+fn imCollect[V](m: IntMap[V], acc: List[Pair[Int, V]]) -> List[Pair[Int, V]] {
+    match m {
+        IMEmpty => acc,
+        IMNode(l, k, v, r, _) => imCollect(l, Cons(Pair(k, v), imCollect(r, acc))),
+    }
+}
+
+pub fn imToList[V](m: IntMap[V]) -> List[Pair[Int, V]] {
+    imCollect(m, Nil)
+}

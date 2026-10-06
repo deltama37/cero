@@ -1,0 +1,233 @@
+import "std/list"
+import "syntax/diag"
+import "syntax/token"
+
+// Ident / If / Match / Import は ast の構築子と名前が衝突する。
+// ast と token を同時に import できないので、Kind を整数で渡す。
+
+pub type Tok = | Tok(Int, String, Pos)
+
+pub fn kindAsInt(k: Kind) -> Int {
+    kindToInt(k)
+}
+
+pub fn intAsKind(n: Int) -> Kind {
+    intToKind(n)
+}
+
+pub fn kDescribeKind(n: Int) -> String {
+    kindString(intToKind(n))
+}
+
+pub fn unaryOpName(k: Kind) -> String {
+    match k {
+        Minus => "neg",
+        Bang => "not",
+        _ => "?",
+    }
+}
+
+pub fn binaryOpName(k: Kind) -> String {
+    match k {
+        Plus => "+",
+        PlusPlus => "++",
+        Minus => "-",
+        Star => "*",
+        Slash => "/",
+        Percent => "%",
+        Eq => "==",
+        NotEq => "!=",
+        Lt => "<",
+        LtEq => "<=",
+        Gt => ">",
+        GtEq => ">=",
+        AndAnd => "&&",
+        OrOr => "||",
+        _ => "?",
+    }
+}
+
+pub fn kEOF() -> Int {
+    kindToInt(EOF)
+}
+
+pub fn kIdent() -> Int {
+    kindToInt(Ident)
+}
+
+pub fn kInt() -> Int {
+    kindToInt(Int)
+}
+
+pub fn kString() -> Int {
+    kindToInt(String)
+}
+
+pub fn kChar() -> Int {
+    kindToInt(Char)
+}
+
+pub fn kFn() -> Int {
+    kindToInt(Fn)
+}
+
+pub fn kLet() -> Int {
+    kindToInt(Let)
+}
+
+pub fn kIf() -> Int {
+    kindToInt(If)
+}
+
+pub fn kElse() -> Int {
+    kindToInt(Else)
+}
+
+pub fn kTrue() -> Int {
+    kindToInt(True)
+}
+
+pub fn kFalse() -> Int {
+    kindToInt(False)
+}
+
+pub fn kType() -> Int {
+    kindToInt(Type)
+}
+
+pub fn kMatch() -> Int {
+    kindToInt(Match)
+}
+
+pub fn kUnderscore() -> Int {
+    kindToInt(Underscore)
+}
+
+pub fn kImport() -> Int {
+    kindToInt(Import)
+}
+
+pub fn kPub() -> Int {
+    kindToInt(Pub)
+}
+
+pub fn kLParen() -> Int {
+    kindToInt(LParen)
+}
+
+pub fn kRParen() -> Int {
+    kindToInt(RParen)
+}
+
+pub fn kLBrace() -> Int {
+    kindToInt(LBrace)
+}
+
+pub fn kRBrace() -> Int {
+    kindToInt(RBrace)
+}
+
+pub fn kComma() -> Int {
+    kindToInt(Comma)
+}
+
+pub fn kColon() -> Int {
+    kindToInt(Colon)
+}
+
+pub fn kArrow() -> Int {
+    kindToInt(Arrow)
+}
+
+pub fn kAssign() -> Int {
+    kindToInt(Assign)
+}
+
+pub fn kFatArrow() -> Int {
+    kindToInt(FatArrow)
+}
+
+pub fn kBar() -> Int {
+    kindToInt(Bar)
+}
+
+pub fn kLBracket() -> Int {
+    kindToInt(LBracket)
+}
+
+pub fn kRBracket() -> Int {
+    kindToInt(RBracket)
+}
+
+pub fn kPlus() -> Int {
+    kindToInt(Plus)
+}
+
+pub fn kPlusPlus() -> Int {
+    kindToInt(PlusPlus)
+}
+
+pub fn kMinus() -> Int {
+    kindToInt(Minus)
+}
+
+pub fn kStar() -> Int {
+    kindToInt(Star)
+}
+
+pub fn kSlash() -> Int {
+    kindToInt(Slash)
+}
+
+pub fn kPercent() -> Int {
+    kindToInt(Percent)
+}
+
+pub fn kEq() -> Int {
+    kindToInt(Eq)
+}
+
+pub fn kNotEq() -> Int {
+    kindToInt(NotEq)
+}
+
+pub fn kLt() -> Int {
+    kindToInt(Lt)
+}
+
+pub fn kLtEq() -> Int {
+    kindToInt(LtEq)
+}
+
+pub fn kGt() -> Int {
+    kindToInt(Gt)
+}
+
+pub fn kGtEq() -> Int {
+    kindToInt(GtEq)
+}
+
+pub fn kAndAnd() -> Int {
+    kindToInt(AndAnd)
+}
+
+pub fn kOrOr() -> Int {
+    kindToInt(OrOr)
+}
+
+pub fn kBang() -> Int {
+    kindToInt(Bang)
+}
+
+fn toksAcc(ts: List[Token], acc: List[Tok]) -> List[Tok] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => match t {
+            Token(k, text, pos) => toksAcc(rest, Cons(Tok(kindToInt(k), text, pos), acc)),
+        },
+    }
+}
+
+pub fn toksOf(ts: List[Token]) -> List[Tok] {
+    toksAcc(ts, Nil)
+}

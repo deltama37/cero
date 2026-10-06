@@ -1,0 +1,193 @@
+import "syntax/diag"
+
+pub type Kind =
+    | EOF
+    | Ident
+    | Int
+    | String
+    | Char
+    | Fn
+    | Let
+    | If
+    | Else
+    | True
+    | False
+    | Type
+    | Match
+    | Underscore
+    | Import
+    | Pub
+    | LParen
+    | RParen
+    | LBrace
+    | RBrace
+    | Comma
+    | Colon
+    | Arrow
+    | Assign
+    | FatArrow
+    | Bar
+    | LBracket
+    | RBracket
+    | Plus
+    | PlusPlus
+    | Minus
+    | Star
+    | Slash
+    | Percent
+    | Eq
+    | NotEq
+    | Lt
+    | LtEq
+    | Gt
+    | GtEq
+    | AndAnd
+    | OrOr
+    | Bang
+
+pub type Token = | Token(Kind, String, Pos)
+
+pub fn kindToInt(k: Kind) -> Int {
+    match k {
+        EOF => 0,
+        Ident => 1,
+        Int => 2,
+        String => 3,
+        Char => 4,
+        Fn => 5,
+        Let => 6,
+        If => 7,
+        Else => 8,
+        True => 9,
+        False => 10,
+        Type => 11,
+        Match => 12,
+        Underscore => 13,
+        Import => 14,
+        Pub => 15,
+        LParen => 16,
+        RParen => 17,
+        LBrace => 18,
+        RBrace => 19,
+        Comma => 20,
+        Colon => 21,
+        Arrow => 22,
+        Assign => 23,
+        FatArrow => 24,
+        Bar => 25,
+        LBracket => 26,
+        RBracket => 27,
+        Plus => 28,
+        PlusPlus => 29,
+        Minus => 30,
+        Star => 31,
+        Slash => 32,
+        Percent => 33,
+        Eq => 34,
+        NotEq => 35,
+        Lt => 36,
+        LtEq => 37,
+        Gt => 38,
+        GtEq => 39,
+        AndAnd => 40,
+        OrOr => 41,
+        Bang => 42,
+    }
+}
+
+pub fn intToKind(n: Int) -> Kind {
+    match n {
+        0 => EOF,
+        1 => Ident,
+        2 => Int,
+        3 => String,
+        4 => Char,
+        5 => Fn,
+        6 => Let,
+        7 => If,
+        8 => Else,
+        9 => True,
+        10 => False,
+        11 => Type,
+        12 => Match,
+        13 => Underscore,
+        14 => Import,
+        15 => Pub,
+        16 => LParen,
+        17 => RParen,
+        18 => LBrace,
+        19 => RBrace,
+        20 => Comma,
+        21 => Colon,
+        22 => Arrow,
+        23 => Assign,
+        24 => FatArrow,
+        25 => Bar,
+        26 => LBracket,
+        27 => RBracket,
+        28 => Plus,
+        29 => PlusPlus,
+        30 => Minus,
+        31 => Star,
+        32 => Slash,
+        33 => Percent,
+        34 => Eq,
+        35 => NotEq,
+        36 => Lt,
+        37 => LtEq,
+        38 => Gt,
+        39 => GtEq,
+        40 => AndAnd,
+        41 => OrOr,
+        42 => Bang,
+        _ => EOF,
+    }
+}
+
+pub fn kindString(k: Kind) -> String {
+    match k {
+        EOF => "end of file",
+        Ident => "identifier",
+        Int => "integer literal",
+        String => "string literal",
+        Char => "character literal",
+        Fn => "'fn'",
+        Let => "'let'",
+        If => "'if'",
+        Else => "'else'",
+        True => "'true'",
+        False => "'false'",
+        Type => "'type'",
+        Match => "'match'",
+        Underscore => "'_'",
+        Import => "'import'",
+        Pub => "'pub'",
+        LParen => "'('",
+        RParen => "')'",
+        LBrace => "'{'",
+        RBrace => "'}'",
+        Comma => "','",
+        Colon => "':'",
+        Arrow => "'->'",
+        Assign => "'='",
+        FatArrow => "'=>'",
+        Bar => "'|'",
+        LBracket => "'['",
+        RBracket => "']'",
+        Plus => "'+'",
+        PlusPlus => "'++'",
+        Minus => "'-'",
+        Star => "'*'",
+        Slash => "'/'",
+        Percent => "'%'",
+        Eq => "'=='",
+        NotEq => "'!='",
+        Lt => "'<'",
+        LtEq => "'<='",
+        Gt => "'>'",
+        GtEq => "'>='",
+        AndAnd => "'&&'",
+        OrOr => "'||'",
+        Bang => "'!'",
+    }
+}

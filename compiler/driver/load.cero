@@ -1,0 +1,368 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "std/string"
+import "syntax/ast"
+import "syntax/diag"
+import "syntax/parser"
+import "util/intmap"
+import "util/strmap"
+
+pub type Module = | Module(String, String, File, List[String])
+
+pub type LoadResult =
+    | Loaded(List[Module], Int)
+    | LoadFailed(Error)
+
+type St = | St(StrMap[Module], StrMap[Int], List[String], List[Module], Int, String)
+
+type Step =
+    | StepOk(St)
+    | StepFail(Error)
+
+type Resolved =
+    | ResolveOk(St, String)
+    | ResolveFail(Error)
+
+fn imFill(m: IntMap[Int], i: Int) -> IntMap[Int] {
+    if i > 20 {
+        m
+    } else {
+        imFill(imInsert(m, i, i * 10), i + 1)
+    }
+}
+
+fn imSorted(xs: List[Pair[Int, Int]], expect: Int) -> Bool {
+    match xs {
+        Nil => expect == 21,
+        Cons(p, rest) => match p {
+            Pair(k, v) => if k == expect && v == expect * 10 {
+                imSorted(rest, expect + 1)
+            } else {
+                false
+            },
+        },
+    }
+}
+
+fn imCheck() -> Bool {
+    let m = imFill(imEmpty(), 1)
+    let m2 = imInsert(m, 5, 99)
+    imSize(m) == 20 && imSorted(imToList(m), 1) && imMember(m, 20) && withDefault(imLookup(m2, 5), 0) == 99 && !imMember(m, 0)
+}
+
+fn cleanEntry(path: String) -> String {
+    if startsWith(path, "./") {
+        stringSlice(path, 2, stringLength(path))
+    } else {
+        path
+    }
+}
+
+fn lastSlash(path: String, i: Int) -> Int {
+    if i < 0 {
+        -1
+    } else if stringByteAt(path, i) == '/' {
+        i
+    } else {
+        lastSlash(path, i - 1)
+    }
+}
+
+fn baseName(path: String) -> String {
+    let slash = lastSlash(path, stringLength(path) - 1)
+    if slash < 0 {
+        path
+    } else {
+        stringSlice(path, slash + 1, stringLength(path))
+    }
+}
+
+fn dirOf(path: String) -> String {
+    let slash = lastSlash(path, stringLength(path) - 1)
+    if slash < 0 {
+        "."
+    } else {
+        stringSlice(path, 0, slash)
+    }
+}
+
+fn modulePath(file: String) -> String {
+    let base = baseName(file)
+    if endsWith(base, ".cero") {
+        stringSlice(base, 0, stringLength(base) - 5)
+    } else {
+        base
+    }
+}
+
+fn joinPath(dir: String, name: String) -> String {
+    if dir == "" || dir == "." {
+        name
+    } else {
+        dir ++ "/" ++ name
+    }
+}
+
+fn validBytes(p: String, i: Int, end: Int) -> Bool {
+    if i >= end {
+        true
+    } else {
+        let c = stringByteAt(p, i)
+        let ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+        if ok {
+            validBytes(p, i + 1, end)
+        } else {
+            false
+        }
+    }
+}
+
+fn validParts(p: String, i: Int, start: Int) -> Bool {
+    let n = stringLength(p)
+    if i >= n {
+        if i == start {
+            false
+        } else {
+            validBytes(p, start, i)
+        }
+    } else if stringByteAt(p, i) == '/' {
+        if i == start {
+            false
+        } else if validBytes(p, start, i) {
+            validParts(p, i + 1, i + 1)
+        } else {
+            false
+        }
+    } else {
+        validParts(p, i + 1, start)
+    }
+}
+
+fn validPath(p: String) -> Bool {
+    if p == "" {
+        false
+    } else {
+        validParts(p, 0, 0)
+    }
+}
+
+fn locate(root: String, stdDir: String, path: String) -> Pair[String, String] {
+    if startsWith(path, "std/") {
+        let rest = stringSlice(path, 4, stringLength(path))
+        Pair(path ++ ".cero", joinPath(stdDir, rest ++ ".cero"))
+    } else {
+        let name = joinPath(root, path ++ ".cero")
+        Pair(name, name)
+    }
+}
+
+fn moduleMsg(file: String, pos: Pos, msg: String) -> Error {
+    errorWithFile(errorf(pos, msg), file)
+}
+
+fn pop(xs: List[String]) -> List[String] {
+    match xs {
+        Nil => Nil,
+        Cons(_, rest) => rest,
+    }
+}
+
+fn pathOf(st: St, fileName: String) -> String {
+    match st {
+        St(byFile, _, _, _, _, _) => match smLookup(byFile, fileName) {
+            Some(m) => match m {
+                Module(path, _, _, _) => path,
+            },
+            None => "",
+        },
+    }
+}
+
+fn cycleParts(stack: List[String], dep: String, seen: Bool, acc: List[String]) -> List[String] {
+    match stack {
+        Nil => reverse(Cons(dep, acc)),
+        Cons(p, rest) => if seen {
+            cycleParts(rest, dep, true, Cons(p, acc))
+        } else if p == dep {
+            cycleParts(rest, dep, true, Cons(p, Nil))
+        } else {
+            cycleParts(rest, dep, false, Nil)
+        },
+    }
+}
+
+fn joinCycle(xs: List[String]) -> String {
+    match xs {
+        Nil => "",
+        Cons(x, rest) => joinCycleAcc(rest, x),
+    }
+}
+
+fn joinCycleAcc(xs: List[String], acc: String) -> String {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => joinCycleAcc(rest, acc ++ " -> " ++ x),
+    }
+}
+
+fn cycleError(st: St, file: String, imp: Import, depFile: String) -> Error {
+    match st {
+        St(_, _, stack, _, _, _) => match imp {
+            Import(_, _, pathPos) => {
+                let parts = cycleParts(reverse(stack), pathOf(st, depFile), false, Nil)
+                moduleMsg(file, pathPos, "import cycle: " ++ joinCycle(parts))
+            },
+        },
+    }
+}
+
+fn statusOf(st: St, fileName: String) -> Int {
+    match st {
+        St(_, state, _, _, _, _) => withDefault(smLookup(state, fileName), 0),
+    }
+}
+
+fn rootOf(st: St) -> String {
+    match st {
+        St(_, _, _, _, _, root) => root,
+    }
+}
+
+fn nextOf(st: St) -> Int {
+    match st {
+        St(_, _, _, _, n, _) => n,
+    }
+}
+
+fn putParsed(st: St, fileName: String, m: Module, nextId: Int) -> St {
+    match st {
+        St(byFile, state, stack, order, _, root) => St(smInsert(byFile, fileName, m), state, stack, order, nextId, root),
+    }
+}
+
+fn finish(st: St, fileName: String, importFiles: List[String]) -> Step {
+    match st {
+        St(byFile, state, stack, order, nextId, root) => match smLookup(byFile, fileName) {
+            None => StepFail(errorf(Pos(1, 1), "internal error")),
+            Some(m) => match m {
+                Module(path, file, ast, _) => {
+                    let m2 = Module(path, file, ast, importFiles)
+                    StepOk(St(smInsert(byFile, fileName, m2), smInsert(state, fileName, 2), pop(stack), Cons(m2, order), nextId, root))
+                },
+            },
+        },
+    }
+}
+
+fn visit(st: St, fileName: String, stdDir: String) -> IO[Step] {
+    match st {
+        St(byFile, state, stack, order, nextId, root) => match smLookup(byFile, fileName) {
+            None => pure(StepFail(errorf(Pos(1, 1), "internal error"))),
+            Some(m) => match m {
+                Module(path, _, ast, _) => {
+                    let st1 = St(byFile, smInsert(state, fileName, 1), Cons(path, stack), order, nextId, root)
+                    match ast {
+                        File(imps, _, _) => visitImps(st1, fileName, imps, Nil, stdDir),
+                    }
+                },
+            },
+        },
+    }
+}
+
+fn visitImps(st: St, fileName: String, imps: List[Import], acc: List[String], stdDir: String) -> IO[Step] {
+    match imps {
+        Nil => pure(finish(st, fileName, reverse(acc))),
+        Cons(imp, rest) => {
+            let! resolved = resolve(st, fileName, imp, stdDir)
+            match resolved {
+                ResolveFail(e) => pure(StepFail(e)),
+                ResolveOk(st2, depFile) => {
+                    let! stepped = afterResolve(st2, fileName, imp, depFile, stdDir)
+                    match stepped {
+                        StepFail(e) => pure(StepFail(e)),
+                        StepOk(st3) => visitImps(st3, fileName, rest, Cons(depFile, acc), stdDir),
+                    }
+                },
+            }
+        },
+    }
+}
+
+fn afterResolve(st: St, fileName: String, imp: Import, depFile: String, stdDir: String) -> IO[Step] {
+    let status = statusOf(st, depFile)
+    if status == 1 {
+        pure(StepFail(cycleError(st, fileName, imp, depFile)))
+    } else if status == 0 {
+        visit(st, depFile, stdDir)
+    } else {
+        pure(StepOk(st))
+    }
+}
+
+fn resolve(st: St, fileName: String, imp: Import, stdDir: String) -> IO[Resolved] {
+    match imp {
+        Import(_, path, pathPos) => if validPath(path) {
+            let Pair(depFile, readPath) = locate(rootOf(st), stdDir, path)
+            match st {
+                St(byFile, _, _, _, _, _) => match smLookup(byFile, depFile) {
+                    Some(_) => pure(ResolveOk(st, depFile)),
+                    None => {
+                        let! exists = fileExists(readPath)
+                        if exists {
+                            let! src = readFile(readPath)
+                            match parseFile(src, nextOf(st)) {
+                                Err(e) => pure(ResolveFail(errorWithFile(e, depFile))),
+                                Ok(parsed) => match parsed {
+                                    Pair(ast, n2) => {
+                                        let m = Module(path, depFile, ast, Nil)
+                                        pure(ResolveOk(putParsed(st, depFile, m, n2), depFile))
+                                    },
+                                },
+                            }
+                        } else {
+                            pure(ResolveFail(moduleMsg(fileName, pathPos, "cannot find module '" ++ path ++ "'")))
+                        }
+                    },
+                },
+            }
+        } else {
+            pure(ResolveFail(moduleMsg(fileName, pathPos, "invalid module path '" ++ path ++ "'")))
+        },
+    }
+}
+
+fn fromStep(step: Step) -> LoadResult {
+    match step {
+        StepFail(e) => LoadFailed(e),
+        StepOk(st) => match st {
+            St(_, _, _, order, n, _) => Loaded(reverse(order), n),
+        },
+    }
+}
+
+pub fn loadProgram(entryFile: String, stdDir: String) -> IO[LoadResult] {
+    if imCheck() {
+        let! exists = fileExists(entryFile)
+        if exists {
+            let! src = readFile(entryFile)
+            match parseFile(src, 0) {
+                Err(e) => pure(LoadFailed(errorWithFile(e, entryFile))),
+                Ok(parsed) => match parsed {
+                    Pair(file, nextId) => {
+                        let key = cleanEntry(entryFile)
+                        let m = Module(modulePath(entryFile), entryFile, file, Nil)
+                        let st = St(smInsert(smEmpty(), key, m), smEmpty(), Nil, Nil, nextId, dirOf(key))
+                        let! step = visit(st, key, stdDir)
+                        pure(fromStep(step))
+                    },
+                },
+            }
+        } else {
+            pure(LoadFailed(errorf(Pos(1, 1), "cannot read " ++ entryFile)))
+        }
+    } else {
+        pure(LoadFailed(errorf(Pos(1, 1), "internal error")))
+    }
+}

@@ -1,0 +1,115 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+
+pub type StrMap[V] =
+    | SMEmpty
+    | SMNode(StrMap[V], String, V, StrMap[V], Int)
+
+pub fn smEmpty[V]() -> StrMap[V] {
+    SMEmpty
+}
+
+fn smHeight[V](m: StrMap[V]) -> Int {
+    match m {
+        SMEmpty => 0,
+        SMNode(_, _, _, _, h) => h,
+    }
+}
+
+fn smNode[V](l: StrMap[V], k: String, v: V, r: StrMap[V]) -> StrMap[V] {
+    let hl = smHeight(l)
+    let hr = smHeight(r)
+    let h = if hl > hr { hl + 1 } else { hr + 1 }
+    SMNode(l, k, v, r, h)
+}
+
+fn smBalance[V](l: StrMap[V], k: String, v: V, r: StrMap[V]) -> StrMap[V] {
+    let hl = smHeight(l)
+    let hr = smHeight(r)
+    if hl > hr + 1 {
+        match l {
+            SMEmpty => smNode(l, k, v, r),
+            SMNode(ll, lk, lv, lr, _) => if smHeight(ll) >= smHeight(lr) {
+                smNode(ll, lk, lv, smNode(lr, k, v, r))
+            } else {
+                match lr {
+                    SMEmpty => smNode(l, k, v, r),
+                    SMNode(lrl, lrk, lrv, lrr, _) => smNode(smNode(ll, lk, lv, lrl), lrk, lrv, smNode(lrr, k, v, r)),
+                }
+            },
+        }
+    } else if hr > hl + 1 {
+        match r {
+            SMEmpty => smNode(l, k, v, r),
+            SMNode(rl, rk, rv, rr, _) => if smHeight(rr) >= smHeight(rl) {
+                smNode(smNode(l, k, v, rl), rk, rv, rr)
+            } else {
+                match rl {
+                    SMEmpty => smNode(l, k, v, r),
+                    SMNode(rll, rlk, rlv, rlr, _) => smNode(smNode(l, k, v, rll), rlk, rlv, smNode(rlr, rk, rv, rr)),
+                }
+            },
+        }
+    } else {
+        smNode(l, k, v, r)
+    }
+}
+
+pub fn smInsert[V](m: StrMap[V], k: String, v: V) -> StrMap[V] {
+    match m {
+        SMEmpty => smNode(smEmpty(), k, v, smEmpty()),
+        SMNode(l, mk, mv, r, _) => {
+            let c = stringCompare(k, mk)
+            if c == 0 {
+                smNode(l, k, v, r)
+            } else if c < 0 {
+                smBalance(smInsert(l, k, v), mk, mv, r)
+            } else {
+                smBalance(l, mk, mv, smInsert(r, k, v))
+            }
+        },
+    }
+}
+
+pub fn smLookup[V](m: StrMap[V], k: String) -> Option[V] {
+    match m {
+        SMEmpty => None,
+        SMNode(l, mk, mv, r, _) => {
+            let c = stringCompare(k, mk)
+            if c == 0 {
+                Some(mv)
+            } else if c < 0 {
+                smLookup(l, k)
+            } else {
+                smLookup(r, k)
+            }
+        },
+    }
+}
+
+pub fn smMember[V](m: StrMap[V], k: String) -> Bool {
+    isSome(smLookup(m, k))
+}
+
+fn smSizeAcc[V](m: StrMap[V], n: Int) -> Int {
+    match m {
+        SMEmpty => n,
+        SMNode(l, _, _, r, _) => smSizeAcc(l, smSizeAcc(r, n + 1)),
+    }
+}
+
+pub fn smSize[V](m: StrMap[V]) -> Int {
+    smSizeAcc(m, 0)
+}
+
+fn smCollect[V](m: StrMap[V], acc: List[Pair[String, V]]) -> List[Pair[String, V]] {
+    match m {
+        SMEmpty => acc,
+        SMNode(l, k, v, r, _) => smCollect(l, Cons(Pair(k, v), smCollect(r, acc))),
+    }
+}
+
+pub fn smToList[V](m: StrMap[V]) -> List[Pair[String, V]] {
+    smCollect(m, Nil)
+}

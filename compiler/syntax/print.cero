@@ -1,0 +1,157 @@
+import "std/list"
+import "std/option"
+import "syntax/ast"
+import "syntax/k"
+import "util/doc"
+import "util/quote"
+
+fn typeParamsDoc(ps: List[TypeParam]) -> Doc {
+    match ps {
+        Nil => docText(""),
+        Cons(p, rest) => match p {
+            TypeParam(_, name) => docText("[" ++ joinNames(rest, name) ++ "]"),
+        },
+    }
+}
+
+fn joinNames(ps: List[TypeParam], acc: String) -> String {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            TypeParam(_, name) => joinNames(rest, acc ++ " " ++ name),
+        },
+    }
+}
+
+fn typeDoc(t: TypeExpr) -> Doc {
+    match t {
+        NamedType(_, name, args) => match args {
+            Nil => docText(name),
+            _ => docConcat(Cons(docText(name ++ "["), Cons(docJoin(map(args, typeDoc), " "), Cons(docText("]"), Nil)))),
+        },
+        FuncType(_, params, result) => docConcat(Cons(docText("(-> ("), Cons(docJoin(map(params, typeDoc), " "), Cons(docText(") "), Cons(typeDoc(result), Cons(docText(")"), Nil)))))),
+    }
+}
+
+fn optTypeDoc(t: Option[TypeExpr]) -> Doc {
+    match t {
+        None => docText("_"),
+        Some(ty) => typeDoc(ty),
+    }
+}
+
+fn paramDoc(p: Param) -> Doc {
+    match p {
+        Param(_, _, name, typ) => docConcat(Cons(docText("(" ++ name ++ " "), Cons(optTypeDoc(typ), Cons(docText(")"), Nil)))),
+    }
+}
+
+fn paramsDoc(ps: List[Param]) -> Doc {
+    docJoin(map(ps, paramDoc), " ")
+}
+
+fn letDoc(stmt: LetStmt) -> Doc {
+    match stmt {
+        LetStmt(_, _, name, _, typ, value) => match typ {
+            None => docConcat(Cons(docText("(let " ++ name ++ " "), Cons(exprDoc(value), Cons(docText(")"), Nil)))),
+            Some(t) => docConcat(Cons(docText("(let " ++ name ++ " : "), Cons(typeDoc(t), Cons(docText(" "), Cons(exprDoc(value), Cons(docText(")"), Nil)))))),
+        },
+    }
+}
+
+fn blockDoc(b: Block) -> Doc {
+    match b {
+        Block(_, _, lets, result) => {
+            let parts = append(map(lets, letDoc), Cons(exprDoc(result), Nil))
+            docConcat(Cons(docText("(block "), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
+        },
+    }
+}
+
+fn patternDoc(p: Pattern) -> Doc {
+    match p {
+        WildP(_, _) => docText("_"),
+        VarP(_, _, name) => docText(name),
+        CtorP(_, _, name, args) => match args {
+            Nil => docText(name),
+            _ => docConcat(Cons(docText("(" ++ name ++ " "), Cons(docJoin(map(args, patternDoc), " "), Cons(docText(")"), Nil)))),
+        },
+        IntP(_, _, v) => docText(intToString(v)),
+        StrP(_, _, s) => docText(quoteString(s)),
+        BoolP(_, _, v) => if v { docText("true") } else { docText("false") },
+    }
+}
+
+fn armDoc(arm: Arm) -> Doc {
+    match arm {
+        Arm(pat, body) => docConcat(Cons(docText("(=> "), Cons(patternDoc(pat), Cons(docText(" "), Cons(exprDoc(body), Cons(docText(")"), Nil)))))),
+    }
+}
+
+fn exprDoc(e: Expr) -> Doc {
+    match e {
+        IntLit(_, _, v) => docText(intToString(v)),
+        StringLit(_, _, s) => docText(quoteString(s)),
+        BoolLit(_, _, v) => if v { docText("true") } else { docText("false") },
+        UnitLit(_, _) => docText("()"),
+        Ident(_, _, name) => docText(name),
+        Unary(_, _, op, x) => docConcat(Cons(docText("(" ++ unaryOpName(op) ++ " "), Cons(exprDoc(x), Cons(docText(")"), Nil)))),
+        Binary(_, _, _, op, x, y) => docConcat(Cons(docText("(" ++ binaryOpName(op) ++ " "), Cons(exprDoc(x), Cons(docText(" "), Cons(exprDoc(y), Cons(docText(")"), Nil)))))),
+        Call(_, _, callee, _, args) => {
+            let parts = Cons(exprDoc(callee), map(args, exprDoc))
+            docConcat(Cons(docText("(call "), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
+        },
+        If(_, _, cond, thenB, elseE) => docConcat(Cons(docText("(if "), Cons(exprDoc(cond), Cons(docText(" "), Cons(blockDoc(thenB), Cons(docText(" "), Cons(exprDoc(elseE), Cons(docText(")"), Nil)))))))),
+        BlockE(b) => blockDoc(b),
+        FuncLit(_, _, params, res, body) => docConcat(Cons(docText("(fn ("), Cons(paramsDoc(params), Cons(docText(") "), Cons(optTypeDoc(res), Cons(docText(" "), Cons(blockDoc(body), Cons(docText(")"), Nil)))))))),
+        Match(_, _, scrut, arms, _) => {
+            let parts = Cons(exprDoc(scrut), map(arms, armDoc))
+            docConcat(Cons(docText("(match "), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
+        },
+    }
+}
+
+fn ctorDoc(c: CtorDecl) -> Doc {
+    match c {
+        CtorDecl(_, name, fields) => {
+            let parts = Cons(docText(name), map(fields, typeDoc))
+            docConcat(Cons(docText("("), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
+        },
+    }
+}
+
+fn typeDeclDoc(d: TypeDecl) -> Doc {
+    match d {
+        TypeDecl(_, _, isPub, name, _, tps, ctors) => {
+            let head = if isPub { "(pub type " } else { "(type " }
+            let first = docCat(docText(name), typeParamsDoc(tps))
+            let parts = Cons(first, map(ctors, ctorDoc))
+            docConcat(Cons(docText(head), Cons(docJoin(parts, " "), Cons(docText(")"), Nil))))
+        },
+    }
+}
+
+fn funcDoc(d: FuncDecl) -> Doc {
+    match d {
+        FuncDecl(_, _, isPub, name, _, tps, params, res, body) => {
+            let head = if isPub { "(pub fn " } else { "(fn " }
+            docConcat(Cons(docText(head ++ name), Cons(typeParamsDoc(tps), Cons(docText(" ("), Cons(paramsDoc(params), Cons(docText(") "), Cons(optTypeDoc(res), Cons(docText(" "), Cons(blockDoc(body), Cons(docText(")"), Nil))))))))))
+        },
+    }
+}
+
+fn importDoc(imp: Import) -> Doc {
+    match imp {
+        Import(_, path, _) => docText("(import " ++ quoteString(path) ++ ")"),
+    }
+}
+
+pub fn astFormatExpr(e: Expr) -> String {
+    docToString(exprDoc(e))
+}
+
+pub fn astFormatFile(f: File) -> String {
+    match f {
+        File(imps, tys, fns) => docToString(docJoin(append(append(map(imps, importDoc), map(tys, typeDeclDoc)), map(fns, funcDoc)), "\n")),
+    }
+}
