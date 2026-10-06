@@ -20,6 +20,14 @@ func TestFormatExpr(t *testing.T) {
 		{name: "false", expr: &BoolConst{Value: false}, want: "false"},
 		{name: "local", expr: &LocalGet{Local: 1, T: Int}, want: "(local 1)"},
 		{name: "func ref", expr: &FuncValue{Func: 3}, want: "(func.ref 3)"},
+		{
+			name: "func ref with env",
+			expr: &FuncValue{
+				Func: 1,
+				Env:  &Construct{Tag: 0, Fields: []Expr{&LocalGet{Local: 0, T: Int}}},
+			},
+			want: "(func.ref 1 (construct 0 (local 0)))",
+		},
 		{name: "neg", expr: &Unary{Op: Neg, X: &IntConst{Value: 1}}, want: "(neg 1)"},
 		{name: "not", expr: &Unary{Op: Not, X: &BoolConst{Value: false}}, want: "(not false)"},
 		{
