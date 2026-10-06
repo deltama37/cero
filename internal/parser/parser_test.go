@@ -123,6 +123,31 @@ func TestParseExpr(t *testing.T) {
 			want: "(match xs (=> Nil 0) (=> (Cons x _) x))",
 		},
 		{
+			name: "nested constructor pattern",
+			src:  "match x { Cons(Nil, _) => 0 }",
+			want: "(match x (=> (Cons Nil _) 0))",
+		},
+		{
+			name: "nested int pattern",
+			src:  "match x { Cons(1, _) => 0 }",
+			want: "(match x (=> (Cons 1 _) 0))",
+		},
+		{
+			name: "nested cons pattern",
+			src:  "match x { Cons(x, Cons(_, Nil)) => x }",
+			want: "(match x (=> (Cons x (Cons _ Nil)) x))",
+		},
+		{
+			name: "nested bool and int pattern",
+			src:  "match x { Pair(true, 0) => 1 }",
+			want: "(match x (=> (Pair true 0) 1))",
+		},
+		{
+			name: "nested some pattern",
+			src:  "match x { Some(Some(x)) => x }",
+			want: "(match x (=> (Some (Some x)) x))",
+		},
+		{
 			name: "match bool patterns",
 			src:  "match b { true => 1, false => 0 }",
 			want: "(match b (=> true 1) (=> false 0))",
@@ -651,18 +676,6 @@ func TestParseError(t *testing.T) {
 			src:  "match x { -1 => 0 }",
 			expr: true,
 			want: "1:11: expected pattern, found '-'",
-		},
-		{
-			name: "nested constructor pattern",
-			src:  "match x { Cons(Nil, _) => 0 }",
-			expr: true,
-			want: "1:16: nested patterns are not supported in v0.2",
-		},
-		{
-			name: "nested int pattern",
-			src:  "match x { Cons(1, _) => 0 }",
-			expr: true,
-			want: "1:16: nested patterns are not supported in v0.2",
 		},
 		{
 			name: "empty constructor pattern",

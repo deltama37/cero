@@ -760,14 +760,14 @@ func (p *parser) parsePattern() (ast.Pattern, error) {
 		var args []ast.Pattern
 		if p.cur().Kind == token.LParen {
 			p.advance()
-			arg, err := p.parseSubPattern()
+			arg, err := p.parsePattern()
 			if err != nil {
 				return nil, err
 			}
 			args = append(args, arg)
 			for p.cur().Kind == token.Comma {
 				p.advance()
-				arg, err = p.parseSubPattern()
+				arg, err = p.parsePattern()
 				if err != nil {
 					return nil, err
 				}
@@ -778,26 +778,6 @@ func (p *parser) parsePattern() (ast.Pattern, error) {
 			}
 		}
 		return &ast.CtorPat{Pos: nameTok.Pos, Name: nameTok.Text, Args: args}, nil
-	default:
-		return nil, diag.Errorf(p.cur().Pos, "expected pattern, found %s", describe(p.cur()))
-	}
-}
-
-func (p *parser) parseSubPattern() (ast.Pattern, error) {
-	switch p.cur().Kind {
-	case token.Underscore:
-		pos := p.cur().Pos
-		p.advance()
-		return &ast.WildcardPat{Pos: pos}, nil
-	case token.Ident:
-		if isUpperName(p.cur().Text) {
-			return nil, diag.Errorf(p.cur().Pos, "nested patterns are not supported in v0.2")
-		}
-		nameTok := p.cur()
-		p.advance()
-		return &ast.VarPat{Pos: nameTok.Pos, Name: nameTok.Text}, nil
-	case token.Int, token.True, token.False:
-		return nil, diag.Errorf(p.cur().Pos, "nested patterns are not supported in v0.2")
 	default:
 		return nil, diag.Errorf(p.cur().Pos, "expected pattern, found %s", describe(p.cur()))
 	}

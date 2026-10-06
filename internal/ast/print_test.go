@@ -368,6 +368,23 @@ func TestFormat(t *testing.T) {
 			want: "(Cons x _)",
 		},
 		{
+			name: "nested ctor pattern",
+			got: FormatPattern(&CtorPat{
+				Name: "Cons",
+				Args: []Pattern{
+					&VarPat{Name: "x"},
+					&CtorPat{
+						Name: "Cons",
+						Args: []Pattern{
+							&WildcardPat{},
+							&CtorPat{Name: "Nil"},
+						},
+					},
+				},
+			}),
+			want: "(Cons x (Cons _ Nil))",
+		},
+		{
 			name: "int pattern",
 			got:  FormatPattern(&IntPat{Value: 42}),
 			want: "42",
