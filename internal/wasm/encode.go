@@ -97,9 +97,10 @@ const (
 	alignI64             byte = 0x03
 	alignI8              byte = 0x00
 
-	// memoryMaxPages is 32768 so that page count << 16 stays inside an
-	// unsigned i32 (ADR-0003).
-	memoryMaxPages = 32768
+	// memoryMaxPages is 65535, which is 4 GiB minus 64 KiB. 65536 pages
+	// would make the byte size 2^32, which does not fit in an unsigned i32
+	// (ADR-0018).
+	memoryMaxPages = 65535
 	heapStart      = 8
 )
 
@@ -637,36 +638,64 @@ func (e *encoder) encodeCodeSection(
 }
 
 // encodeAllocBody is the bump allocator (i32) -> i32.
-// Locals: argument size = 0, p = 1. The local declaration is 01 01 7F.
+// Locals: argument size = 0, p = 1 (i32), end = 2 (i64).
+// The local declaration is two groups, 02 01 7F 01 7E.
 func encodeAllocBody() []byte {
-	buf := []byte{0x01, 0x01, valI32}
+	buf := []byte{0x02, 0x01, valI32, 0x01, valI64}
 	// p = heap
 	buf = append(buf, opGlobalGet, 0x00, opLocalSet, 0x01)
-	// heap = heap + size
-	buf = append(buf, opGlobalGet, 0x00, opLocalGet, 0x00, opI32Add, opGlobalSet, 0x00)
-	// if heap > memory.size * 65536
+	// end = i64.extend_i32_u(heap) + i64.extend_i32_u(size)
 	buf = append(buf,
 		opGlobalGet, 0x00,
+		opI64ExtendI32U,
+		opLocalGet, 0x00,
+		opI64ExtendI32U,
+		opI64Add,
+		opLocalSet, 0x02,
+	)
+	// if end > i64.extend_i32_u(memory.size) << 16
+	buf = append(buf,
+		opLocalGet, 0x02,
 		opMemorySize, 0x00,
-		opI32Const, 0x10,
-		opI32Shl,
-		opI32GtU,
+		opI64ExtendI32U,
+		opI64Const, 0x10,
+		opI64Shl,
+		opI64GtU,
 		opIf, blockEmpty,
 	)
-	// pages = (heap - memory.size * 65536 + 65535) >> 16
+	// if end > 65535 << 16: trap
+	buf = append(buf, opLocalGet, 0x02, opI64Const)
+	buf = appendSleb128(buf, int64(65535)<<16)
 	buf = append(buf,
-		opGlobalGet, 0x00,
-		opMemorySize, 0x00,
-		opI32Const, 0x10,
-		opI32Shl,
-		opI32Sub,
+		opI64GtU,
+		opIf, blockEmpty,
+		opUnreachable,
+		opEnd,
 	)
-	buf = append(buf, opI32Const)
+	// pages = (end - (i64.extend_i32_u(memory.size) << 16) + 65535) >> 16
+	buf = append(buf,
+		opLocalGet, 0x02,
+		opMemorySize, 0x00,
+		opI64ExtendI32U,
+		opI64Const, 0x10,
+		opI64Shl,
+		opI64Sub,
+		opI64Const,
+	)
 	buf = appendSleb128(buf, 65535)
-	buf = append(buf, opI32Add, opI32Const, 0x10, opI32ShrU, opMemoryGrow, 0x00)
+	buf = append(buf,
+		opI64Add,
+		opI64Const, 0x10,
+		opI64ShrU,
+		opI32WrapI64,
+		opMemoryGrow, 0x00,
+	)
 	// if memory.grow failed: trap
 	buf = append(buf, opI32Const, 0x7f, opI32Eq, opIf, blockEmpty, opUnreachable, opEnd)
-	buf = append(buf, opEnd, opLocalGet, 0x01, opEnd)
+	buf = append(buf, opEnd)
+	// heap = i32.wrap_i64(end); return p
+	buf = append(buf, opLocalGet, 0x02, opI32WrapI64, opGlobalSet, 0x00)
+	buf = append(buf, opLocalGet, 0x01, opEnd)
 	return buf
 }
 

@@ -1401,6 +1401,31 @@ fn main() -> Int {
 			want: "10000",
 		},
 		{
+			name: "allocate past 2GiB",
+			src: `fn double(s: String, n: Int) -> String {
+    if n == 0 {
+        s
+    } else {
+        double(s ++ s, n - 1)
+    }
+}
+
+fn burn(chunk: String, n: Int) -> Int {
+    let s = chunk ++ "x"
+    if n == 1 {
+        stringLength(s)
+    } else {
+        burn(chunk, n - 1)
+    }
+}
+
+fn main() -> Int {
+    burn(double("a", 25), 66)
+}
+`,
+			want: "33554433",
+		},
+		{
 			name: "literal longer than 64KiB",
 			src:  "fn main() -> Int { stringLength(\"" + strings.Repeat("a", 70000) + "\") }\n",
 			want: "70000",

@@ -41,7 +41,7 @@ stage3.wasm = stage2.wasm で compiler/main.cero をビルドしたもの
 ### メモリ
 
 * 自己ビルドのピークは約 954 MB で、上限（2 GiB、ADR-0003）の半分に近い。ADR-0010 の「回収しない」方針はこのまま続ける。
-* `scripts/selfhost.sh` はピークのメモリも表示する（測れる環境では）。自己ビルドが 1.5 GiB を超えたら、回収の方式の ADR を書く。
+* `scripts/selfhost.sh` はピークのメモリも表示する（測れる環境では）。自己ビルドが 3 GiB（ADR-0018）を超えたら、回収の方式の ADR を書く。
 
 ## Consequences
 
