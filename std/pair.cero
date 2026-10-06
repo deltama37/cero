@@ -1,0 +1,14 @@
+pub type Pair[A, B] =
+    | Pair(A, B)
+
+pub fn fst[A, B](p: Pair[A, B]) -> A {
+    match p {
+        Pair(a, _) => a,
+    }
+}
+
+pub fn snd[A, B](p: Pair[A, B]) -> B {
+    match p {
+        Pair(_, b) => b,
+    }
+}

@@ -1,0 +1,48 @@
+import "std/list"
+
+pub fn join(xs: List[String], sep: String) -> String {
+    match xs {
+        Nil => "",
+        Cons(x, rest) => joinAcc(rest, sep, x),
+    }
+}
+
+fn joinAcc(xs: List[String], sep: String, acc: String) -> String {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => joinAcc(rest, sep, acc ++ sep ++ x),
+    }
+}
+
+pub fn startsWith(s: String, prefix: String) -> Bool {
+    let n = stringLength(prefix)
+    if n > stringLength(s) {
+        false
+    } else {
+        stringSlice(s, 0, n) == prefix
+    }
+}
+
+pub fn endsWith(s: String, suffix: String) -> Bool {
+    let n = stringLength(suffix)
+    let m = stringLength(s)
+    if n > m {
+        false
+    } else {
+        stringSlice(s, m - n, m) == suffix
+    }
+}
+
+pub fn isDigit(b: Int) -> Bool {
+    b >= stringByteAt("0", 0) && b <= stringByteAt("9", 0)
+}
+
+pub fn isAlpha(b: Int) -> Bool {
+    let upper = b >= stringByteAt("A", 0) && b <= stringByteAt("Z", 0)
+    let lower = b >= stringByteAt("a", 0) && b <= stringByteAt("z", 0)
+    upper || lower
+}
+
+pub fn isSpace(b: Int) -> Bool {
+    b == stringByteAt(" ", 0) || b == stringByteAt("\t", 0) || b == stringByteAt("\n", 0) || b == stringByteAt("\r", 0)
+}

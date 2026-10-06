@@ -1,0 +1,148 @@
+pub type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+pub fn length[T](xs: List[T]) -> Int {
+    lengthAcc(xs, 0)
+}
+
+fn lengthAcc[T](xs: List[T], n: Int) -> Int {
+    match xs {
+        Nil => n,
+        Cons(_, rest) => lengthAcc(rest, n + 1),
+    }
+}
+
+pub fn reverse[T](xs: List[T]) -> List[T] {
+    reverseAcc(xs, Nil)
+}
+
+fn reverseAcc[T](xs: List[T], acc: List[T]) -> List[T] {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => reverseAcc(rest, Cons(x, acc)),
+    }
+}
+
+pub fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    reverse(mapRev(xs, f, Nil))
+}
+
+fn mapRev[T, U](xs: List[T], f: T -> U, acc: List[U]) -> List[U] {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => mapRev(rest, f, Cons(f(x), acc)),
+    }
+}
+
+pub fn filter[T](xs: List[T], keep: T -> Bool) -> List[T] {
+    reverse(filterRev(xs, keep, Nil))
+}
+
+fn filterRev[T](xs: List[T], keep: T -> Bool, acc: List[T]) -> List[T] {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => if keep(x) {
+            filterRev(rest, keep, Cons(x, acc))
+        } else {
+            filterRev(rest, keep, acc)
+        },
+    }
+}
+
+pub fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+pub fn foldr[T, A](xs: List[T], acc: A, f: (T, A) -> A) -> A {
+    foldl(reverse(xs), acc, fn(a: A, x: T) -> A { f(x, a) })
+}
+
+fn appendRev[T](xs: List[T], ys: List[T]) -> List[T] {
+    match xs {
+        Nil => ys,
+        Cons(x, rest) => appendRev(rest, Cons(x, ys)),
+    }
+}
+
+pub fn append[T](xs: List[T], ys: List[T]) -> List[T] {
+    appendRev(reverse(xs), ys)
+}
+
+pub fn concat[T](xss: List[List[T]]) -> List[T] {
+    reverse(concatRev(xss, Nil))
+}
+
+fn concatRev[T](xss: List[List[T]], acc: List[T]) -> List[T] {
+    match xss {
+        Nil => acc,
+        Cons(xs, rest) => concatRev(rest, appendRev(xs, acc)),
+    }
+}
+
+pub fn any[T](xs: List[T], p: T -> Bool) -> Bool {
+    match xs {
+        Nil => false,
+        Cons(x, rest) => if p(x) {
+            true
+        } else {
+            any(rest, p)
+        },
+    }
+}
+
+pub fn all[T](xs: List[T], p: T -> Bool) -> Bool {
+    match xs {
+        Nil => true,
+        Cons(x, rest) => if p(x) {
+            all(rest, p)
+        } else {
+            false
+        },
+    }
+}
+
+pub fn range(start: Int, end: Int) -> List[Int] {
+    reverse(rangeRev(start, end, Nil))
+}
+
+fn rangeRev(start: Int, end: Int, acc: List[Int]) -> List[Int] {
+    if start >= end {
+        acc
+    } else {
+        rangeRev(start + 1, end, Cons(start, acc))
+    }
+}
+
+pub fn sum(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc + x })
+}
+
+pub fn take[T](xs: List[T], n: Int) -> List[T] {
+    reverse(takeRev(xs, n, Nil))
+}
+
+fn takeRev[T](xs: List[T], n: Int, acc: List[T]) -> List[T] {
+    if n <= 0 {
+        acc
+    } else {
+        match xs {
+            Nil => acc,
+            Cons(x, rest) => takeRev(rest, n - 1, Cons(x, acc)),
+        }
+    }
+}
+
+pub fn drop[T](xs: List[T], n: Int) -> List[T] {
+    if n <= 0 {
+        xs
+    } else {
+        match xs {
+            Nil => Nil,
+            Cons(_, rest) => drop(rest, n - 1),
+        }
+    }
+}
