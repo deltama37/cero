@@ -591,6 +591,141 @@ fn main() -> Int {
 	}
 }
 
+func TestCheckClosureSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		src   string
+		check func(*testing.T, *ast.File, *Info)
+	}{
+		{
+			name: "capture parameter",
+			src: `fn f(x: Int) -> Int {
+    let g = fn() -> Int { x }
+    g()
+}
+fn main() -> Int { f(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				fn := funcByName(t, file, "f")
+				lit := fn.Body.Lets[0].Value.(*ast.FuncLit)
+				id := lit.Body.Result.(*ast.Ident)
+				if info.Uses[id] != info.Params[fn.Params[0]] {
+					t.Error("x does not use the outer parameter")
+				}
+			},
+		},
+		{
+			name: "capture let",
+			src: `fn main() -> Int {
+    let x = 1
+    let g = fn() -> Int { x }
+    g()
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				mainFn := funcByName(t, file, "main")
+				lit := mainFn.Body.Lets[1].Value.(*ast.FuncLit)
+				id := lit.Body.Result.(*ast.Ident)
+				if info.Uses[id] != info.Defs[mainFn.Body.Lets[0]] {
+					t.Error("x does not use the outer let")
+				}
+			},
+		},
+		{
+			name: "capture shadowed function",
+			src: `fn id(x: Int) -> Int { x }
+fn main() -> Int {
+    let id = 1
+    let f = fn() -> Int { id }
+    f()
+}
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				mainFn := funcByName(t, file, "main")
+				lit := mainFn.Body.Lets[1].Value.(*ast.FuncLit)
+				id := lit.Body.Result.(*ast.Ident)
+				if info.Uses[id] != info.Defs[mainFn.Body.Lets[0]] {
+					t.Error("id does not use the let")
+				}
+				if info.Uses[id] == info.Funcs[funcByName(t, file, "id")] {
+					t.Error("id uses the top-level function")
+				}
+			},
+		},
+		{
+			name: "capture pattern variable",
+			src: `fn f(n: Int) -> Int {
+    match n {
+        x => {
+            let g = fn(m: Int) -> Int {
+                match m {
+                    _ => x,
+                }
+            }
+            g(1)
+        },
+    }
+}
+fn main() -> Int { f(1) }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				fn := funcByName(t, file, "f")
+				m := fn.Body.Result.(*ast.MatchExpr)
+				pat := m.Arms[0].Pattern.(*ast.VarPat)
+				arm := m.Arms[0].Body.(*ast.BlockExpr)
+				lit := arm.Lets[0].Value.(*ast.FuncLit)
+				inner := lit.Body.Result.(*ast.MatchExpr)
+				id := inner.Arms[0].Body.(*ast.Ident)
+				if info.Uses[id] != info.PatVars[pat] {
+					t.Error("x does not use the pattern variable")
+				}
+			},
+		},
+		{
+			name: "capture a type parameter value",
+			src: `fn f[T](x: T) -> Int {
+    let g = fn(y: Int) -> T { x }
+    0
+}
+fn main() -> Int { 0 }
+`,
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				fn := funcByName(t, file, "f")
+				lit := fn.Body.Lets[0].Value.(*ast.FuncLit)
+				id := lit.Body.Result.(*ast.Ident)
+				if info.Uses[id] != info.Params[fn.Params[0]] {
+					t.Error("x does not use the outer parameter")
+				}
+			},
+		},
+		{
+			name: "capture a generalized let",
+			src:  "fn main() -> Int { let id = fn(x) { x } let g = fn(y) { id(y) } 0 }\n",
+			check: func(t *testing.T, file *ast.File, info *Info) {
+				mainFn := funcByName(t, file, "main")
+				lit := mainFn.Body.Lets[1].Value.(*ast.FuncLit)
+				call := lit.Body.Result.(*ast.CallExpr)
+				id := call.Fn.(*ast.Ident)
+				if info.Uses[id] != info.Defs[mainFn.Body.Lets[0]] {
+					t.Error("id does not use the generalized let")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, info := mustCheck(t, tt.src)
+			assertComplete(t, file, info)
+			tt.check(t, file, info)
+		})
+	}
+}
+
 func TestCheckError(t *testing.T) {
 	t.Parallel()
 
@@ -728,37 +863,6 @@ fn main() -> Int { add(true, false) }
 }
 `,
 			want: "4:13: expected Int, found Bool",
-		},
-		{
-			name: "capture parameter",
-			src: `fn f(x: Int) -> Int {
-    let g = fn() -> Int { x }
-    g()
-}
-fn main() -> Int { f(1) }
-`,
-			want: "2:27: cannot capture 'x' in anonymous function: closures are not supported in v0.1",
-		},
-		{
-			name: "capture let",
-			src: `fn main() -> Int {
-    let x = 1
-    let g = fn() -> Int { x }
-    g()
-}
-`,
-			want: "3:27: cannot capture 'x' in anonymous function: closures are not supported in v0.1",
-		},
-		{
-			name: "capture shadowed function",
-			src: `fn id(x: Int) -> Int { x }
-fn main() -> Int {
-    let id = 1
-    let f = fn() -> Int { id }
-    f()
-}
-`,
-			want: "4:27: cannot capture 'id' in anonymous function: closures are not supported in v0.1",
 		},
 		{
 			name: "missing main",
@@ -1551,24 +1655,6 @@ fn main() -> Int {
 `,
 			want: "5:9: unreachable match arm",
 		},
-		{
-			name: "capture pattern variable",
-			src: `fn f(n: Int) -> Int {
-    match n {
-        x => {
-            let g = fn(m: Int) -> Int {
-                match m {
-                    _ => x,
-                }
-            }
-            g(1)
-        },
-    }
-}
-fn main() -> Int { f(1) }
-`,
-			want: "6:26: cannot capture 'x' in anonymous function: closures are not supported in v0.1",
-		},
 	}
 
 	for _, tt := range tests {
@@ -2047,11 +2133,6 @@ fn f(o: Option[Int]) -> Int { match o { Nil => 0, _ => 1 } }
 			src:  "fn apply2[T](f: (T, T) -> T, x: T) -> T { f(x, x) }\nfn main() -> Int { apply2(fn(a: Int) -> Int { a }, 1) }\n",
 			want: "2:27: expected (?T, ?T) -> ?T, found Int -> Int",
 		},
-		{
-			name: "capture a type parameter value",
-			src:  "fn f[T](x: T) -> Int { let g = fn(y: Int) -> T { x } 0 }\n",
-			want: "1:50: cannot capture 'x' in anonymous function: closures are not supported in v0.1",
-		},
 	}
 
 	for _, tt := range tests {
@@ -2372,11 +2453,6 @@ func TestCheckInferError(t *testing.T) {
 			name: "literal pattern after a constructor pattern",
 			src:  "type Option[T] = | None | Some(T)\nfn main() -> Int { let f = fn(o) { match o { Some(n) => n, 0 => 0 } } 0 }\n",
 			want: "2:60: expected Option[?T], found Int",
-		},
-		{
-			name: "capture a generalized let",
-			src:  "fn main() -> Int { let id = fn(x) { x } let g = fn(y) { id(y) } 0 }\n",
-			want: "1:57: cannot capture 'id' in anonymous function: closures are not supported in v0.1",
 		},
 		{
 			name: "unannotated parameter used as Int and Bool",

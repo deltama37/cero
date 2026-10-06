@@ -617,25 +617,25 @@ func (c *checker) popScope(ctx *funcCtx) {
 	ctx.scope = ctx.scope.parent
 }
 
-// lookup walks scopes from the inside out. captured is true when sym was
-// found in an enclosing function rather than the current one or the globals.
-func (c *checker) lookup(ctx *funcCtx, name string) (sym *Symbol, captured bool) {
+// lookup walks scopes from the inside out: the current function, then
+// enclosing functions, then the globals.
+func (c *checker) lookup(ctx *funcCtx, name string) *Symbol {
 	for s := ctx.scope; s != nil; s = s.parent {
 		if found, ok := s.names[name]; ok {
-			return found, false
+			return found
 		}
 	}
 	for p := ctx.parent; p != nil; p = p.parent {
 		for s := p.scope; s != nil; s = s.parent {
 			if found, ok := s.names[name]; ok {
-				return found, true
+				return found
 			}
 		}
 	}
 	if found, ok := c.globals[name]; ok {
-		return found, false
+		return found
 	}
-	return nil, false
+	return nil
 }
 
 func (c *checker) expect(ctx *funcCtx, e ast.Expr, want types.Type) *diag.Error {
@@ -693,12 +693,9 @@ func (c *checker) inferExpr(ctx *funcCtx, e ast.Expr) (types.Type, *diag.Error) 
 }
 
 func (c *checker) inferIdent(ctx *funcCtx, e *ast.Ident) (types.Type, *diag.Error) {
-	sym, captured := c.lookup(ctx, e.Name)
+	sym := c.lookup(ctx, e.Name)
 	if sym == nil {
 		return nil, diag.Errorf(e.Pos, "undefined name '%s'", e.Name)
-	}
-	if captured {
-		return nil, diag.Errorf(e.Pos, "cannot capture '%s' in anonymous function: closures are not supported in v0.1", e.Name)
 	}
 	if sym.Kind == SymCtor && len(sym.Ctor.Fields) > 0 {
 		return nil, diag.Errorf(e.Pos, "constructor '%s' cannot be used as a value; call it with its fields", sym.Name)
@@ -815,7 +812,7 @@ func (c *checker) inferBinary(ctx *funcCtx, e *ast.BinaryExpr) (types.Type, *dia
 
 func (c *checker) inferCall(ctx *funcCtx, e *ast.CallExpr) (types.Type, *diag.Error) {
 	if id, ok := e.Fn.(*ast.Ident); ok {
-		if sym, _ := c.lookup(ctx, id.Name); sym != nil && sym.Kind == SymCtor {
+		if sym := c.lookup(ctx, id.Name); sym != nil && sym.Kind == SymCtor {
 			return c.inferCtorCall(ctx, e, id, sym)
 		}
 	}
