@@ -414,7 +414,7 @@ fn waMemory(minPages: Int) -> Bytes {
     let b0 = waUleb128(1)
     let b1 = waCat(b0, waByte(1))
     let b2 = waCat(b1, waUleb128(minPages))
-    waSection(5, waCat(b2, waUleb128(32768)))
+    waSection(5, waCat(b2, waUleb128(65535)))
 }
 
 fn waGlobal(heap: Int) -> Bytes {
@@ -452,16 +452,23 @@ fn waData(data: Bytes) -> Bytes {
 }
 
 fn waEncodeAlloc() -> Bytes {
-    let b0 = waBytes(Cons(1, Cons(1, Cons(127, Nil))))
+    let b0 = waBytes(Cons(2, Cons(1, Cons(127, Cons(1, Cons(126, Nil))))))
     let b1 = waRaw(b0, Cons(35, Cons(0, Cons(33, Cons(1, Nil)))))
-    let b2 = waRaw(b1, Cons(35, Cons(0, Cons(32, Cons(0, Cons(106, Cons(36, Cons(0, Nil))))))))
-    let b3 = waRaw(b2, Cons(35, Cons(0, Cons(63, Cons(0, Nil)))))
-    let b4 = waRaw(waI32(b3, 16), Cons(116, Cons(75, Cons(4, Cons(64, Nil)))))
-    let b5 = waRaw(b4, Cons(35, Cons(0, Cons(63, Cons(0, Nil)))))
-    let b6 = waRaw(waI32(b5, 16), Cons(116, Cons(107, Nil)))
-    let b7 = waRaw(waI32(waRaw(waI32(b6, 65535), Cons(106, Nil)), 16), Cons(118, Cons(64, Cons(0, Nil))))
-    let b8 = waRaw(waI32(b7, -1), Cons(70, Cons(4, Cons(64, Cons(0, Cons(11, Cons(11, Nil)))))))
-    waEnd(waRaw(b8, Cons(32, Cons(1, Nil))))
+    let extHeap = waRaw(b1, Cons(35, Cons(0, Cons(173, Nil))))
+    let extSize = waRaw(extHeap, Cons(32, Cons(0, Cons(173, Nil))))
+    let b2 = waLocalSet(waRaw(extSize, Cons(124, Nil)), 2)
+    let mem1 = waRaw(waLocalGet(b2, 2), Cons(63, Cons(0, Cons(173, Nil))))
+    let b3 = waRaw(waI64(mem1, 16), Cons(134, Cons(86, Cons(4, Cons(64, Nil)))))
+    let over = waRaw(waI64(waLocalGet(b3, 2), shiftLeft(65535, 16)), Cons(86, Nil))
+    let b4 = waEnd(waRaw(waRaw(over, Cons(4, Cons(64, Nil))), Cons(0, Nil)))
+    let mem2 = waRaw(waLocalGet(b4, 2), Cons(63, Cons(0, Cons(173, Nil))))
+    let diff = waRaw(waI64(mem2, 16), Cons(134, Cons(125, Nil)))
+    let sum = waRaw(waI64(diff, 65535), Cons(124, Nil))
+    let pages = waRaw(waI64(sum, 16), Cons(136, Cons(167, Cons(64, Cons(0, Nil)))))
+    let growFail = waRaw(waI32(pages, -1), Cons(70, Nil))
+    let b5 = waEnd(waEnd(waRaw(waRaw(growFail, Cons(4, Cons(64, Nil))), Cons(0, Nil))))
+    let setHeap = waRaw(waLocalGet(b5, 2), Cons(167, Cons(36, Cons(0, Nil))))
+    waEnd(waRaw(setHeap, Cons(32, Cons(1, Nil))))
 }
 
 fn waNewFields(b: Bytes, fields: List[ValType], p: Int, i: Int) -> Bytes {
