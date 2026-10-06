@@ -1,0 +1,12 @@
+fn main() -> Int {
+    let n = 2
+    if n == 0 {
+        10
+    } else if n == 1 {
+        20
+    } else if n == 2 {
+        30
+    } else {
+        40
+    }
+}

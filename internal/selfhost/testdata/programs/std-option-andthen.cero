@@ -1,0 +1,4 @@
+import "std/option"
+fn main() -> Int {
+    withDefault(andThen(Some(20), fn(x: Int) -> Option[Int] { Some(x + 1) }), 0) + withDefault(andThen(None, fn(x: Int) -> Option[Int] { Some(x) }), 5) + withDefault(andThen(Some(1), fn(x: Int) -> Option[Int] { None }), 16)
+}

@@ -1,0 +1,17 @@
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn second(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => match rest {
+            Nil => 0,
+            Cons(y, _) => y,
+        },
+    }
+}
+
+fn main() -> Int {
+    second(Cons(1, Cons(2, Cons(3, Nil))))
+}

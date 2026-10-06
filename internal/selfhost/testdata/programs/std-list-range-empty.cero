@@ -1,0 +1,7 @@
+import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    if length(range(3, 3)) == 0 && length(range(5, 2)) == 0 && pack(range(1, 4)) == 123 { 1 } else { 0 }
+}

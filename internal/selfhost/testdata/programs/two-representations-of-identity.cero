@@ -1,0 +1,5 @@
+fn identity[T](x: T) -> T { x }
+
+fn main() -> Int {
+    if identity(true) { identity(40) + 2 } else { 0 }
+}

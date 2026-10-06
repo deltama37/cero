@@ -1,0 +1,5 @@
+type Pair[A, B] = Pair(A, B)
+fn main() -> Int {
+    let Pair(a, b) = Pair(19, 23)
+    a + b
+}

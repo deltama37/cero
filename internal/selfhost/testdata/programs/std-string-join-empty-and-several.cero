@@ -1,0 +1,6 @@
+import "std/list"
+import "std/string"
+fn main() -> Int {
+    let empty: List[String] = Nil
+    if join(empty, ",") == "" && join(Cons("a", Nil), ",") == "a" && join(Cons("a", Cons("b", Cons("c", Nil))), "-") == "a-b-c" { 1 } else { 0 }
+}

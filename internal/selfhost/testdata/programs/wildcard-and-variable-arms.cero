@@ -1,0 +1,21 @@
+type U =
+    | A
+    | B
+
+fn f(u: U) -> Int {
+    match u {
+        A => 5,
+        _ => 7,
+    }
+}
+
+fn g(u: U) -> Int {
+    match u {
+        A => 1,
+        other => f(other),
+    }
+}
+
+fn main() -> Int {
+    f(A) + f(B) + g(B)
+}

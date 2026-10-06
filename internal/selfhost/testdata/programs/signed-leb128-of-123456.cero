@@ -1,0 +1,13 @@
+fn slebSum(n: Int) -> Int {
+    let b = bitAnd(n, 127)
+    let next = shiftRight(n, 7)
+    if (next == 0 && bitAnd(b, 64) == 0) || (next == -1 && bitAnd(b, 64) != 0) {
+        b
+    } else {
+        bitOr(b, 128) + slebSum(next)
+    }
+}
+
+fn main() -> Int {
+    slebSum(-123456)
+}

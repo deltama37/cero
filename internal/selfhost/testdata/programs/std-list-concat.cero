@@ -1,0 +1,7 @@
+import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(concat(Cons(Cons(1, Cons(2, Nil)), Cons(Cons(3, Nil), Nil))))
+}

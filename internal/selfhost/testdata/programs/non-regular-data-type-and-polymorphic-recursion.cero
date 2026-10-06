@@ -1,0 +1,16 @@
+type Pair[A, B] = Pair(A, B)
+
+type Nest[T] =
+    | Flat(T)
+    | Deep(Nest[Pair[T, T]])
+
+fn size[T](n: Nest[T]) -> Int {
+    match n {
+        Flat(_) => 1,
+        Deep(inner) => 2 * size(inner),
+    }
+}
+
+fn main() -> Int {
+    size(Deep(Deep(Flat(Pair(Pair(1, 2), Pair(3, 4))))))
+}

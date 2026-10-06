@@ -1,0 +1,9 @@
+fn main() {
+    bind(argCount(), fn(n: Int) -> IO[Unit] {
+        bind(argAt(0), fn(a: String) -> IO[Unit] {
+            bind(argAt(1), fn(b: String) -> IO[Unit] {
+                print(intToString(n) ++ " " ++ a ++ " " ++ b)
+            })
+        })
+    })
+}

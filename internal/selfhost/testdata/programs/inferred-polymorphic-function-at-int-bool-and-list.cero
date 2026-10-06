@@ -1,0 +1,19 @@
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn id(x) { x }
+
+fn length(xs) {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => 1 + length(rest),
+    }
+}
+
+fn main() {
+    let n = id(40)
+    let b = id(true)
+    let xs = id(Cons(1, Nil))
+    if b { n + length(xs) + 1 } else { 0 }
+}

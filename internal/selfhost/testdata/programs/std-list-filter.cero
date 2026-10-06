@@ -1,0 +1,7 @@
+import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    pack(filter(Cons(1, Cons(2, Cons(3, Cons(4, Nil)))), fn(x: Int) -> Bool { x / 2 * 2 == x }))
+}

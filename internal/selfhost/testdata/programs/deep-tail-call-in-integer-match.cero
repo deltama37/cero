@@ -1,0 +1,10 @@
+fn down(n: Int, acc: Int) -> Int {
+    match n {
+        0 => acc,
+        _ => down(n - 1, acc + 2),
+    }
+}
+
+fn main() -> Int {
+    down(10000000, 0)
+}

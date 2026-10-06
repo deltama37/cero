@@ -1,0 +1,5 @@
+fn main() -> Int {
+    let hi = stringFromByte(255)
+    let z = stringFromByte(0)
+    if stringLength(hi) == 1 && stringByteAt(hi, 0) == 255 && stringLength(z) == 1 && stringByteAt(z, 0) == 0 { 1 } else { 0 }
+}

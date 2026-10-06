@@ -16,6 +16,8 @@ import (
 
 	"github.com/deltama37/cero/internal/ast"
 	"github.com/deltama37/cero/internal/driver"
+	"github.com/deltama37/cero/internal/ir"
+	"github.com/deltama37/cero/internal/lower"
 	"github.com/deltama37/cero/internal/typecheck"
 )
 
@@ -226,6 +228,33 @@ func TestCheckSuccessCorpus(t *testing.T) {
 	}
 }
 
+func TestIR(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	for _, file := range irSources(t, root) {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+
+			want, err := goIR(root, file)
+			if err != nil {
+				t.Fatalf("lower %s: %v", file, err)
+			}
+			stdout, stderr, code := runCero(t, root, "ir", file)
+			if code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q", stderr)
+			}
+			if stdout != want {
+				t.Errorf("stdout mismatch for %s\n got %q\nwant %q", file, stdout, want)
+			}
+		})
+	}
+}
+
 func TestCheckCorpusCoversErrors(t *testing.T) {
 	t.Parallel()
 
@@ -266,6 +295,40 @@ func TestCheckCorpusCoversErrors(t *testing.T) {
 			t.Errorf("format %q is not covered by testdata", format)
 		}
 	}
+}
+
+func irSources(t *testing.T, root string) []string {
+	t.Helper()
+
+	files := relGlob(t, root, "examples/*.cero")
+	files = append(files, relGlob(t, root, "examples/io/*.cero")...)
+	files = append(files, "examples/modules/main.cero")
+	files = append(files, "compiler/main.cero")
+	files = append(files, checkOKFiles(t, root)...)
+	files = append(files, relGlob(t, root, "internal/selfhost/testdata/programs/*.cero")...)
+	return files
+}
+
+func goIR(root, file string) (string, error) {
+	src, err := os.ReadFile(filepath.Join(root, file))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", file, err)
+	}
+	mods, err := driver.Load(file, src, func(name string) ([]byte, error) {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil {
+			return nil, fmt.Errorf("read %s: %w", name, readErr)
+		}
+		return body, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	info, err := typecheck.CheckProgram(mods)
+	if err != nil {
+		return "", err
+	}
+	return ir.Format(lower.LowerProgram(mods, info)) + "\n", nil
 }
 
 func checkSources(t *testing.T, root string) []string {

@@ -1,0 +1,9 @@
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn depth[T](x: T, n: Int) -> Int {
+    if n == 0 { 0 } else { 1 + depth(Cons(x, Nil), n - 1) }
+}
+
+fn main() -> Int { depth(7, 10) }

@@ -1,0 +1,191 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/ast"
+import "types/types"
+import "check/state"
+import "util/intmap"
+
+type CapAcc = | CapAcc(List[Int], IntMap[Bool])
+
+type CapWalk = | CapWalk(IntMap[Bool], CapAcc, IntMap[List[Int]])
+
+fn capAdd(acc: CapAcc, id: Int) -> CapAcc {
+    let CapAcc(xs, seen) = acc
+    if imMember(seen, id) {
+        acc
+    } else {
+        CapAcc(Cons(id, xs), imInsert(seen, id, true))
+    }
+}
+
+fn capAddFiltered(decl: IntMap[Bool], acc: CapAcc, caps: List[Int]) -> CapAcc {
+    match caps {
+        Nil => acc,
+        Cons(id, rest) => if imMember(decl, id) {
+            capAddFiltered(decl, acc, rest)
+        } else {
+            capAddFiltered(decl, capAdd(acc, id), rest)
+        },
+    }
+}
+
+fn capParams(info: Info, ps: List[Param], decl: IntMap[Bool]) -> IntMap[Bool] {
+    match ps {
+        Nil => decl,
+        Cons(p, rest) => {
+            let Param(id, _, _, _) = p
+            match imLookup(infoParams(info), id) {
+                None => capParams(info, rest, decl),
+                Some(sid) => capParams(info, rest, imInsert(decl, sid, true)),
+            }
+        },
+    }
+}
+
+fn capBindPats(info: Info, decl: IntMap[Bool], ps: List[Pattern]) -> IntMap[Bool] {
+    match ps {
+        Nil => decl,
+        Cons(p, rest) => capBindPats(info, capBindPat(info, decl, p), rest),
+    }
+}
+
+fn capBindPat(info: Info, decl: IntMap[Bool], p: Pattern) -> IntMap[Bool] {
+    match p {
+        VarP(id, _, _) => match imLookup(infoPatVars(info), id) {
+            None => decl,
+            Some(sid) => imInsert(decl, sid, true),
+        },
+        CtorP(_, _, _, args) => capBindPats(info, decl, args),
+        _ => decl,
+    }
+}
+
+fn capValue(info: Info, polys: IntMap[LetStmt], memo: IntMap[List[Int]], v: Expr) -> Pair[List[Int], IntMap[List[Int]]] {
+    match v {
+        FuncLit(id, _, params, _, body) => capOf(info, polys, memo, id, params, body),
+        Ident(iid, _, _) => match imLookup(infoUses(info), iid) {
+            None => Pair(Nil, memo),
+            Some(sid) => {
+                let w = capAddSym(info, polys, CapWalk(imEmpty(), CapAcc(Nil, imEmpty()), memo), sid)
+                let CapWalk(_, CapAcc(xs, _), memo2) = w
+                Pair(reverse(xs), memo2)
+            },
+        },
+        _ => Pair(Nil, memo),
+    }
+}
+
+fn capAddLocal(info: Info, polys: IntMap[LetStmt], w: CapWalk, sid: Int, tps: List[Type]) -> CapWalk {
+    let CapWalk(decl, acc, memo) = w
+    match tps {
+        Nil => if imMember(decl, sid) {
+            w
+        } else {
+            CapWalk(decl, capAdd(acc, sid), memo)
+        },
+        _ => match imLookup(polys, sid) {
+            None => w,
+            Some(stmt) => {
+                let LetStmt(_, _, _, _, _, value) = stmt
+                let Pair(caps, memo2) = capValue(info, polys, memo, value)
+                CapWalk(decl, capAddFiltered(decl, acc, caps), memo2)
+            },
+        },
+    }
+}
+
+fn capAddSym(info: Info, polys: IntMap[LetStmt], w: CapWalk, sid: Int) -> CapWalk {
+    match imLookup(infoSymbols(info), sid) {
+        None => w,
+        Some(sym) => {
+            let Symbol(kind, _, _, _, _, _, tps, _) = sym
+            match kind {
+                CkSymParam => capAddLocal(info, polys, w, sid, tps),
+                CkSymLocal => capAddLocal(info, polys, w, sid, tps),
+                _ => w,
+            }
+        },
+    }
+}
+
+fn capOf(info: Info, polys: IntMap[LetStmt], memo: IntMap[List[Int]], id: Int, params: List[Param], body: Block) -> Pair[List[Int], IntMap[List[Int]]] {
+    match imLookup(memo, id) {
+        Some(caps) => Pair(caps, memo),
+        None => {
+            let decl = capParams(info, params, imEmpty())
+            let w = capVisitBlock(info, polys, CapWalk(decl, CapAcc(Nil, imEmpty()), memo), body)
+            let CapWalk(_, CapAcc(xs, _), memo2) = w
+            let caps = reverse(xs)
+            Pair(caps, imInsert(memo2, id, caps))
+        },
+    }
+}
+
+fn capLets(info: Info, polys: IntMap[LetStmt], w: CapWalk, lets: List[LetStmt]) -> CapWalk {
+    match lets {
+        Nil => w,
+        Cons(stmt, rest) => {
+            let LetStmt(id, _, _, _, _, value) = stmt
+            let w2 = capVisitExpr(info, polys, w, value)
+            let CapWalk(decl, acc, memo) = w2
+            let decl2 = match imLookup(infoDefs(info), id) {
+                None => decl,
+                Some(sid) => imInsert(decl, sid, true),
+            }
+            capLets(info, polys, CapWalk(decl2, acc, memo), rest)
+        },
+    }
+}
+
+fn capVisitBlock(info: Info, polys: IntMap[LetStmt], w: CapWalk, b: Block) -> CapWalk {
+    let Block(_, _, lets, result) = b
+    capVisitExpr(info, polys, capLets(info, polys, w, lets), result)
+}
+
+fn capArms(info: Info, polys: IntMap[LetStmt], w: CapWalk, arms: List[Arm]) -> CapWalk {
+    match arms {
+        Nil => w,
+        Cons(arm, rest) => {
+            let Arm(pat, body) = arm
+            let CapWalk(decl, acc, memo) = w
+            let w2 = CapWalk(capBindPat(info, decl, pat), acc, memo)
+            capArms(info, polys, capVisitExpr(info, polys, w2, body), rest)
+        },
+    }
+}
+
+fn capVisitExprs(info: Info, polys: IntMap[LetStmt], w: CapWalk, es: List[Expr]) -> CapWalk {
+    match es {
+        Nil => w,
+        Cons(e, rest) => capVisitExprs(info, polys, capVisitExpr(info, polys, w, e), rest),
+    }
+}
+
+fn capVisitExpr(info: Info, polys: IntMap[LetStmt], w: CapWalk, e: Expr) -> CapWalk {
+    match e {
+        Ident(id, _, _) => match imLookup(infoUses(info), id) {
+            None => w,
+            Some(sid) => capAddSym(info, polys, w, sid),
+        },
+        Unary(_, _, _, x) => capVisitExpr(info, polys, w, x),
+        Binary(_, _, _, _, x, y) => capVisitExpr(info, polys, capVisitExpr(info, polys, w, x), y),
+        Call(_, _, callee, _, args) => capVisitExprs(info, polys, capVisitExpr(info, polys, w, callee), args),
+        If(_, _, cond, th, el) => capVisitExpr(info, polys, capVisitBlock(info, polys, capVisitExpr(info, polys, w, cond), th), el),
+        BlockE(b) => capVisitBlock(info, polys, w, b),
+        FuncLit(id, _, params, _, body) => {
+            let CapWalk(decl, acc, memo) = w
+            let Pair(caps, memo2) = capOf(info, polys, memo, id, params, body)
+            CapWalk(decl, capAddFiltered(decl, acc, caps), memo2)
+        },
+        Match(_, _, scrut, arms, _) => capArms(info, polys, capVisitExpr(info, polys, w, scrut), arms),
+        _ => w,
+    }
+}
+
+pub fn lwCaptures(info: Info, polys: IntMap[LetStmt], memo: IntMap[List[Int]], e: Expr) -> Pair[List[Int], IntMap[List[Int]]] {
+    match e {
+        FuncLit(id, _, params, _, body) => capOf(info, polys, memo, id, params, body),
+        _ => Pair(Nil, memo),
+    }
+}

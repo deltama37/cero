@@ -1,0 +1,12 @@
+fn count(n: Int, acc: Int) -> Int {
+    let next = fn(m: Int, a: Int) -> Int { count(m, a) }
+    if n == 0 {
+        acc
+    } else {
+        next(n - 1, acc + n)
+    }
+}
+
+fn main() -> Int {
+    count(10000000, 0)
+}

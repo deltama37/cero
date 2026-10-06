@@ -1,0 +1,1 @@
+fn main() -> Int { bitOr(12, 10) }

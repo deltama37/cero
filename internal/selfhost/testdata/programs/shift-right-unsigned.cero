@@ -1,0 +1,1 @@
+fn main() -> Int { shiftRightUnsigned(-1, 60) }

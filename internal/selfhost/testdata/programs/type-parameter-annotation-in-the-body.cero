@@ -1,0 +1,10 @@
+type Pair[A, B] = Pair(A, B)
+
+fn dup[T](x: T) -> Pair[T, T] {
+    let y: T = x
+    Pair(x, y)
+}
+
+fn addPair(p: Pair[Int, Int]) -> Int { match p { Pair(a, b) => a + b } }
+
+fn main() -> Int { addPair(dup(21)) }

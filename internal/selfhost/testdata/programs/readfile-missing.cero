@@ -1,0 +1,3 @@
+fn main() {
+    bind(readFile("missing.txt"), fn(s: String) -> IO[Unit] { print(s) })
+}

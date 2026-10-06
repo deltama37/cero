@@ -1,0 +1,8 @@
+fn main() -> Int {
+    let y = 1
+    let id = fn(x) { y }
+    let fromBool = id(true)
+    let fromInt = id(2)
+    let h = fn() -> Int { id(0) }
+    fromBool + fromInt + h() + 39
+}

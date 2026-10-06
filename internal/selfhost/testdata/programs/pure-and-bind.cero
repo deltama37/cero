@@ -1,0 +1,3 @@
+fn main() {
+    bind(pure(41), fn(n: Int) -> IO[Unit] { print(intToString(n + 1)) })
+}

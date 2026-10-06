@@ -1,0 +1,11 @@
+fn count(n: Int, k: Int -> Int) -> Int {
+    if n == 0 {
+        k(0)
+    } else {
+        count(n - 1, fn(x: Int) -> Int { k(x + 1) })
+    }
+}
+
+fn main() -> Int {
+    count(1000000, fn(x: Int) -> Int { x })
+}

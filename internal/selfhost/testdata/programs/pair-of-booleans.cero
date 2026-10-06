@@ -1,0 +1,14 @@
+type Pair[A, B] = Pair(A, B)
+
+fn both(p: Pair[Bool, Bool]) -> Int {
+    match p {
+        Pair(true, true) => 3,
+        Pair(true, false) => 2,
+        Pair(false, true) => 1,
+        Pair(false, false) => 0,
+    }
+}
+
+fn main() -> Int {
+    both(Pair(true, true)) + both(Pair(true, false)) + both(Pair(false, true)) + both(Pair(false, false))
+}

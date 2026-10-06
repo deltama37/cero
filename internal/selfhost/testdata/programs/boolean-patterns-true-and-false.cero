@@ -1,0 +1,10 @@
+fn toInt(b: Bool) -> Int {
+    match b {
+        true => 1,
+        false => 0,
+    }
+}
+
+fn main() -> Int {
+    toInt(true) * 10 + toInt(false) + toInt(2 == 2)
+}

@@ -1,0 +1,4 @@
+fn main() -> Int {
+    let ignored = print("no")
+    7
+}

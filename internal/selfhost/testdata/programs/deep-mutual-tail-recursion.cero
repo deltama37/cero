@@ -1,0 +1,23 @@
+fn isEven(n: Int) -> Bool {
+    if n == 0 {
+        true
+    } else {
+        isOdd(n - 1)
+    }
+}
+
+fn isOdd(n: Int) -> Bool {
+    if n == 0 {
+        false
+    } else {
+        isEven(n - 1)
+    }
+}
+
+fn main() -> Int {
+    if isEven(10000000) {
+        1
+    } else {
+        0
+    }
+}

@@ -1,0 +1,11 @@
+fn abs(n: Int) -> Int {
+    if n < 0 {
+        -n
+    } else {
+        n
+    }
+}
+
+fn main() -> Int {
+    abs(-7) + abs(3)
+}

@@ -1,0 +1,8 @@
+type Option[T] = | None | Some(T)
+
+fn orElse[T](o: Option[T], d: T) -> T { match o { None => d, Some(x) => x } }
+
+fn main() -> Int {
+    let none = None
+    if orElse(none, true) { orElse(none, 41) + 1 } else { 0 }
+}

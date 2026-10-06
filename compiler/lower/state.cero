@@ -1,0 +1,39 @@
+import "std/list"
+import "syntax/ast"
+import "util/intmap"
+import "util/strmap"
+import "driver/load"
+import "check/state"
+import "ir/ir"
+
+pub type LwInst = | LwInst(FuncDecl, Int, IntMap[ValType])
+
+pub type LwQ = | LwQ(List[LwInst], List[LwInst])
+
+pub type LwCur = | LwCur(List[ValType], Int, IntMap[Int])
+
+pub type LwGen = | LwGen(
+    IntMap[Int],
+    StrMap[Int],
+    LwQ,
+    IntMap[ValType],
+    Int,
+    IntMap[List[Int]],
+    IntMap[Int],
+    IntMap[Int],
+    StrMap[Int],
+    StrMap[Int]
+)
+
+pub type LwMod = | LwMod(IntMap[IrFunc], Int, List[Int], Int, Bool)
+
+pub type LwState = | LwState(
+    Info,
+    List[Module],
+    IntMap[Bool],
+    IntMap[FuncDecl],
+    IntMap[LetStmt],
+    LwGen,
+    LwMod,
+    LwCur
+)

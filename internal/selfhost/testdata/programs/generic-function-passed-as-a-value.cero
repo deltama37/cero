@@ -1,0 +1,5 @@
+fn identity[T](x: T) -> T { x }
+
+fn apply(f: Int -> Int, x: Int) -> Int { f(x) }
+
+fn main() -> Int { apply(identity, 7) }

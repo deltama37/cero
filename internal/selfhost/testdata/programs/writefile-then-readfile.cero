@@ -1,0 +1,5 @@
+fn main() {
+    bind(writeFile("out.txt", "hello"), fn(ignored: Unit) -> IO[Unit] {
+        bind(readFile("out.txt"), fn(s: String) -> IO[Unit] { print(s) })
+    })
+}

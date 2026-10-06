@@ -1,0 +1,1765 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/ast"
+import "syntax/diag"
+import "syntax/k"
+import "types/types"
+import "util/intmap"
+import "util/strmap"
+import "driver/load"
+import "check/state"
+import "ir/ir"
+import "lower/state"
+import "lower/captures"
+
+type LwResult[A] = | LwOk(A, LwState)
+
+type Lower[A] = | Lower(LwState -> LwResult[A])
+
+fn bind[A, B](m: Lower[A], f: A -> Lower[B]) -> Lower[B] {
+    Lower(fn(s: LwState) -> LwResult[B] {
+        match m {
+            Lower(run) => match run(s) {
+                LwOk(x, s2) => match f(x) {
+                    Lower(run2) => run2(s2),
+                },
+            },
+        }
+    })
+}
+
+fn pure[A](x: A) -> Lower[A] {
+    Lower(fn(s: LwState) -> LwResult[A] { LwOk(x, s) })
+}
+
+fn lwGet() -> Lower[LwState] {
+    Lower(fn(s: LwState) -> LwResult[LwState] { LwOk(s, s) })
+}
+
+fn lwModify(f: LwState -> LwState) -> Lower[Unit] {
+    Lower(fn(s: LwState) -> LwResult[Unit] { LwOk((), f(s)) })
+}
+
+fn infoOf(s: LwState) -> Info {
+    let LwState(info, _, _, _, _, _, _, _) = s
+    info
+}
+
+fn modsOf(s: LwState) -> List[Module] {
+    let LwState(_, mods, _, _, _, _, _, _) = s
+    mods
+}
+
+fn entryOf(s: LwState) -> IntMap[Bool] {
+    let LwState(_, _, entry, _, _, _, _, _) = s
+    entry
+}
+
+fn declsOf(s: LwState) -> IntMap[FuncDecl] {
+    let LwState(_, _, _, decls, _, _, _, _) = s
+    decls
+}
+
+fn polysOf(s: LwState) -> IntMap[LetStmt] {
+    let LwState(_, _, _, _, polys, _, _, _) = s
+    polys
+}
+
+fn genOf(s: LwState) -> LwGen {
+    let LwState(_, _, _, _, _, g, _, _) = s
+    g
+}
+
+fn modOf(s: LwState) -> LwMod {
+    let LwState(_, _, _, _, _, _, m, _) = s
+    m
+}
+
+fn curOf(s: LwState) -> LwCur {
+    let LwState(_, _, _, _, _, _, _, c) = s
+    c
+}
+
+fn setGen(s: LwState, g: LwGen) -> LwState {
+    let LwState(info, mods, entry, decls, polys, _, md, cur) = s
+    LwState(info, mods, entry, decls, polys, g, md, cur)
+}
+
+fn setMod(s: LwState, m: LwMod) -> LwState {
+    let LwState(info, mods, entry, decls, polys, g, _, cur) = s
+    LwState(info, mods, entry, decls, polys, g, m, cur)
+}
+
+fn setCur(s: LwState, c: LwCur) -> LwState {
+    let LwState(info, mods, entry, decls, polys, g, md, _) = s
+    LwState(info, mods, entry, decls, polys, g, md, c)
+}
+
+fn gDecls(g: LwGen) -> IntMap[Int] {
+    let LwGen(a, _, _, _, _, _, _, _, _, _) = g
+    a
+}
+
+fn gInsts(g: LwGen) -> StrMap[Int] {
+    let LwGen(_, a, _, _, _, _, _, _, _, _) = g
+    a
+}
+
+fn gQueue(g: LwGen) -> LwQ {
+    let LwGen(_, _, a, _, _, _, _, _, _, _) = g
+    a
+}
+
+fn gEnv(g: LwGen) -> IntMap[ValType] {
+    let LwGen(_, _, _, a, _, _, _, _, _, _) = g
+    a
+}
+
+fn gLambdas(g: LwGen) -> Int {
+    let LwGen(_, _, _, _, a, _, _, _, _, _) = g
+    a
+}
+
+fn gMemo(g: LwGen) -> IntMap[List[Int]] {
+    let LwGen(_, _, _, _, _, a, _, _, _, _) = g
+    a
+}
+
+fn gRefs(g: LwGen) -> IntMap[Int] {
+    let LwGen(_, _, _, _, _, _, a, _, _, _) = g
+    a
+}
+
+fn gBRefs(g: LwGen) -> IntMap[Int] {
+    let LwGen(_, _, _, _, _, _, _, a, _, _) = g
+    a
+}
+
+fn gActs(g: LwGen) -> StrMap[Int] {
+    let LwGen(_, _, _, _, _, _, _, _, a, _) = g
+    a
+}
+
+fn gIORefs(g: LwGen) -> StrMap[Int] {
+    let LwGen(_, _, _, _, _, _, _, _, _, a) = g
+    a
+}
+
+fn gWithDecls(g: LwGen, a: IntMap[Int]) -> LwGen {
+    let LwGen(_, b, c, d, e, f, h, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithInsts(g: LwGen, b: StrMap[Int]) -> LwGen {
+    let LwGen(a, _, c, d, e, f, h, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithQueue(g: LwGen, c: LwQ) -> LwGen {
+    let LwGen(a, b, _, d, e, f, h, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithEnv(g: LwGen, d: IntMap[ValType]) -> LwGen {
+    let LwGen(a, b, c, _, e, f, h, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithLambdas(g: LwGen, e: Int) -> LwGen {
+    let LwGen(a, b, c, d, _, f, h, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithMemo(g: LwGen, f: IntMap[List[Int]]) -> LwGen {
+    let LwGen(a, b, c, d, e, _, h, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithRefs(g: LwGen, h: IntMap[Int]) -> LwGen {
+    let LwGen(a, b, c, d, e, f, _, i, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithBRefs(g: LwGen, i: IntMap[Int]) -> LwGen {
+    let LwGen(a, b, c, d, e, f, h, _, j, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithActs(g: LwGen, j: StrMap[Int]) -> LwGen {
+    let LwGen(a, b, c, d, e, f, h, i, _, k) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn gWithIORefs(g: LwGen, k: StrMap[Int]) -> LwGen {
+    let LwGen(a, b, c, d, e, f, h, i, j, _) = g
+    LwGen(a, b, c, d, e, f, h, i, j, k)
+}
+
+fn lwInfo() -> Lower[Info] {
+    let! s = lwGet()
+    pure(infoOf(s))
+}
+
+fn lwEnv() -> Lower[IntMap[ValType]] {
+    let! s = lwGet()
+    pure(gEnv(genOf(s)))
+}
+
+fn lwSetEnv(env: IntMap[ValType]) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState { setGen(s, gWithEnv(genOf(s), env)) })
+}
+
+fn lwSetCur(c: LwCur) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState { setCur(s, c) })
+}
+
+fn lwCurNow() -> Lower[LwCur] {
+    let! s = lwGet()
+    pure(curOf(s))
+}
+
+fn emptyCur() -> LwCur {
+    let m: IntMap[Int] = imEmpty()
+    LwCur(Nil, 0, m)
+}
+
+fn lwLocals() -> Lower[List[ValType]] {
+    let! s = lwGet()
+    let LwCur(ls, _, _) = curOf(s)
+    pure(reverse(ls))
+}
+
+fn lwAlloc(vt: ValType) -> Lower[Int] {
+    let! s = lwGet()
+    let LwCur(ls, n, m) = curOf(s)
+    let! _ = lwSetCur(LwCur(Cons(vt, ls), n + 1, m))
+    pure(n)
+}
+
+fn lwBindSym(sid: Int, lid: Int) -> Lower[Unit] {
+    let! s = lwGet()
+    let LwCur(ls, n, m) = curOf(s)
+    lwSetCur(LwCur(ls, n, imInsert(m, sid, lid)))
+}
+
+fn lwLocal(sid: Int) -> Lower[Int] {
+    let! s = lwGet()
+    let LwCur(_, _, m) = curOf(s)
+    pure(withDefault(imLookup(m, sid), 0))
+}
+
+fn dummySym() -> Symbol {
+    Symbol(CkSymLocal, "", TyUnit, Pos(0, 0), -1, None, Nil, -1)
+}
+
+fn symOf(info: Info, sid: Int) -> Symbol {
+    withDefault(imLookup(infoSymbols(info), sid), dummySym())
+}
+
+fn exprTy(info: Info, e: Expr) -> Type {
+    withDefault(imLookup(infoTypes(info), exprId(e)), TyUnit)
+}
+
+fn emptyTyEnv() -> TyEnv {
+    let datas: IntMap[DataInfo] = imEmpty()
+    let names: IntMap[String] = imEmpty()
+    let sols: IntMap[Type] = imEmpty()
+    TyEnv(datas, names, sols)
+}
+
+fn valTypeIn(env: IntMap[ValType], t: Type) -> ValType {
+    match t {
+        TyInt => VtInt,
+        TyBool => VtBool,
+        TyString => VtPtr,
+        TyUnit => VtBool,
+        TyFunc(_, _) => VtFuncRef,
+        TyNamed(id, _) => if id == tyIOData() { VtFuncRef } else { VtPtr },
+        TyParam(id, _) => withDefault(imLookup(env, id), VtInt),
+        TyMeta(_) => VtInt,
+    }
+}
+
+fn mapVals(env: IntMap[ValType], ts: List[Type], acc: List[ValType]) -> List[ValType] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => mapVals(env, rest, Cons(valTypeIn(env, t), acc)),
+    }
+}
+
+fn sigIn(env: IntMap[ValType], t: Type) -> Sig {
+    match t {
+        TyFunc(ps, r) => IrSig(mapVals(env, ps, Nil), valTypeIn(env, r)),
+        _ => IrSig(Nil, VtInt),
+    }
+}
+
+fn bindEnv(tps: List[Type], reps: List[ValType], env: IntMap[ValType]) -> IntMap[ValType] {
+    match tps {
+        Nil => env,
+        Cons(tp, trest) => match reps {
+            Nil => env,
+            Cons(r, rrest) => match tp {
+                TyParam(id, _) => bindEnv(trest, rrest, imInsert(env, id, r)),
+                _ => bindEnv(trest, rrest, env),
+            },
+        },
+    }
+}
+
+fn repKey(reps: List[ValType]) -> String {
+    match reps {
+        Nil => "",
+        Cons(v, rest) => match rest {
+            Nil => irValName(v),
+            _ => irValName(v) ++ "," ++ repKey(rest),
+        },
+    }
+}
+
+fn lwTypeVT(t: Type) -> Lower[ValType] {
+    let! env = lwEnv()
+    pure(valTypeIn(env, t))
+}
+
+fn lwExprVT(e: Expr) -> Lower[ValType] {
+    let! info = lwInfo()
+    lwTypeVT(exprTy(info, e))
+}
+
+fn lwIdVT(id: Int) -> Lower[ValType] {
+    let! info = lwInfo()
+    lwTypeVT(withDefault(imLookup(infoTypes(info), id), TyUnit))
+}
+
+fn lwSymVT(sid: Int) -> Lower[ValType] {
+    let! info = lwInfo()
+    let Symbol(_, _, typ, _, _, _, _, _) = symOf(info, sid)
+    lwTypeVT(typ)
+}
+
+fn ctorTag(sym: Symbol) -> Int {
+    let Symbol(_, _, _, _, _, ctor, _, _) = sym
+    match ctor {
+        None => 0,
+        Some(p) => match p {
+            Pair(_, tag) => tag,
+        },
+    }
+}
+
+fn listHas(xs: List[Int], x: Int) -> Bool {
+    match xs {
+        Nil => false,
+        Cons(y, rest) => if y == x { true } else { listHas(rest, x) },
+    }
+}
+
+fn localGets(ps: List[ValType], i: Int, acc: List[IrExpr]) -> List[IrExpr] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(t, rest) => localGets(rest, i + 1, Cons(IrLocalGet(i, t), acc)),
+    }
+}
+
+fn atVT(xs: List[ValType], i: Int) -> ValType {
+    match xs {
+        Nil => VtInt,
+        Cons(x, rest) => if i == 0 { x } else { atVT(rest, i - 1) },
+    }
+}
+
+fn isIO(b: Int) -> Bool {
+    (b >= 6) && (b <= 16)
+}
+
+fn primOf(b: Int) -> PrimOp {
+    if b == 0 {
+        IrStrLength
+    } else if b == 1 {
+        IrStrByteAt
+    } else if b == 2 {
+        IrStrSlice
+    } else if b == 3 {
+        IrStrFromByte
+    } else if b == 4 {
+        IrStrCompare
+    } else if b == 5 {
+        IrIntToString
+    } else if b == 17 {
+        IrBitAnd
+    } else if b == 18 {
+        IrBitOr
+    } else if b == 19 {
+        IrBitXor
+    } else if b == 20 {
+        IrShiftLeft
+    } else if b == 21 {
+        IrShiftRight
+    } else {
+        IrShiftRightUnsigned
+    }
+}
+
+fn ioBuiltinName(b: Int) -> String {
+    if b == 6 {
+        "pure"
+    } else if b == 7 {
+        "bind"
+    } else if b == 8 {
+        "print"
+    } else if b == 9 {
+        "eprint"
+    } else if b == 10 {
+        "read_stdin"
+    } else if b == 11 {
+        "read_file"
+    } else if b == 12 {
+        "file_exists"
+    } else if b == 13 {
+        "write_file"
+    } else if b == 14 {
+        "arg_count"
+    } else if b == 15 {
+        "arg_at"
+    } else {
+        "exit"
+    }
+}
+
+fn ioActionName(b: Int, reps: List[ValType]) -> String {
+    let base = "io." ++ ioBuiltinName(b)
+    match reps {
+        Nil => base,
+        _ => base ++ "[" ++ repKey(reps) ++ "]",
+    }
+}
+
+fn ioKey(b: Int, reps: List[ValType]) -> String {
+    intToString(b) ++ ":" ++ repKey(reps)
+}
+
+fn ioResult(b: Int, reps: List[ValType]) -> ValType {
+    if b == 6 {
+        atVT(reps, 0)
+    } else if b == 7 {
+        atVT(reps, 1)
+    } else if b == 14 {
+        VtInt
+    } else if b == 10 || b == 11 || b == 15 {
+        VtPtr
+    } else {
+        VtBool
+    }
+}
+
+fn ioLocals(b: Int, reps: List[ValType]) -> List[ValType] {
+    if b == 7 {
+        Cons(VtPtr, Cons(atVT(reps, 0), Nil))
+    } else {
+        Cons(VtPtr, Nil)
+    }
+}
+
+fn ioField(index: Int, t: ValType) -> IrExpr {
+    IrField(0, index, t)
+}
+
+fn ioBindBody(a: ValType, result: ValType) -> IrExpr {
+    IrBlock(
+        Cons(IrLet(1, IrCallIndirect(ioField(0, VtFuncRef), IrSig(Nil, a), Nil, false)), Nil),
+        IrCallIndirect(
+            IrCallIndirect(ioField(1, VtFuncRef), IrSig(Cons(a, Nil), VtFuncRef), Cons(IrLocalGet(1, a), Nil), false),
+            IrSig(Nil, result),
+            Nil,
+            true
+        )
+    )
+}
+
+fn ioBody(b: Int, reps: List[ValType]) -> IrExpr {
+    if b == 6 {
+        ioField(0, atVT(reps, 0))
+    } else if b == 7 {
+        ioBindBody(atVT(reps, 0), atVT(reps, 1))
+    } else if b == 8 {
+        IrPrim(IrIOPrint, Cons(ioField(0, VtPtr), Nil))
+    } else if b == 9 {
+        IrPrim(IrIOEPrint, Cons(ioField(0, VtPtr), Nil))
+    } else if b == 10 {
+        IrPrim(IrIOReadStdin, Nil)
+    } else if b == 11 {
+        IrPrim(IrIOReadFile, Cons(ioField(0, VtPtr), Nil))
+    } else if b == 12 {
+        IrPrim(IrIOFileExists, Cons(ioField(0, VtPtr), Nil))
+    } else if b == 13 {
+        IrPrim(IrIOWriteFile, Cons(ioField(0, VtPtr), Cons(ioField(1, VtPtr), Nil)))
+    } else if b == 14 {
+        IrPrim(IrIOArgCount, Nil)
+    } else if b == 15 {
+        IrPrim(IrIOArgAt, Cons(ioField(0, VtInt), Nil))
+    } else {
+        IrPrim(IrIOExit, Cons(ioField(0, VtInt), Nil))
+    }
+}
+
+fn enq(q: LwQ, inst: LwInst) -> LwQ {
+    let LwQ(front, back) = q
+    LwQ(front, Cons(inst, back))
+}
+
+fn deq(q: LwQ) -> Option[Pair[LwInst, LwQ]] {
+    let LwQ(front, back) = q
+    match front {
+        Cons(x, rest) => Some(Pair(x, LwQ(rest, back))),
+        Nil => match reverse(back) {
+            Nil => None,
+            Cons(x, rest) => Some(Pair(x, LwQ(rest, Nil))),
+        },
+    }
+}
+
+fn lwAddFunc(name: String, sig: Sig, locals: List[ValType], body: IrExpr) -> Lower[Int] {
+    Lower(fn(s: LwState) -> LwResult[Int] {
+        let LwMod(fs, n, table, main, cmd) = modOf(s)
+        let s2 = setMod(s, LwMod(imInsert(fs, n, IrFunc(name, sig, locals, body)), n + 1, table, main, cmd))
+        LwOk(n, s2)
+    })
+}
+
+fn lwAddShell(name: String, sig: Sig) -> Lower[Int] {
+    lwAddFunc(name, sig, Nil, IrBoolConst(false))
+}
+
+fn lwSetBody(id: Int, locals: List[ValType], body: IrExpr) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let LwMod(fs, n, table, main, cmd) = modOf(s)
+        let IrFunc(name, sig, _, _) = withDefault(imLookup(fs, id), IrFunc("", IrSig(Nil, VtInt), Nil, IrBoolConst(false)))
+        setMod(s, LwMod(imInsert(fs, id, IrFunc(name, sig, locals, body)), n, table, main, cmd))
+    })
+}
+
+fn lwGetFunc(id: Int) -> Lower[IrFunc] {
+    let! s = lwGet()
+    let LwMod(fs, _, _, _, _) = modOf(s)
+    pure(withDefault(imLookup(fs, id), IrFunc("", IrSig(Nil, VtInt), Nil, IrBoolConst(false))))
+}
+
+fn lwAddTable(id: Int) -> Lower[Unit] {
+    let! s = lwGet()
+    let LwMod(fs, n, table, main, cmd) = modOf(s)
+    if listHas(table, id) {
+        pure(())
+    } else {
+        lwModify(fn(s2: LwState) -> LwState {
+            let LwMod(fs2, n2, table2, main2, cmd2) = modOf(s2)
+            setMod(s2, LwMod(fs2, n2, append(table2, Cons(id, Nil)), main2, cmd2))
+        })
+    }
+}
+
+fn lwSetMainId(id: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let LwMod(fs, n, table, _, cmd) = modOf(s)
+        setMod(s, LwMod(fs, n, table, id, cmd))
+    })
+}
+
+fn lwSetCommand(cmd: Bool) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let LwMod(fs, n, table, main, _) = modOf(s)
+        setMod(s, LwMod(fs, n, table, main, cmd))
+    })
+}
+
+fn lwLookupDecl(decl: Int) -> Lower[Option[Int]] {
+    let! s = lwGet()
+    pure(imLookup(gDecls(genOf(s)), decl))
+}
+
+fn lwSetDecl(decl: Int, id: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithDecls(g, imInsert(gDecls(g), decl, id)))
+    })
+}
+
+fn lwLookupInst(key: String) -> Lower[Option[Int]] {
+    let! s = lwGet()
+    pure(smLookup(gInsts(genOf(s)), key))
+}
+
+fn lwSetInst(key: String, id: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithInsts(g, smInsert(gInsts(g), key, id)))
+    })
+}
+
+fn lwLookupRef(id: Int) -> Lower[Option[Int]] {
+    let! s = lwGet()
+    pure(imLookup(gRefs(genOf(s)), id))
+}
+
+fn lwSetRef(id: Int, wid: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithRefs(g, imInsert(gRefs(g), id, wid)))
+    })
+}
+
+fn lwLookupBRef(b: Int) -> Lower[Option[Int]] {
+    let! s = lwGet()
+    pure(imLookup(gBRefs(genOf(s)), b))
+}
+
+fn lwSetBRef(b: Int, id: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithBRefs(g, imInsert(gBRefs(g), b, id)))
+    })
+}
+
+fn lwLookupIOAct(key: String) -> Lower[Option[Int]] {
+    let! s = lwGet()
+    pure(smLookup(gActs(genOf(s)), key))
+}
+
+fn lwSetIOAct(key: String, id: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithActs(g, smInsert(gActs(g), key, id)))
+    })
+}
+
+fn lwLookupIORef(key: String) -> Lower[Option[Int]] {
+    let! s = lwGet()
+    pure(smLookup(gIORefs(genOf(s)), key))
+}
+
+fn lwSetIORef(key: String, id: Int) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithIORefs(g, smInsert(gIORefs(g), key, id)))
+    })
+}
+
+fn lwSetMemo(memo: IntMap[List[Int]]) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState { setGen(s, gWithMemo(genOf(s), memo)) })
+}
+
+fn lwBumpLambda() -> Lower[Int] {
+    let! s = lwGet()
+    let n = gLambdas(genOf(s))
+    let! _ = lwModify(fn(s2: LwState) -> LwState { setGen(s2, gWithLambdas(genOf(s2), n + 1)) })
+    pure(n)
+}
+
+fn lwEnqueue(inst: LwInst) -> Lower[Unit] {
+    lwModify(fn(s: LwState) -> LwState {
+        let g = genOf(s)
+        setGen(s, gWithQueue(g, enq(gQueue(g), inst)))
+    })
+}
+
+fn lwDequeue() -> Lower[Option[LwInst]] {
+    let! s = lwGet()
+    match deq(gQueue(genOf(s))) {
+        None => pure(None),
+        Some(p) => {
+            let Pair(inst, q2) = p
+            let! _ = lwModify(fn(s2: LwState) -> LwState { setGen(s2, gWithQueue(genOf(s2), q2)) })
+            pure(Some(inst))
+        },
+    }
+}
+
+fn lwDecl(id: Int) -> Lower[FuncDecl] {
+    let! s = lwGet()
+    pure(withDefault(imLookup(declsOf(s), id), FuncDecl(-1, Pos(0, 0), false, "", Pos(0, 0), Nil, Nil, None, Block(-1, Pos(0, 0), Nil, UnitLit(-1, Pos(0, 0))))))
+}
+
+fn modPathAt(mods: List[Module], i: Int) -> String {
+    match mods {
+        Nil => "",
+        Cons(m, rest) => if i == 0 {
+            let Module(p, _, _, _) = m
+            p
+        } else {
+            modPathAt(rest, i - 1)
+        },
+    }
+}
+
+fn lwFuncName(decl: Int, name: String) -> Lower[String] {
+    let! s = lwGet()
+    if imMember(entryOf(s), decl) {
+        pure(name)
+    } else {
+        let idx = withDefault(imLookup(infoFuncModule(infoOf(s)), decl), 0)
+        pure(modPathAt(modsOf(s), idx) ++ "." ++ name)
+    }
+}
+
+fn lwRepsOf(id: Int) -> Lower[List[ValType]] {
+    let! info = lwInfo()
+    let! env = lwEnv()
+    let args = withDefault(imLookup(infoTypeArgs(info), id), Nil)
+    pure(mapVals(env, args, Nil))
+}
+
+fn lwRefWrapper(id: Int) -> Lower[Int] {
+    let! got = lwLookupRef(id)
+    match got {
+        Some(w) => pure(w),
+        None => {
+            let! f = lwGetFunc(id)
+            let IrFunc(name, sig, _, _) = f
+            let IrSig(ps, r) = sig
+            let params = append(ps, Cons(VtPtr, Nil))
+            let body = IrCall(id, localGets(ps, 0, Nil), r, true)
+            let! wid = lwAddFunc(name ++ "$ref", IrSig(params, r), params, body)
+            let! _ = lwSetRef(id, wid)
+            pure(wid)
+        },
+    }
+}
+
+fn lwBuiltinRef(sym: Symbol) -> Lower[Int] {
+    let Symbol(_, name, typ, _, _, _, _, bno) = sym
+    let! got = lwLookupBRef(bno)
+    match got {
+        Some(id) => pure(id),
+        None => {
+            let IrSig(ps, r) = sigIn(imEmpty(), typ)
+            let params = append(ps, Cons(VtPtr, Nil))
+            let body = IrPrim(primOf(bno), localGets(ps, 0, Nil))
+            let! id = lwAddFunc(name ++ "$ref", IrSig(params, r), params, body)
+            let! _ = lwSetBRef(bno, id)
+            pure(id)
+        },
+    }
+}
+
+fn lwIOAction(b: Int, reps: List[ValType]) -> Lower[Int] {
+    let key = ioKey(b, reps)
+    let! got = lwLookupIOAct(key)
+    match got {
+        Some(id) => pure(id),
+        None => {
+            let body = irMarkTail(ioBody(b, reps))
+            let sig = IrSig(Cons(VtPtr, Nil), ioResult(b, reps))
+            let! id = lwAddFunc(ioActionName(b, reps), sig, ioLocals(b, reps), body)
+            let! _ = lwSetIOAct(key, id)
+            let! _ = lwAddTable(id)
+            pure(id)
+        },
+    }
+}
+
+fn lwLowerIOCall(b: Int, reps: List[ValType], args: List[IrExpr]) -> Lower[IrExpr] {
+    let! id = lwIOAction(b, reps)
+    match args {
+        Nil => pure(IrFuncValue(id, None)),
+        _ => pure(IrFuncValue(id, Some(IrConstruct(0, args)))),
+    }
+}
+
+fn lwIOBuiltinRef(sym: Symbol, reps: List[ValType]) -> Lower[Int] {
+    let Symbol(_, name, typ, _, _, _, tps, bno) = sym
+    let key = ioKey(bno, reps)
+    let! got = lwLookupIORef(key)
+    match got {
+        Some(id) => pure(id),
+        None => {
+            let IrSig(ps, r) = sigIn(bindEnv(tps, reps, imEmpty()), typ)
+            let params = append(ps, Cons(VtPtr, Nil))
+            let! body = lwLowerIOCall(bno, reps, localGets(ps, 0, Nil))
+            let wname = match reps {
+                Nil => name ++ "$ref",
+                _ => name ++ "[" ++ repKey(reps) ++ "]$ref",
+            }
+            let! id = lwAddFunc(wname, IrSig(params, r), params, body)
+            let! _ = lwSetIORef(key, id)
+            pure(id)
+        },
+    }
+}
+
+fn lwDeferFunc(sym: Symbol) -> Lower[Int] {
+    let Symbol(_, name, typ, _, decl, _, _, _) = sym
+    let! fname = lwFuncName(decl, name)
+    let! id = lwAddShell(fname, sigIn(imEmpty(), typ))
+    let! _ = lwSetDecl(decl, id)
+    let! d = lwDecl(decl)
+    let! _ = lwEnqueue(LwInst(d, id, imEmpty()))
+    pure(id)
+}
+
+fn lwInstance(sym: Symbol, reps: List[ValType]) -> Lower[Int] {
+    let Symbol(_, name, typ, _, decl, _, tps, _) = sym
+    let key = repKey(reps)
+    let ikey = intToString(decl) ++ ":" ++ key
+    let! got = lwLookupInst(ikey)
+    match got {
+        Some(id) => pure(id),
+        None => {
+            let env = bindEnv(tps, reps, imEmpty())
+            let! fname = lwFuncName(decl, name ++ "[" ++ key ++ "]")
+            let! id = lwAddShell(fname, sigIn(env, typ))
+            let! _ = lwSetInst(ikey, id)
+            let! d = lwDecl(decl)
+            let! _ = lwEnqueue(LwInst(d, id, env))
+            pure(id)
+        },
+    }
+}
+
+fn lwFuncID(useId: Int, sym: Symbol) -> Lower[Int] {
+    let Symbol(_, _, _, _, decl, _, tps, _) = sym
+    match tps {
+        Nil => {
+            let! got = lwLookupDecl(decl)
+            match got {
+                Some(id) => pure(id),
+                None => {
+                    let! s = lwGet()
+                    if imMember(entryOf(s), decl) {
+                        pure(0)
+                    } else {
+                        lwDeferFunc(sym)
+                    }
+                },
+            }
+        },
+        _ => {
+            let! reps = lwRepsOf(useId)
+            lwInstance(sym, reps)
+        },
+    }
+}
+
+fn lwBindParams(ps: List[Param]) -> Lower[Unit] {
+    match ps {
+        Nil => pure(()),
+        Cons(p, rest) => {
+            let Param(id, _, _, _) = p
+            let! info = lwInfo()
+            let sid = withDefault(imLookup(infoParams(info), id), -1)
+            let! vt = lwSymVT(sid)
+            let! lid = lwAlloc(vt)
+            let! _ = lwBindSym(sid, lid)
+            lwBindParams(rest)
+        },
+    }
+}
+
+fn lwLowerFunc(fid: Int, params: List[Param], body: Block) -> Lower[Unit] {
+    let! saved = lwCurNow()
+    let! _ = lwSetCur(emptyCur())
+    let! _ = lwBindParams(params)
+    let! e = lwLowerBlock(body)
+    let! locals = lwLocals()
+    let! _ = lwSetCur(saved)
+    lwSetBody(fid, locals, irMarkTail(e))
+}
+
+fn lwBindCaps(caps: List[Int], envLocal: Int, i: Int, acc: List[IrLet]) -> Lower[List[IrLet]] {
+    match caps {
+        Nil => pure(acc),
+        Cons(sid, rest) => {
+            let! vt = lwSymVT(sid)
+            let! id = lwAlloc(vt)
+            let! _ = lwBindSym(sid, id)
+            lwBindCaps(rest, envLocal, i + 1, Cons(IrLet(id, IrField(envLocal, i, vt)), acc))
+        },
+    }
+}
+
+fn lwLowerClosure(lamId: Int, params: List[Param], caps: List[Int], body: Block) -> Lower[Unit] {
+    let! saved = lwCurNow()
+    let! _ = lwSetCur(emptyCur())
+    let! _ = lwBindParams(params)
+    let! envLocal = lwAlloc(VtPtr)
+    let! lets = lwBindCaps(caps, envLocal, 0, Nil)
+    let! result = lwLowerBlock(body)
+    let expr = match lets {
+        Nil => result,
+        _ => IrBlock(reverse(lets), result),
+    }
+    let! locals = lwLocals()
+    let! _ = lwSetCur(saved)
+    lwSetBody(lamId, locals, irMarkTail(expr))
+}
+
+fn lwEnvFields(caps: List[Int], acc: List[IrExpr]) -> Lower[List[IrExpr]] {
+    match caps {
+        Nil => pure(reverse(acc)),
+        Cons(sid, rest) => {
+            let! lid = lwLocal(sid)
+            let! vt = lwSymVT(sid)
+            lwEnvFields(rest, Cons(IrLocalGet(lid, vt), acc))
+        },
+    }
+}
+
+fn lwLowerFuncLit(e: Expr) -> Lower[IrExpr] {
+    match e {
+        FuncLit(_, _, params, _, body) => lwLowerFuncLitBody(e, params, body),
+        _ => pure(IrBoolConst(false)),
+    }
+}
+
+fn lwLowerFuncLitBody(e: Expr, params: List[Param], body: Block) -> Lower[IrExpr] {
+    let! s = lwGet()
+    let Pair(caps, memo) = lwCaptures(infoOf(s), polysOf(s), gMemo(genOf(s)), e)
+    let! _ = lwSetMemo(memo)
+    let! n = lwBumpLambda()
+    let! env = lwEnv()
+    let! info = lwInfo()
+    let ft = withDefault(imLookup(infoFuncLits(info), exprId(e)), TyFunc(Nil, TyUnit))
+    let IrSig(ps, r) = sigIn(env, ft)
+    let sig = IrSig(append(ps, Cons(VtPtr, Nil)), r)
+    let! id = lwAddShell("lambda$" ++ intToString(n), sig)
+    let! _ = lwLowerClosure(id, params, caps, body)
+    let! _ = lwAddTable(id)
+    match caps {
+        Nil => pure(IrFuncValue(id, None)),
+        _ => {
+            let! fields = lwEnvFields(caps, Nil)
+            pure(IrFuncValue(id, Some(IrConstruct(0, fields))))
+        },
+    }
+}
+
+fn dummyLet() -> LetStmt {
+    LetStmt(-1, Pos(0, 0), "", Pos(0, 0), None, UnitLit(-1, Pos(0, 0)))
+}
+
+fn lwLowerPoly(useId: Int, sid: Int) -> Lower[IrExpr] {
+    let! s = lwGet()
+    let info = infoOf(s)
+    let Symbol(_, _, _, _, _, _, tps, _) = symOf(info, sid)
+    let stmt = withDefault(imLookup(polysOf(s), sid), dummyLet())
+    let LetStmt(_, _, _, _, _, value) = stmt
+    let args = withDefault(imLookup(infoTypeArgs(info), useId), Nil)
+    let env = gEnv(genOf(s))
+    let env2 = bindEnv(tps, mapVals(env, args, Nil), env)
+    let! _ = lwSetEnv(env2)
+    let! v = lwLowerExpr(value)
+    let! _ = lwSetEnv(env)
+    pure(v)
+}
+
+fn lwLowerIdent(id: Int) -> Lower[IrExpr] {
+    let! info = lwInfo()
+    let sid = withDefault(imLookup(infoUses(info), id), -1)
+    let sym = symOf(info, sid)
+    let Symbol(kind, _, _, _, _, _, tps, bno) = sym
+    match kind {
+        CkSymParam => lwLowerLocal(id, sid, tps),
+        CkSymLocal => lwLowerLocal(id, sid, tps),
+        CkSymFunc => {
+            let! fid = lwFuncID(id, sym)
+            let! w = lwRefWrapper(fid)
+            let! _ = lwAddTable(w)
+            pure(IrFuncValue(w, None))
+        },
+        CkSymBuiltin => if isIO(bno) {
+            let! reps = lwRepsOf(id)
+            let! w = lwIOBuiltinRef(sym, reps)
+            let! _ = lwAddTable(w)
+            pure(IrFuncValue(w, None))
+        } else {
+            let! w = lwBuiltinRef(sym)
+            let! _ = lwAddTable(w)
+            pure(IrFuncValue(w, None))
+        },
+        CkSymCtor => pure(IrConstruct(ctorTag(sym), Nil)),
+    }
+}
+
+fn lwLowerLocal(useId: Int, sid: Int, tps: List[Type]) -> Lower[IrExpr] {
+    match tps {
+        Cons(_, _) => lwLowerPoly(useId, sid),
+        Nil => {
+            let! lid = lwLocal(sid)
+            let! vt = lwIdVT(useId)
+            pure(IrLocalGet(lid, vt))
+        },
+    }
+}
+
+fn lwUnOp(k) -> UnOp {
+    if kindAsInt(k) == kMinus() { IrNeg } else { IrNot }
+}
+
+fn lwBinOp(k) -> BinOp {
+    let n = kindAsInt(k)
+    if n == kPlus() {
+        IrAdd
+    } else if n == kMinus() {
+        IrSub
+    } else if n == kStar() {
+        IrMul
+    } else if n == kSlash() {
+        IrDiv
+    } else if n == kPercent() {
+        IrRem
+    } else if n == kEq() {
+        IrEq
+    } else if n == kNotEq() {
+        IrNe
+    } else if n == kLt() {
+        IrLt
+    } else if n == kLtEq() {
+        IrLe
+    } else if n == kGt() {
+        IrGt
+    } else if n == kGtEq() {
+        IrGe
+    } else {
+        IrAdd
+    }
+}
+
+fn lwLowerUnary(op, x: Expr) -> Lower[IrExpr] {
+    let! xv = lwLowerExpr(x)
+    pure(IrUnary(lwUnOp(op), xv))
+}
+
+fn lwIsString(e: Expr) -> Lower[Bool] {
+    let! info = lwInfo()
+    pure(tyEqual(emptyTyEnv(), exprTy(info, e), TyString))
+}
+
+fn lwLowerBinary(e: Expr) -> Lower[IrExpr] {
+    match e {
+        Binary(_, _, _, op, x, y) => lwLowerBinaryBody(op, x, y),
+        _ => pure(IrBoolConst(false)),
+    }
+}
+
+fn lwLowerBinaryBody(op, x: Expr, y: Expr) -> Lower[IrExpr] {
+    let! xv = lwLowerExpr(x)
+    let n = kindAsInt(op)
+    if n == kAndAnd() {
+        let! yv = lwLowerExpr(y)
+        pure(IrIf(xv, yv, IrBoolConst(false), VtBool))
+    } else if n == kOrOr() {
+        let! yv = lwLowerExpr(y)
+        pure(IrIf(xv, IrBoolConst(true), yv, VtBool))
+    } else {
+        let! yv = lwLowerExpr(y)
+        if n == kPlusPlus() {
+            pure(IrPrim(IrStrConcat, Cons(xv, Cons(yv, Nil))))
+        } else if (n == kEq()) || (n == kNotEq()) {
+            let! str = lwIsString(x)
+            if str {
+                let eq = IrPrim(IrStrEq, Cons(xv, Cons(yv, Nil)))
+                if n == kNotEq() {
+                    pure(IrUnary(IrNot, eq))
+                } else {
+                    pure(eq)
+                }
+            } else {
+                pure(IrBinary(lwBinOp(op), xv, yv))
+            }
+        } else {
+            pure(IrBinary(lwBinOp(op), xv, yv))
+        }
+    }
+}
+
+fn lwLowerArgs(args: List[Expr], acc: List[IrExpr]) -> Lower[List[IrExpr]] {
+    match args {
+        Nil => pure(reverse(acc)),
+        Cons(a, rest) => {
+            let! v = lwLowerExpr(a)
+            lwLowerArgs(rest, Cons(v, acc))
+        },
+    }
+}
+
+fn lwIndirect(fnE: Expr, args: List[Expr]) -> Lower[IrExpr] {
+    let! info = lwInfo()
+    let! env = lwEnv()
+    let sig = sigIn(env, withDefault(imLookup(infoTypes(info), exprId(fnE)), TyFunc(Nil, TyUnit)))
+    let! callee = lwLowerExpr(fnE)
+    let! xs = lwLowerArgs(args, Nil)
+    pure(IrCallIndirect(callee, sig, xs, false))
+}
+
+fn lwLowerCall(e: Expr) -> Lower[IrExpr] {
+    match e {
+        Call(_, _, fnE, _, args) => lwLowerCallFn(e, fnE, args),
+        _ => pure(IrBoolConst(false)),
+    }
+}
+
+fn lwLowerCallFn(e: Expr, fnE: Expr, args: List[Expr]) -> Lower[IrExpr] {
+    match fnE {
+        Ident(id, _, _) => {
+            let! info = lwInfo()
+            let sym = symOf(info, withDefault(imLookup(infoUses(info), id), -1))
+            let Symbol(kind, _, _, _, _, _, _, bno) = sym
+            match kind {
+                CkSymCtor => {
+                    let! xs = lwLowerArgs(args, Nil)
+                    pure(IrConstruct(ctorTag(sym), xs))
+                },
+                CkSymFunc => {
+                    let! fid = lwFuncID(id, sym)
+                    let! xs = lwLowerArgs(args, Nil)
+                    let! vt = lwExprVT(e)
+                    pure(IrCall(fid, xs, vt, false))
+                },
+                CkSymBuiltin => if isIO(bno) {
+                    let! reps = lwRepsOf(id)
+                    let! xs = lwLowerArgs(args, Nil)
+                    lwLowerIOCall(bno, reps, xs)
+                } else {
+                    let! xs = lwLowerArgs(args, Nil)
+                    pure(IrPrim(primOf(bno), xs))
+                },
+                _ => lwIndirect(fnE, args),
+            }
+        },
+        _ => lwIndirect(fnE, args),
+    }
+}
+
+fn lwLowerIf(e: Expr, cond: Expr, th: Block, el: Expr) -> Lower[IrExpr] {
+    let! c = lwLowerExpr(cond)
+    let! t = lwLowerBlock(th)
+    let! els = lwLowerExpr(el)
+    let! vt = lwExprVT(e)
+    pure(IrIf(c, t, els, vt))
+}
+
+fn lwLowerLets(lets: List[LetStmt], acc: List[IrLet], result: Expr) -> Lower[IrExpr] {
+    match lets {
+        Nil => {
+            let! r = lwLowerExpr(result)
+            match acc {
+                Nil => pure(r),
+                _ => pure(IrBlock(reverse(acc), r)),
+            }
+        },
+        Cons(stmt, rest) => {
+            let LetStmt(id, _, _, _, _, value) = stmt
+            let! info = lwInfo()
+            let sid = withDefault(imLookup(infoDefs(info), id), -1)
+            let Symbol(_, _, _, _, _, _, tps, _) = symOf(info, sid)
+            match tps {
+                Cons(_, _) => lwLowerLets(rest, acc, result),
+                Nil => {
+                    let! v = lwLowerExpr(value)
+                    let! vt = lwSymVT(sid)
+                    let! lid = lwAlloc(vt)
+                    let! _ = lwBindSym(sid, lid)
+                    lwLowerLets(rest, Cons(IrLet(lid, v), acc), result)
+                },
+            }
+        },
+    }
+}
+
+fn lwLowerBlock(b: Block) -> Lower[IrExpr] {
+    let Block(_, _, lets, result) = b
+    lwLowerLets(lets, Nil, result)
+}
+
+fn isTrivial(p: Pattern) -> Bool {
+    match p {
+        WildP(_, _) => true,
+        VarP(_, _, _) => true,
+        _ => false,
+    }
+}
+
+fn flatArgs(args: List[Pattern]) -> Bool {
+    match args {
+        Nil => true,
+        Cons(a, rest) => match a {
+            WildP(_, _) => flatArgs(rest),
+            VarP(_, _, _) => flatArgs(rest),
+            _ => false,
+        },
+    }
+}
+
+fn flatPattern(p: Pattern) -> Bool {
+    match p {
+        WildP(_, _) => true,
+        VarP(_, _, _) => true,
+        IntP(_, _, _) => true,
+        BoolP(_, _, _) => true,
+        CtorP(_, _, _, args) => flatArgs(args),
+        StrP(_, _, _) => false,
+    }
+}
+
+fn flatMatch(arms: List[Arm]) -> Bool {
+    match arms {
+        Nil => true,
+        Cons(arm, rest) => {
+            let Arm(pat, _) = arm
+            if flatPattern(pat) { flatMatch(rest) } else { false }
+        },
+    }
+}
+
+fn containsVar(p: Pattern) -> Bool {
+    match p {
+        VarP(_, _, _) => true,
+        CtorP(_, _, _, args) => anyVar(args),
+        _ => false,
+    }
+}
+
+fn anyVar(ps: List[Pattern]) -> Bool {
+    match ps {
+        Nil => false,
+        Cons(p, rest) => if containsVar(p) { true } else { anyVar(rest) },
+    }
+}
+
+fn patValType(p: Pattern) -> ValType {
+    match p {
+        CtorP(_, _, _, _) => VtPtr,
+        StrP(_, _, _) => VtPtr,
+        IntP(_, _, _) => VtInt,
+        BoolP(_, _, _) => VtBool,
+        _ => VtInt,
+    }
+}
+
+fn strEqual(x: IrExpr, v: String) -> IrExpr {
+    IrPrim(IrStrEq, Cons(x, Cons(IrStrConst(v), Nil)))
+}
+
+fn valueEqual(s: Int, vt: ValType, p: Pattern) -> IrExpr {
+    match p {
+        StrP(_, _, v) => strEqual(IrLocalGet(s, vt), v),
+        IntP(_, _, n) => IrBinary(IrEq, IrLocalGet(s, vt), IrIntConst(n)),
+        BoolP(_, _, b) => IrBinary(IrEq, IrLocalGet(s, vt), IrBoolConst(b)),
+        _ => IrBoolConst(true),
+    }
+}
+
+fn andExprs(ts: List[IrExpr]) -> Option[IrExpr] {
+    match ts {
+        Nil => None,
+        Cons(t, rest) => match rest {
+            Nil => Some(t),
+            _ => match andExprs(rest) {
+                Some(r) => Some(IrIf(t, r, IrBoolConst(false), VtBool)),
+                None => Some(t),
+            },
+        },
+    }
+}
+
+fn tagTest(x: Int, tag: Int) -> IrExpr {
+    IrSwitchTag(x, Cons(IrTagCase(tag, IrBoolConst(true)), Nil), Some(IrBoolConst(false)), VtBool)
+}
+
+fn ctorCount(info: Info, dataId: Int) -> Int {
+    match imLookup(infoDataInfos(info), dataId) {
+        None => 0,
+        Some(d) => match d {
+            DataInfo(_, _, ctors) => length(ctors),
+        },
+    }
+}
+
+fn lwPatSym(pid: Int) -> Lower[Int] {
+    let! info = lwInfo()
+    pure(withDefault(imLookup(infoPatVars(info), pid), -1))
+}
+
+fn lwPatArgs(args: List[Pattern], i: Int, x: Int, acc: List[IrExpr]) -> Lower[List[IrExpr]] {
+    match args {
+        Nil => pure(acc),
+        Cons(a, rest) => match a {
+            WildP(_, _) => lwPatArgs(rest, i + 1, x, acc),
+            VarP(_, _, _) => lwPatArgs(rest, i + 1, x, acc),
+            _ => {
+                let avt = patValType(a)
+                let! id = lwAlloc(avt)
+                let! sub = lwPatTest(a, id, avt)
+                match sub {
+                    None => lwPatArgs(rest, i + 1, x, acc),
+                    Some(se) => lwPatArgs(rest, i + 1, x, Cons(IrBlock(Cons(IrLet(id, IrField(x, i, avt)), Nil), se), acc)),
+                }
+            },
+        },
+    }
+}
+
+fn lwPatCtor(pid: Int, args: List[Pattern], x: Int) -> Lower[Option[IrExpr]] {
+    let! info = lwInfo()
+    let Pair(dataId, tag) = withDefault(imLookup(infoCtorPats(info), pid), Pair(0, 0))
+    let! argTests = lwPatArgs(args, 0, x, Nil)
+    let tests = if ctorCount(info, dataId) > 1 {
+        Cons(tagTest(x, tag), reverse(argTests))
+    } else {
+        reverse(argTests)
+    }
+    pure(andExprs(tests))
+}
+
+fn lwPatTest(p: Pattern, x: Int, vt: ValType) -> Lower[Option[IrExpr]] {
+    match p {
+        WildP(_, _) => pure(None),
+        VarP(_, _, _) => pure(None),
+        IntP(_, _, n) => pure(Some(IrBinary(IrEq, IrLocalGet(x, vt), IrIntConst(n)))),
+        BoolP(_, _, b) => pure(Some(IrBinary(IrEq, IrLocalGet(x, vt), IrBoolConst(b)))),
+        StrP(_, _, s) => pure(Some(strEqual(IrLocalGet(x, vt), s))),
+        CtorP(id, _, _, args) => lwPatCtor(id, args, x),
+    }
+}
+
+fn lwBindArgs(args: List[Pattern], i: Int, x: Int, acc: List[IrLet]) -> Lower[List[IrLet]] {
+    match args {
+        Nil => pure(acc),
+        Cons(a, rest) => match a {
+            VarP(id, _, _) => {
+                let! sid = lwPatSym(id)
+                let! vt = lwSymVT(sid)
+                let! lid = lwAlloc(vt)
+                let! _ = lwBindSym(sid, lid)
+                lwBindArgs(rest, i + 1, x, Cons(IrLet(lid, IrField(x, i, vt)), acc))
+            },
+            CtorP(_, _, _, _) => if containsVar(a) {
+                let! lid = lwAlloc(VtPtr)
+                let! acc3 = lwBindPat(a, lid, Cons(IrLet(lid, IrField(x, i, VtPtr)), acc))
+                lwBindArgs(rest, i + 1, x, acc3)
+            } else {
+                lwBindArgs(rest, i + 1, x, acc)
+            },
+            _ => lwBindArgs(rest, i + 1, x, acc),
+        },
+    }
+}
+
+fn lwBindPat(p: Pattern, x: Int, acc: List[IrLet]) -> Lower[List[IrLet]] {
+    match p {
+        VarP(id, _, _) => {
+            let! sid = lwPatSym(id)
+            let! _ = lwBindSym(sid, x)
+            pure(acc)
+        },
+        CtorP(_, _, _, args) => lwBindArgs(args, 0, x, acc),
+        _ => pure(acc),
+    }
+}
+
+fn lwBindArm(arm: Arm, s: Int) -> Lower[IrExpr] {
+    let Arm(pat, body) = arm
+    let! lets = lwBindPat(pat, s, Nil)
+    let! b = lwLowerExpr(body)
+    match lets {
+        Nil => pure(b),
+        _ => pure(IrBlock(reverse(lets), b)),
+    }
+}
+
+fn lwFlatArgs(args: List[Pattern], i: Int, s: Int, acc: List[IrLet]) -> Lower[List[IrLet]] {
+    match args {
+        Nil => pure(acc),
+        Cons(a, rest) => match a {
+            VarP(id, _, _) => {
+                let! sid = lwPatSym(id)
+                let! vt = lwSymVT(sid)
+                let! lid = lwAlloc(vt)
+                let! _ = lwBindSym(sid, lid)
+                lwFlatArgs(rest, i + 1, s, Cons(IrLet(lid, IrField(s, i, vt)), acc))
+            },
+            _ => lwFlatArgs(rest, i + 1, s, acc),
+        },
+    }
+}
+
+fn lwFlatBind(p: Pattern, s: Int, acc: List[IrLet]) -> Lower[List[IrLet]] {
+    match p {
+        VarP(id, _, _) => {
+            let! sid = lwPatSym(id)
+            let! _ = lwBindSym(sid, s)
+            pure(acc)
+        },
+        CtorP(_, _, _, args) => lwFlatArgs(args, 0, s, acc),
+        _ => pure(acc),
+    }
+}
+
+fn lwArmBody(arm: Arm, s: Int) -> Lower[IrExpr] {
+    let Arm(pat, body) = arm
+    let! lets = lwFlatBind(pat, s, Nil)
+    let! b = lwLowerExpr(body)
+    match lets {
+        Nil => pure(b),
+        _ => pure(IrBlock(reverse(lets), b)),
+    }
+}
+
+fn lwValueMatch(arms: List[Arm], s: Int, scrutVt: ValType, matchVt: ValType) -> Lower[IrExpr] {
+    match arms {
+        Nil => pure(IrBoolConst(false)),
+        Cons(arm, rest) => {
+            let Arm(pat, _) = arm
+            if isTrivial(pat) {
+                lwArmBody(arm, s)
+            } else {
+                match rest {
+                    Nil => lwArmBody(arm, s),
+                    _ => {
+                        let! th = lwArmBody(arm, s)
+                        let! el = lwValueMatch(rest, s, scrutVt, matchVt)
+                        pure(IrIf(valueEqual(s, scrutVt, pat), th, el, matchVt))
+                    },
+                }
+            }
+        },
+    }
+}
+
+fn lwNestedMatch(arms: List[Arm], s: Int, matchVt: ValType) -> Lower[IrExpr] {
+    match arms {
+        Nil => pure(IrBoolConst(false)),
+        Cons(arm, rest) => match rest {
+            Nil => lwBindArm(arm, s),
+            _ => {
+                let Arm(pat, _) = arm
+                let! cond = lwPatTest(pat, s, VtPtr)
+                match cond {
+                    None => lwBindArm(arm, s),
+                    Some(c) => {
+                        let! th = lwBindArm(arm, s)
+                        let! el = lwNestedMatch(rest, s, matchVt)
+                        pure(IrIf(c, th, el, matchVt))
+                    },
+                }
+            },
+        },
+    }
+}
+
+fn lwDataArms(arms: List[Arm], s: Int, cases: List[IrTagCase], def: Option[IrExpr]) -> Lower[Pair[List[IrTagCase], Option[IrExpr]]] {
+    match arms {
+        Nil => pure(Pair(cases, def)),
+        Cons(arm, rest) => {
+            let Arm(pat, _) = arm
+            match pat {
+                CtorP(id, _, _, _) => {
+                    let! info = lwInfo()
+                    let Pair(_, tag) = withDefault(imLookup(infoCtorPats(info), id), Pair(0, 0))
+                    let! body = lwArmBody(arm, s)
+                    lwDataArms(rest, s, Cons(IrTagCase(tag, body), cases), def)
+                },
+                _ => {
+                    let! body = lwArmBody(arm, s)
+                    lwDataArms(rest, s, cases, Some(body))
+                },
+            }
+        },
+    }
+}
+
+fn lwDataMatch(arms: List[Arm], s: Int, matchVt: ValType) -> Lower[IrExpr] {
+    let! pair = lwDataArms(arms, s, Nil, None)
+    let Pair(cases, def) = pair
+    pure(IrSwitchTag(s, reverse(cases), def, matchVt))
+}
+
+fn lwMatchBody(scrut: Expr, arms: List[Arm], s: Int, vt: ValType, whole: Expr) -> Lower[IrExpr] {
+    let! info = lwInfo()
+    let! mvt = lwExprVT(whole)
+    let t = exprTy(info, scrut)
+    match t {
+        TyNamed(_, _) => if flatMatch(arms) {
+            lwDataMatch(arms, s, mvt)
+        } else {
+            lwNestedMatch(arms, s, mvt)
+        },
+        TyInt => lwValueMatch(arms, s, vt, mvt),
+        TyBool => lwValueMatch(arms, s, vt, mvt),
+        TyString => lwValueMatch(arms, s, vt, mvt),
+        _ => lwValueMatch(arms, s, vt, mvt),
+    }
+}
+
+fn lwLowerMatch(e: Expr) -> Lower[IrExpr] {
+    match e {
+        Match(_, _, scrut, arms, _) => lwLowerMatchBody(e, scrut, arms),
+        _ => pure(IrBoolConst(false)),
+    }
+}
+
+fn lwLowerMatchBody(e: Expr, scrut: Expr, arms: List[Arm]) -> Lower[IrExpr] {
+    let! sv = lwLowerExpr(scrut)
+    let! vt = lwExprVT(scrut)
+    let! s = lwAlloc(vt)
+    let! result = lwMatchBody(scrut, arms, s, vt, e)
+    pure(IrBlock(Cons(IrLet(s, sv), Nil), result))
+}
+
+fn lwLowerExpr(e: Expr) -> Lower[IrExpr] {
+    match e {
+        IntLit(_, _, n) => pure(IrIntConst(n)),
+        BoolLit(_, _, b) => pure(IrBoolConst(b)),
+        StringLit(_, _, s) => pure(IrStrConst(s)),
+        UnitLit(_, _) => pure(IrBoolConst(false)),
+        Ident(id, _, _) => lwLowerIdent(id),
+        Unary(_, _, op, x) => lwLowerUnary(op, x),
+        Binary(_, _, _, _, _, _) => lwLowerBinary(e),
+        Call(_, _, _, _, _) => lwLowerCall(e),
+        If(_, _, cond, th, el) => lwLowerIf(e, cond, th, el),
+        BlockE(b) => lwLowerBlock(b),
+        FuncLit(_, _, _, _, _) => lwLowerFuncLit(e),
+        Match(_, _, _, _, _) => lwLowerMatch(e),
+    }
+}
+
+fn lwCreateEntry(d: FuncDecl) -> Lower[Unit] {
+    let FuncDecl(id, _, _, name, _, _, _, _, _) = d
+    let! info = lwInfo()
+    let Symbol(_, _, typ, _, _, _, tps, _) = symOf(info, withDefault(imLookup(infoFuncs(info), id), -1))
+    match tps {
+        Cons(_, _) => pure(()),
+        Nil => {
+            let! fid = lwAddShell(name, sigIn(imEmpty(), typ))
+            lwSetDecl(id, fid)
+        },
+    }
+}
+
+fn lwCreateEntries(fs: List[FuncDecl]) -> Lower[Unit] {
+    match fs {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let! _ = lwCreateEntry(d)
+            lwCreateEntries(rest)
+        },
+    }
+}
+
+fn lwLowerEntries(fs: List[FuncDecl]) -> Lower[Unit] {
+    match fs {
+        Nil => pure(()),
+        Cons(d, rest) => {
+            let FuncDecl(id, _, _, _, _, _, params, _, body) = d
+            let! got = lwLookupDecl(id)
+            match got {
+                None => lwLowerEntries(rest),
+                Some(fid) => {
+                    let! _ = lwSetEnv(imEmpty())
+                    let! _ = lwLowerFunc(fid, params, body)
+                    lwLowerEntries(rest)
+                },
+            }
+        },
+    }
+}
+
+fn lwSetMain() -> Lower[Unit] {
+    let! info = lwInfo()
+    let Symbol(_, _, _, _, decl, _, _, _) = symOf(info, infoMain(info))
+    let! got = lwLookupDecl(decl)
+    let! _ = lwSetMainId(withDefault(got, 0))
+    lwSetCommand(infoMainIO(info))
+}
+
+fn lwDrain() -> Lower[Unit] {
+    let! item = lwDequeue()
+    match item {
+        None => lwSetEnv(imEmpty()),
+        Some(inst) => {
+            let LwInst(d, fid, env) = inst
+            let FuncDecl(_, _, _, _, _, _, params, _, body) = d
+            let! _ = lwSetEnv(env)
+            let! _ = lwLowerFunc(fid, params, body)
+            lwDrain()
+        },
+    }
+}
+
+fn noteLet(info: Info, stmt: LetStmt, acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    let LetStmt(id, _, _, _, _, _) = stmt
+    match imLookup(infoDefs(info), id) {
+        None => acc,
+        Some(sid) => {
+            let Symbol(_, _, _, _, _, _, tps, _) = symOf(info, sid)
+            match tps {
+                Nil => acc,
+                Cons(_, _) => imInsert(acc, sid, stmt),
+            }
+        },
+    }
+}
+
+fn walkLets(info: Info, lets: List[LetStmt], acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    match lets {
+        Nil => acc,
+        Cons(stmt, rest) => {
+            let LetStmt(_, _, _, _, _, value) = stmt
+            walkLets(info, rest, noteLet(info, stmt, walkExpr(info, value, acc)))
+        },
+    }
+}
+
+fn walkBlock(info: Info, b: Block, acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    let Block(_, _, lets, result) = b
+    walkExpr(info, result, walkLets(info, lets, acc))
+}
+
+fn walkArms(info: Info, arms: List[Arm], acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    match arms {
+        Nil => acc,
+        Cons(arm, rest) => {
+            let Arm(_, body) = arm
+            walkArms(info, rest, walkExpr(info, body, acc))
+        },
+    }
+}
+
+fn walkExprs(info: Info, es: List[Expr], acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    match es {
+        Nil => acc,
+        Cons(e, rest) => walkExprs(info, rest, walkExpr(info, e, acc)),
+    }
+}
+
+fn walkExpr(info: Info, e: Expr, acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    match e {
+        Unary(_, _, _, x) => walkExpr(info, x, acc),
+        Binary(_, _, _, _, x, y) => walkExpr(info, y, walkExpr(info, x, acc)),
+        Call(_, _, fnE, _, args) => walkExprs(info, args, walkExpr(info, fnE, acc)),
+        If(_, _, c, th, el) => walkExpr(info, el, walkBlock(info, th, walkExpr(info, c, acc))),
+        BlockE(b) => walkBlock(info, b, acc),
+        FuncLit(_, _, _, _, b) => walkBlock(info, b, acc),
+        Match(_, _, scrut, arms, _) => walkArms(info, arms, walkExpr(info, scrut, acc)),
+        _ => acc,
+    }
+}
+
+fn walkFns(info: Info, fs: List[FuncDecl], acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    match fs {
+        Nil => acc,
+        Cons(f, rest) => {
+            let FuncDecl(_, _, _, _, _, _, _, _, body) = f
+            walkFns(info, rest, walkBlock(info, body, acc))
+        },
+    }
+}
+
+fn walkMods(info: Info, mods: List[Module], acc: IntMap[LetStmt]) -> IntMap[LetStmt] {
+    match mods {
+        Nil => acc,
+        Cons(m, rest) => {
+            let Module(_, _, ast, _) = m
+            let File(_, _, fs) = ast
+            walkMods(info, rest, walkFns(info, fs, acc))
+        },
+    }
+}
+
+fn indexFns(fs: List[FuncDecl], acc: IntMap[FuncDecl]) -> IntMap[FuncDecl] {
+    match fs {
+        Nil => acc,
+        Cons(f, rest) => {
+            let FuncDecl(id, _, _, _, _, _, _, _, _) = f
+            indexFns(rest, imInsert(acc, id, f))
+        },
+    }
+}
+
+fn indexMods(mods: List[Module], acc: IntMap[FuncDecl]) -> IntMap[FuncDecl] {
+    match mods {
+        Nil => acc,
+        Cons(m, rest) => {
+            let Module(_, _, ast, _) = m
+            let File(_, _, fs) = ast
+            indexMods(rest, indexFns(fs, acc))
+        },
+    }
+}
+
+fn entryIds(fs: List[FuncDecl], acc: IntMap[Bool]) -> IntMap[Bool] {
+    match fs {
+        Nil => acc,
+        Cons(d, rest) => {
+            let FuncDecl(id, _, _, _, _, _, _, _, _) = d
+            entryIds(rest, imInsert(acc, id, true))
+        },
+    }
+}
+
+fn lastAcc(mods: List[Module], cur: Module) -> Module {
+    match mods {
+        Nil => cur,
+        Cons(m, rest) => lastAcc(rest, m),
+    }
+}
+
+fn lastOf(mods: List[Module]) -> Module {
+    match mods {
+        Nil => Module("", "", File(Nil, Nil, Nil), Nil),
+        Cons(m, rest) => lastAcc(rest, m),
+    }
+}
+
+fn emptyGen() -> LwGen {
+    let decl: IntMap[Int] = imEmpty()
+    let insts: StrMap[Int] = smEmpty()
+    let env: IntMap[ValType] = imEmpty()
+    let memo: IntMap[List[Int]] = imEmpty()
+    let refs: IntMap[Int] = imEmpty()
+    let brefs: IntMap[Int] = imEmpty()
+    let acts: StrMap[Int] = smEmpty()
+    let iorefs: StrMap[Int] = smEmpty()
+    LwGen(decl, insts, LwQ(Nil, Nil), env, 0, memo, refs, brefs, acts, iorefs)
+}
+
+fn emptyMod() -> LwMod {
+    let fs: IntMap[IrFunc] = imEmpty()
+    LwMod(fs, 0, Nil, 0, false)
+}
+
+fn initState(mods: List[Module], info: Info) -> LwState {
+    let entry = lastOf(mods)
+    let Module(_, _, ast, _) = entry
+    let File(_, _, fs) = ast
+    LwState(info, mods, entryIds(fs, imEmpty()), indexMods(mods, imEmpty()), walkMods(info, mods, imEmpty()), emptyGen(), emptyMod(), emptyCur())
+}
+
+fn funcsFrom(fs: IntMap[IrFunc], i: Int, n: Int, acc: List[IrFunc]) -> List[IrFunc] {
+    if i >= n {
+        reverse(acc)
+    } else {
+        funcsFrom(fs, i + 1, n, Cons(withDefault(imLookup(fs, i), IrFunc("", IrSig(Nil, VtInt), Nil, IrBoolConst(false))), acc))
+    }
+}
+
+fn toModule(s: LwState) -> IrModule {
+    let LwMod(fs, n, table, main, cmd) = modOf(s)
+    IrModule(funcsFrom(fs, 0, n, Nil), table, main, cmd)
+}
+
+fn lwRunAll(mods: List[Module]) -> Lower[Unit] {
+    let Module(_, _, ast, _) = lastOf(mods)
+    let File(_, _, fs) = ast
+    let! _ = lwCreateEntries(fs)
+    let! _ = lwSetMain()
+    let! _ = lwLowerEntries(fs)
+    lwDrain()
+}
+
+pub fn lowerProgram(mods: List[Module], info: Info) -> IrModule {
+    let Lower(run) = lwRunAll(mods)
+    match run(initState(mods, info)) {
+        LwOk(_, s) => toModule(s),
+    }
+}

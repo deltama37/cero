@@ -1,0 +1,181 @@
+import "std/list"
+import "std/option"
+
+pub type ValType =
+    | VtInt
+    | VtBool
+    | VtFuncRef
+    | VtPtr
+
+pub type Sig = | IrSig(List[ValType], ValType)
+
+pub type UnOp =
+    | IrNeg
+    | IrNot
+
+pub type BinOp =
+    | IrAdd
+    | IrSub
+    | IrMul
+    | IrDiv
+    | IrRem
+    | IrEq
+    | IrNe
+    | IrLt
+    | IrLe
+    | IrGt
+    | IrGe
+
+pub type PrimOp =
+    | IrStrLength
+    | IrStrByteAt
+    | IrStrSlice
+    | IrStrFromByte
+    | IrStrCompare
+    | IrIntToString
+    | IrStrConcat
+    | IrStrEq
+    | IrIOPrint
+    | IrIOEPrint
+    | IrIOReadStdin
+    | IrIOReadFile
+    | IrIOFileExists
+    | IrIOWriteFile
+    | IrIOArgCount
+    | IrIOArgAt
+    | IrIOExit
+    | IrBitAnd
+    | IrBitOr
+    | IrBitXor
+    | IrShiftLeft
+    | IrShiftRight
+    | IrShiftRightUnsigned
+
+pub type IrExpr =
+    | IrIntConst(Int)
+    | IrBoolConst(Bool)
+    | IrStrConst(String)
+    | IrLocalGet(Int, ValType)
+    | IrFuncValue(Int, Option[IrExpr])
+    | IrUnary(UnOp, IrExpr)
+    | IrBinary(BinOp, IrExpr, IrExpr)
+    | IrIf(IrExpr, IrExpr, IrExpr, ValType)
+    | IrBlock(List[IrLet], IrExpr)
+    | IrCall(Int, List[IrExpr], ValType, Bool)
+    | IrCallIndirect(IrExpr, Sig, List[IrExpr], Bool)
+    | IrConstruct(Int, List[IrExpr])
+    | IrField(Int, Int, ValType)
+    | IrSwitchTag(Int, List[IrTagCase], Option[IrExpr], ValType)
+    | IrPrim(PrimOp, List[IrExpr])
+
+pub type IrLet = | IrLet(Int, IrExpr)
+
+pub type IrTagCase = | IrTagCase(Int, IrExpr)
+
+pub type IrFunc = | IrFunc(String, Sig, List[ValType], IrExpr)
+
+pub type IrModule = | IrModule(List[IrFunc], List[Int], Int, Bool)
+
+pub fn irValName(t: ValType) -> String {
+    match t {
+        VtInt => "Int",
+        VtBool => "Bool",
+        VtFuncRef => "FuncRef",
+        VtPtr => "Ptr",
+    }
+}
+
+pub fn primResultType(op: PrimOp) -> ValType {
+    match op {
+        IrStrLength => VtInt,
+        IrStrByteAt => VtInt,
+        IrStrCompare => VtInt,
+        IrIOArgCount => VtInt,
+        IrBitAnd => VtInt,
+        IrBitOr => VtInt,
+        IrBitXor => VtInt,
+        IrShiftLeft => VtInt,
+        IrShiftRight => VtInt,
+        IrShiftRightUnsigned => VtInt,
+        IrStrSlice => VtPtr,
+        IrStrFromByte => VtPtr,
+        IrIntToString => VtPtr,
+        IrStrConcat => VtPtr,
+        IrIOReadStdin => VtPtr,
+        IrIOReadFile => VtPtr,
+        IrIOArgAt => VtPtr,
+        IrStrEq => VtBool,
+        IrIOPrint => VtBool,
+        IrIOEPrint => VtBool,
+        IrIOFileExists => VtBool,
+        IrIOWriteFile => VtBool,
+        IrIOExit => VtBool,
+    }
+}
+
+fn unaryType(op: UnOp) -> ValType {
+    match op {
+        IrNeg => VtInt,
+        IrNot => VtBool,
+    }
+}
+
+fn binaryType(op: BinOp) -> ValType {
+    match op {
+        IrAdd => VtInt,
+        IrSub => VtInt,
+        IrMul => VtInt,
+        IrDiv => VtInt,
+        IrRem => VtInt,
+        _ => VtBool,
+    }
+}
+
+pub fn irExprType(e: IrExpr) -> ValType {
+    match e {
+        IrIntConst(_) => VtInt,
+        IrBoolConst(_) => VtBool,
+        IrStrConst(_) => VtPtr,
+        IrLocalGet(_, t) => t,
+        IrFuncValue(_, _) => VtFuncRef,
+        IrUnary(op, _) => unaryType(op),
+        IrBinary(op, _, _) => binaryType(op),
+        IrIf(_, _, _, t) => t,
+        IrBlock(_, result) => irExprType(result),
+        IrCall(_, _, t, _) => t,
+        IrCallIndirect(_, sig, _, _) => match sig {
+            IrSig(_, r) => r,
+        },
+        IrConstruct(_, _) => VtPtr,
+        IrField(_, _, t) => t,
+        IrSwitchTag(_, _, _, t) => t,
+        IrPrim(op, _) => primResultType(op),
+    }
+}
+
+fn markCases(cs: List[IrTagCase], acc: List[IrTagCase]) -> List[IrTagCase] {
+    match cs {
+        Nil => reverse(acc),
+        Cons(c, rest) => match c {
+            IrTagCase(tag, body) => markCases(rest, Cons(IrTagCase(tag, irMarkTail(body)), acc)),
+        },
+    }
+}
+
+fn markDef(d: Option[IrExpr]) -> Option[IrExpr] {
+    match d {
+        None => None,
+        Some(e) => Some(irMarkTail(e)),
+    }
+}
+
+pub fn irMarkTail(e: IrExpr) -> IrExpr {
+    match e {
+        IrCall(f, args, t, _) => IrCall(f, args, t, true),
+        IrCallIndirect(c, s, args, _) => IrCallIndirect(c, s, args, true),
+        IrIf(c, t, el, vt) => IrIf(c, irMarkTail(t), irMarkTail(el), vt),
+        IrBlock(lets, r) => IrBlock(lets, irMarkTail(r)),
+        IrSwitchTag(l, cases, def, vt) => IrSwitchTag(l, markCases(cases, Nil), markDef(def), vt),
+        _ => e,
+    }
+}

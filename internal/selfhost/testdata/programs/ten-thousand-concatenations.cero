@@ -1,0 +1,11 @@
+fn grow(n: Int, acc: String) -> String {
+    if n == 0 {
+        acc
+    } else {
+        grow(n - 1, acc ++ "x")
+    }
+}
+
+fn main() -> Int {
+    stringLength(grow(10000, ""))
+}

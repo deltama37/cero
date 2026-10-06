@@ -1,0 +1,14 @@
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn second(xs: List[Int]) -> Int {
+    match xs {
+        Cons(_, Cons(y, _)) => y,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    second(Cons(10, Cons(32, Cons(1, Nil))))
+}

@@ -1,0 +1,5 @@
+import "std/list"
+fn b(x: Bool) -> Int { if x { 1 } else { 0 } }
+fn main() -> Int {
+    b(all(Cons(1, Cons(2, Nil)), fn(x: Int) -> Bool { x > 0 })) * 100 + b(all(Cons(0, Nil), fn(x: Int) -> Bool { x > 0 })) * 10 + b(all(Nil, fn(x: Int) -> Bool { x > 0 }))
+}

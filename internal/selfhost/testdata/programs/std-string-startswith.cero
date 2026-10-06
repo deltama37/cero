@@ -1,0 +1,4 @@
+import "std/string"
+fn main() -> Int {
+    if startsWith("hello", "hel") && startsWith("hello", "") && !startsWith("hello", "hi") && !startsWith("ab", "abc") { 1 } else { 0 }
+}

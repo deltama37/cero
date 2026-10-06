@@ -1,0 +1,7 @@
+fn apply(f: String -> Int, s: String) -> Int {
+    f(s)
+}
+
+fn main() -> Int {
+    apply(stringLength, "abc")
+}

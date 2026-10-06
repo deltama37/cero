@@ -1,0 +1,12 @@
+fn classify(w: String) -> Int {
+    match w {
+        "fn" => 1,
+        "let" => 2,
+        "match" => 3,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    classify("fn") * 100 + classify("let") * 10 + classify("nope")
+}

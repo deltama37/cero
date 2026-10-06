@@ -1,0 +1,23 @@
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+
+fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn main() -> Int {
+    let k = 10
+    let xs = Cons(1, Cons(2, Cons(3, Nil)))
+    foldl(map(xs, fn(x) { x * k }), 0, fn(acc, x) { acc + x })
+}

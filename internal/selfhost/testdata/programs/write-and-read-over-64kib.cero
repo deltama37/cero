@@ -1,0 +1,7 @@
+fn main() {
+    bind(readStdin(), fn(s: String) -> IO[Unit] {
+        bind(writeFile("big.txt", s), fn(ignored: Unit) -> IO[Unit] {
+            bind(readFile("big.txt"), fn(t: String) -> IO[Unit] { print(t) })
+        })
+    })
+}
