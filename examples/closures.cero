@@ -1,0 +1,36 @@
+// expected output: 42
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn map[T, U](xs: List[T], f: T -> U) -> List[U] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => Cons(f(x), map(rest, f)),
+    }
+}
+
+fn foldl[T, A](xs: List[T], acc: A, f: (A, T) -> A) -> A {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => foldl(rest, f(acc, x), f),
+    }
+}
+
+fn makeAdder(n: Int) -> Int -> Int {
+    fn(x: Int) -> Int { x + n }
+}
+
+fn compose(f: Int -> Int, g: Int -> Int) -> Int -> Int {
+    fn(x: Int) -> Int { f(g(x)) }
+}
+
+fn main() -> Int {
+    let k = 2
+    let xs = Cons(1, Cons(2, Cons(3, Nil)))
+    let scaled = map(xs, fn(x) { x * k })
+    let sum = foldl(scaled, 0, fn(acc, x) { acc + x })
+    let add = compose(makeAdder(20), makeAdder(10))
+    add(sum)
+}

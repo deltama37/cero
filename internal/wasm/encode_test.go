@@ -74,7 +74,7 @@ func TestEncodeTypeDedup(t *testing.T) {
 			wantFuncSec: []byte{0x02, 0x00, 0x00},
 		},
 		{
-			name: "bool and funcref parameters share one type",
+			name: "funcref parameter is i64 and does not share a type with bool",
 			m: &ir.Module{
 				Funcs: []*ir.Func{
 					{
@@ -92,26 +92,26 @@ func TestEncodeTypeDedup(t *testing.T) {
 				},
 				Main: 0,
 			},
-			wantTypes:   1,
-			wantFuncSec: []byte{0x02, 0x00, 0x00},
+			wantTypes:   2,
+			wantFuncSec: []byte{0x02, 0x00, 0x01},
 		},
 		{
-			name: "call_indirect signature matches a bool parameter",
+			name: "call_indirect shares a type with the table function",
 			m: &ir.Module{
 				Funcs: []*ir.Func{
 					{
-						Name:   "fromBool",
-						Sig:    boolToInt,
-						Locals: []ir.ValType{ir.Bool},
-						Body:   &ir.IntConst{Value: 0},
+						Name:   "f",
+						Sig:    ir.Sig{Params: []ir.ValType{ir.Int, ir.Ptr}, Result: ir.Int},
+						Locals: []ir.ValType{ir.Int, ir.Ptr},
+						Body:   &ir.LocalGet{Local: 0, T: ir.Int},
 					},
 					{
 						Name: "main",
 						Sig:  intResult,
 						Body: &ir.CallIndirect{
 							Callee: &ir.FuncValue{Func: 0},
-							Sig:    funcToInt,
-							Args:   []ir.Expr{&ir.FuncValue{Func: 0}},
+							Sig:    ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Int},
+							Args:   []ir.Expr{&ir.IntConst{Value: 1}},
 						},
 					},
 				},
@@ -119,9 +119,11 @@ func TestEncodeTypeDedup(t *testing.T) {
 				Main:  1,
 			},
 			wantTypes: 2,
-			// i32.const 0, i32.const 0, call_indirect type 0 table 0.
-			// Type 0 is (i32)->i64; a missed dedup would use type 2.
-			wantContains: []byte{0x41, 0x00, 0x41, 0x00, 0x11, 0x00, 0x00},
+			// i64.const 1, i64.const 0, local.tee 0, unpack, call_indirect type 0.
+			// A missed share would use type 2.
+			wantContains: []byte{
+				0x42, 0x01, 0x42, 0x00, 0x22, 0x00, 0x42, 0x20, 0x88, 0xa7, 0x20, 0x00, 0xa7, 0x11, 0x00, 0x00,
+			},
 		},
 	}
 
@@ -276,7 +278,7 @@ func TestEncodeTailCall(t *testing.T) {
 				Tail:   true,
 			},
 			table: []ir.FuncID{0},
-			want:  "00 42 07 41 00 13 00 00 0b",
+			want:  "01 01 7e 42 07 42 00 22 00 42 20 88 a7 20 00 a7 13 02 00 0b",
 		},
 		{
 			name: "indirect call not in tail position",
@@ -286,7 +288,7 @@ func TestEncodeTailCall(t *testing.T) {
 				Args:   []ir.Expr{&ir.IntConst{Value: 7}},
 			},
 			table: []ir.FuncID{0},
-			want:  "00 42 07 41 00 11 00 00 0b",
+			want:  "01 01 7e 42 07 42 00 22 00 42 20 88 a7 20 00 a7 11 02 00 0b",
 		},
 		{
 			name: "tail call inside if",
@@ -336,6 +338,138 @@ func TestEncodeTailCall(t *testing.T) {
 				t.Errorf("main body = %x, want %x", got, want)
 			}
 		})
+	}
+}
+
+func TestEncodeFuncRefIsI64(t *testing.T) {
+	t.Parallel()
+
+	m := &ir.Module{
+		Funcs: []*ir.Func{{
+			Name: "main",
+			Sig:  ir.Sig{Params: []ir.ValType{ir.FuncRef}, Result: ir.FuncRef},
+			Locals: []ir.ValType{
+				ir.FuncRef,
+				ir.FuncRef,
+			},
+			Body: &ir.LocalGet{Local: 1, T: ir.FuncRef},
+		}},
+		Main: 0,
+	}
+	wasm := Encode(m)
+	secs := moduleSections(t, wasm)
+	wantType := []byte{0x01, 0x60, 0x01, 0x7e, 0x01, 0x7e}
+	if !bytes.Equal(secs[secType], wantType) {
+		t.Errorf("type section = %x, want %x", secs[secType], wantType)
+	}
+	bodies := functionBodies(t, wasm)
+	wantBody := []byte{0x01, 0x01, 0x7e, 0x20, 0x01, 0x0b}
+	if !bytes.Equal(bodies[0], wantBody) {
+		t.Errorf("body = %x, want %x", bodies[0], wantBody)
+	}
+}
+
+func TestEncodeFuncValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		sig    ir.Sig
+		locals []ir.ValType
+		body   ir.Expr
+		want   string
+	}{
+		{
+			name: "without an environment",
+			sig:  ir.Sig{Result: ir.FuncRef},
+			body: &ir.FuncValue{Func: 0},
+			want: "00 42 00 0b",
+		},
+		{
+			name:   "with an environment",
+			sig:    ir.Sig{Params: []ir.ValType{ir.Ptr}, Result: ir.FuncRef},
+			locals: []ir.ValType{ir.Ptr},
+			body: &ir.FuncValue{
+				Func: 0,
+				Env:  &ir.LocalGet{Local: 0, T: ir.Ptr},
+			},
+			want: "00 20 00 ad 42 20 86 42 00 84 0b",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &ir.Module{
+				Funcs: []*ir.Func{
+					{
+						Name: "f",
+						Sig:  ir.Sig{Result: ir.Int},
+						Body: &ir.IntConst{Value: 0},
+					},
+					{
+						Name:   "main",
+						Sig:    tt.sig,
+						Locals: tt.locals,
+						Body:   tt.body,
+					},
+				},
+				Table: []ir.FuncID{0},
+				Main:  1,
+			}
+			bodies := functionBodies(t, Encode(m))
+			want, err := hex.DecodeString(strings.ReplaceAll(tt.want, " ", ""))
+			if err != nil {
+				t.Fatalf("decode want: %v", err)
+			}
+			if !bytes.Equal(bodies[1], want) {
+				t.Errorf("main body = %x, want %x", bodies[1], want)
+			}
+		})
+	}
+}
+
+func TestEncodeFuncRefField(t *testing.T) {
+	t.Parallel()
+
+	m := &ir.Module{
+		Funcs: []*ir.Func{
+			{
+				Name:   "id",
+				Sig:    ir.Sig{Params: []ir.ValType{ir.Int}, Result: ir.Int},
+				Locals: []ir.ValType{ir.Int},
+				Body:   &ir.LocalGet{Local: 0, T: ir.Int},
+			},
+			{
+				Name:   "main",
+				Sig:    ir.Sig{Result: ir.FuncRef},
+				Locals: []ir.ValType{ir.Ptr},
+				Body: &ir.Block{
+					Lets: []*ir.Let{{
+						Local: 0,
+						Value: &ir.Construct{
+							Tag:    0,
+							Fields: []ir.Expr{&ir.FuncValue{Func: 0}},
+						},
+					}},
+					Result: &ir.Field{Local: 0, Index: 0, T: ir.FuncRef},
+				},
+			},
+		},
+		Table: []ir.FuncID{0},
+		Main:  1,
+	}
+	wasm := Encode(m)
+	bodies := functionBodies(t, wasm)
+	newBody := bodies[len(m.Funcs)+1]
+	store := []byte{0x20, 0x02, 0x20, 0x01, 0x37, 0x03, 0x08}
+	if !bytes.Contains(newBody, store) {
+		t.Errorf("new body missing i64.store %x\n%x", store, newBody)
+	}
+	load := []byte{0x20, 0x00, 0x29, 0x03, 0x08}
+	if !bytes.Contains(bodies[1], load) {
+		t.Errorf("main body missing i64.load %x\n%x", load, bodies[1])
 	}
 }
 

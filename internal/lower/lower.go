@@ -27,6 +27,12 @@ func Lower(file *ast.File, info *typecheck.Info) *ir.Module {
 		declID:    make(map[*ast.FuncDecl]ir.FuncID, len(file.Funcs)),
 		instances: make(map[*ast.FuncDecl]map[string]ir.FuncID),
 		polyLets:  polyLets,
+		captures: &captureSet{
+			info:     info,
+			polyLets: polyLets,
+			memo:     make(map[*ast.FuncLit][]*typecheck.Symbol),
+		},
+		refs: make(map[ir.FuncID]ir.FuncID),
 	}
 
 	foundMain := false
@@ -82,6 +88,9 @@ type lowerer struct {
 	lambdas   int
 	// polyLets maps the symbol of every generalized let to its statement.
 	polyLets map[*typecheck.Symbol]*ast.LetStmt
+	captures *captureSet
+	// refs maps a function used as a value to its $ref wrapper.
+	refs map[ir.FuncID]ir.FuncID
 }
 
 // instance is one specialization of a generic function.
@@ -92,6 +101,11 @@ type instance struct {
 }
 
 func (l *lowerer) lowerFunc(fn *ir.Func, params []*ast.Param, body *ast.BlockExpr) {
+	locals := l.bindParams(fn, params)
+	l.finishBody(fn, l.lowerExpr(fn, locals, body))
+}
+
+func (l *lowerer) bindParams(fn *ir.Func, params []*ast.Param) map[*typecheck.Symbol]ir.LocalID {
 	locals := make(map[*typecheck.Symbol]ir.LocalID, len(params))
 	fn.Locals = make([]ir.ValType, len(params))
 	for i, p := range params {
@@ -102,7 +116,11 @@ func (l *lowerer) lowerFunc(fn *ir.Func, params []*ast.Param, body *ast.BlockExp
 		locals[sym] = ir.LocalID(i)
 		fn.Locals[i] = l.valType(sym.Type)
 	}
-	fn.Body = l.lowerExpr(fn, locals, body)
+	return locals
+}
+
+func (l *lowerer) finishBody(fn *ir.Func, body ir.Expr) {
+	fn.Body = body
 	if got, want := fn.Body.Type(), fn.Sig.Result; got != want {
 		panic(fmt.Sprintf("lower: %s body has type %s, signature result is %s", fn.Name, got, want))
 	}
@@ -167,7 +185,7 @@ func (l *lowerer) convert(
 	case *ast.BlockExpr:
 		return l.lowerBlock(fn, locals, e)
 	case *ast.FuncLit:
-		return l.lowerFuncLit(e)
+		return l.lowerFuncLit(fn, locals, e)
 	case *ast.MatchExpr:
 		return l.lowerMatch(fn, locals, e)
 	default:
@@ -196,8 +214,9 @@ func (l *lowerer) lowerIdent(
 		return &ir.LocalGet{Local: id, T: l.valType(l.mustType(e))}
 	case typecheck.SymFunc:
 		id := l.funcID(e, sym)
-		l.addTable(id)
-		return &ir.FuncValue{Func: id}
+		w := l.refWrapper(id)
+		l.addTable(w)
+		return &ir.FuncValue{Func: w}
 	case typecheck.SymCtor:
 		if len(sym.Ctor.Fields) != 0 {
 			panic(fmt.Sprintf("lower: constructor '%s' with fields used as a value at %s", e.Name, e.Pos))
@@ -520,21 +539,107 @@ func patLiteral(p ast.Pattern) ir.Expr {
 	}
 }
 
-func (l *lowerer) lowerFuncLit(e *ast.FuncLit) ir.Expr {
+func (l *lowerer) lowerFuncLit(
+	fn *ir.Func,
+	locals map[*typecheck.Symbol]ir.LocalID,
+	e *ast.FuncLit,
+) ir.Expr {
 	sig := l.info.FuncLits[e]
 	if sig == nil {
 		panic(fmt.Sprintf("lower: missing signature for anonymous function at %s", e.Pos))
 	}
+	caps := l.captures.of(e)
+	base := l.sigOf(sig)
+	params := make([]ir.ValType, len(base.Params)+1)
+	copy(params, base.Params)
+	params[len(base.Params)] = ir.Ptr
 	id := ir.FuncID(len(l.module.Funcs))
-	fn := &ir.Func{
+	lam := &ir.Func{
 		Name: fmt.Sprintf("lambda$%d", l.lambdas),
-		Sig:  l.sigOf(sig),
+		Sig:  ir.Sig{Params: params, Result: base.Result},
 	}
 	l.lambdas++
-	l.module.Funcs = append(l.module.Funcs, fn)
-	l.lowerFunc(fn, e.Params, e.Body)
+	l.module.Funcs = append(l.module.Funcs, lam)
+	l.lowerClosureBody(lam, e.Params, caps, e.Body)
 	l.addTable(id)
-	return &ir.FuncValue{Func: id}
+	if len(caps) == 0 {
+		return &ir.FuncValue{Func: id}
+	}
+	fields := make([]ir.Expr, len(caps))
+	for i, s := range caps {
+		lid, ok := locals[s]
+		if !ok {
+			panic(fmt.Sprintf("lower: no local for captured '%s' at %s", s.Name, s.Pos))
+		}
+		fields[i] = &ir.LocalGet{Local: lid, T: l.valType(s.Type)}
+	}
+	return &ir.FuncValue{
+		Func: id,
+		Env:  &ir.Construct{Tag: 0, Fields: fields},
+	}
+}
+
+func (l *lowerer) lowerClosureBody(
+	lam *ir.Func,
+	params []*ast.Param,
+	caps []*typecheck.Symbol,
+	body *ast.BlockExpr,
+) {
+	locals := l.bindParams(lam, params)
+	env := ir.LocalID(len(params))
+	lam.Locals = append(lam.Locals, ir.Ptr)
+	if lam.Locals[env] != ir.Ptr {
+		panic(fmt.Sprintf("lower: environment local %d has type %s, want Ptr", env, lam.Locals[env]))
+	}
+	lets := make([]*ir.Let, 0, len(caps))
+	for i, s := range caps {
+		id := ir.LocalID(len(lam.Locals))
+		vt := l.valType(s.Type)
+		lam.Locals = append(lam.Locals, vt)
+		locals[s] = id
+		lets = append(lets, &ir.Let{
+			Local: id,
+			Value: &ir.Field{Local: env, Index: i, T: vt},
+		})
+	}
+	result := l.lowerExpr(lam, locals, body)
+	if len(lets) > 0 {
+		result = &ir.Block{Lets: lets, Result: result}
+	}
+	l.finishBody(lam, result)
+}
+
+// refWrapper returns the function that ignores an environment pointer and
+// tail-calls id. The wrapper is created the first time id is used as a value.
+func (l *lowerer) refWrapper(id ir.FuncID) ir.FuncID {
+	if w, ok := l.refs[id]; ok {
+		return w
+	}
+	target := l.module.Funcs[id]
+	params := make([]ir.ValType, len(target.Sig.Params)+1)
+	copy(params, target.Sig.Params)
+	params[len(target.Sig.Params)] = ir.Ptr
+	sig := ir.Sig{Params: params, Result: target.Sig.Result}
+	wlocals := make([]ir.ValType, len(sig.Params))
+	copy(wlocals, sig.Params)
+	args := make([]ir.Expr, len(target.Sig.Params))
+	for i, t := range target.Sig.Params {
+		args[i] = &ir.LocalGet{Local: ir.LocalID(i), T: t}
+	}
+	wid := ir.FuncID(len(l.module.Funcs))
+	l.module.Funcs = append(l.module.Funcs, &ir.Func{
+		Name:   target.Name + "$ref",
+		Sig:    sig,
+		Locals: wlocals,
+		Body: &ir.Call{
+			Func: id,
+			Args: args,
+			T:    target.Sig.Result,
+			Tail: true,
+		},
+	})
+	l.refs[id] = wid
+	return wid
 }
 
 func (l *lowerer) lowerArgs(
