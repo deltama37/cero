@@ -1,0 +1,42 @@
+import "std/list"
+
+pub fn then[A, B](m: IO[A], next: IO[B]) -> IO[B] {
+    bind(m, fn(ignored: A) -> IO[B] { next })
+}
+
+pub fn mapIO[A, B](m: IO[A], f: A -> B) -> IO[B] {
+    bind(m, fn(x: A) -> IO[B] { pure(f(x)) })
+}
+
+pub fn println(s: String) -> IO[Unit] {
+    print(s ++ "\n")
+}
+
+pub fn eprintln(s: String) -> IO[Unit] {
+    eprint(s ++ "\n")
+}
+
+pub fn forEach[T](xs: List[T], f: T -> IO[Unit]) -> IO[Unit] {
+    match xs {
+        Nil => pure(()),
+        Cons(x, rest) => bind(f(x), fn(ignored: Unit) -> IO[Unit] { forEach(rest, f) }),
+    }
+}
+
+pub fn args() -> IO[List[String]] {
+    bind(argCount(), fn(n: Int) -> IO[List[String]] { readArgs(0, n) })
+}
+
+fn readArgs(i: Int, n: Int) -> IO[List[String]] {
+    if i >= n {
+        pure(Nil)
+    } else {
+        bind(argAt(i), fn(s: String) -> IO[List[String]] {
+            mapIO(readArgs(i + 1, n), fn(rest: List[String]) -> List[String] { Cons(s, rest) })
+        })
+    }
+}
+
+pub fn unit() -> IO[Unit] {
+    pure(())
+}

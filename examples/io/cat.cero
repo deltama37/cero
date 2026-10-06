@@ -1,0 +1,31 @@
+import "std/io"
+
+fn catFile(path: String) -> IO[Unit] {
+    bind(fileExists(path), fn(ok: Bool) -> IO[Unit] {
+        if ok {
+            bind(readFile(path), fn(text: String) -> IO[Unit] { print(text) })
+        } else {
+            bind(eprintln("cannot read " ++ path), fn(ignored: Unit) -> IO[Unit] { exit(1) })
+        }
+    })
+}
+
+fn catAll(i: Int, n: Int) -> IO[Unit] {
+    if i == n {
+        pure(())
+    } else {
+        bind(argAt(i), fn(path: String) -> IO[Unit] {
+            bind(catFile(path), fn(ignored: Unit) -> IO[Unit] { catAll(i + 1, n) })
+        })
+    }
+}
+
+fn main() {
+    bind(argCount(), fn(n: Int) -> IO[Unit] {
+        if n == 0 {
+            bind(readStdin(), fn(text: String) -> IO[Unit] { print(text) })
+        } else {
+            catAll(0, n)
+        }
+    })
+}

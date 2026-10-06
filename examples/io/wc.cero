@@ -1,0 +1,22 @@
+import "std/io"
+import "std/string"
+
+fn wcGo(s: String, i: Int, lines: Int, words: Int, inWord: Bool) -> IO[Unit] {
+    if i >= stringLength(s) {
+        println(intToString(lines) ++ " " ++ intToString(words) ++ " " ++ intToString(stringLength(s)))
+    } else {
+        let b = stringByteAt(s, i)
+        let nextLines = if b == stringByteAt("\n", 0) { lines + 1 } else { lines }
+        if isSpace(b) {
+            wcGo(s, i + 1, nextLines, words, false)
+        } else if inWord {
+            wcGo(s, i + 1, nextLines, words, true)
+        } else {
+            wcGo(s, i + 1, nextLines, words + 1, true)
+        }
+    }
+}
+
+fn main() {
+    bind(readStdin(), fn(s: String) -> IO[Unit] { wcGo(s, 0, 0, 0, false) })
+}

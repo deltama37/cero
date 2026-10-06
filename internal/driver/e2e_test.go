@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1627,6 +1628,340 @@ func TestE2ERuntimeTrap(t *testing.T) {
 			exit, ok := err.(*exec.ExitError)
 			if !ok || exit.ExitCode() == 0 {
 				t.Fatalf("wasmtime error = %v, output = %q", err, out)
+			}
+		})
+	}
+}
+
+func TestE2EIO(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("wasmtime"); err != nil {
+		t.Skip("wasmtime not found")
+	}
+
+	root := moduleRoot(t)
+	large := strings.Repeat("0123456789", 7000) + "END"
+	if len(large) <= 64*1024 {
+		t.Fatal("large payload is not bigger than 64KiB")
+	}
+
+	tests := []struct {
+		name         string
+		src          string
+		file         string
+		args         []string
+		stdin        string
+		files        map[string]string
+		invoke       bool
+		wantStdout   string
+		checkStdout  bool
+		wantNewlines int
+		wantStderr   string
+		stderrHas    string
+		wantExit     int
+		wantFile     string
+		wantBody     string
+	}{
+		{
+			name:        "hello",
+			file:        "examples/io/hello.cero",
+			checkStdout: true,
+			wantStdout:  "Hello, Cero!\n",
+		},
+		{
+			name: "cat two files",
+			file: "examples/io/cat.cero",
+			args: []string{"a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "foo",
+				"b.txt": "bar",
+			},
+			checkStdout: true,
+			wantStdout:  "foobar",
+		},
+		{
+			name:        "cat stdin",
+			file:        "examples/io/cat.cero",
+			stdin:       "from stdin",
+			checkStdout: true,
+			wantStdout:  "from stdin",
+		},
+		{
+			name:      "cat missing file",
+			file:      "examples/io/cat.cero",
+			args:      []string{"missing.txt"},
+			stderrHas: "missing.txt",
+			wantExit:  1,
+		},
+		{
+			name:        "wc",
+			file:        "examples/io/wc.cero",
+			stdin:       "hello world\n",
+			checkStdout: true,
+			wantStdout:  "1 2 12\n",
+		},
+		{
+			name: "pure and bind",
+			src: `fn main() {
+    bind(pure(41), fn(n: Int) -> IO[Unit] { print(intToString(n + 1)) })
+}
+`,
+			checkStdout: true,
+			wantStdout:  "42",
+		},
+		{
+			name: "exit stops later actions",
+			src: `fn main() {
+    bind(exit(3), fn(ignored: Unit) -> IO[Unit] { print("later") })
+}
+`,
+			checkStdout: true,
+			wantExit:    3,
+		},
+		{
+			name: "writeFile then readFile",
+			src: `fn main() {
+    bind(writeFile("out.txt", "hello"), fn(ignored: Unit) -> IO[Unit] {
+        bind(readFile("out.txt"), fn(s: String) -> IO[Unit] { print(s) })
+    })
+}
+`,
+			checkStdout: true,
+			wantStdout:  "hello",
+			wantFile:    "out.txt",
+			wantBody:    "hello",
+		},
+		{
+			name: "readFile missing",
+			src: `fn main() {
+    bind(readFile("missing.txt"), fn(s: String) -> IO[Unit] { print(s) })
+}
+`,
+			wantStderr: "error: cannot read file missing.txt\n",
+			wantExit:   1,
+		},
+		{
+			name: "fileExists",
+			src: `fn main() {
+    bind(fileExists("yes.txt"), fn(a: Bool) -> IO[Unit] {
+        bind(fileExists("no.txt"), fn(b: Bool) -> IO[Unit] {
+            print((if a { "Y" } else { "N" }) ++ (if b { "Y" } else { "N" }))
+        })
+    })
+}
+`,
+			files:       map[string]string{"yes.txt": "here"},
+			checkStdout: true,
+			wantStdout:  "YN",
+		},
+		{
+			name: "argCount and argAt",
+			src: `fn main() {
+    bind(argCount(), fn(n: Int) -> IO[Unit] {
+        bind(argAt(0), fn(a: String) -> IO[Unit] {
+            bind(argAt(1), fn(b: String) -> IO[Unit] {
+                print(intToString(n) ++ " " ++ a ++ " " ++ b)
+            })
+        })
+    })
+}
+`,
+			args:        []string{"foo", "bar"},
+			checkStdout: true,
+			wantStdout:  "2 foo bar",
+		},
+		{
+			name: "argAt out of range",
+			src: `fn main() {
+    bind(argAt(0), fn(s: String) -> IO[Unit] { print(s) })
+}
+`,
+			wantExit: -1,
+		},
+		{
+			name: "million binds",
+			src: `fn loop(n: Int, acc: Int) -> IO[Unit] {
+    if n == 0 {
+        print(intToString(acc))
+    } else {
+        bind(pure(acc + 1), fn(a: Int) -> IO[Unit] { loop(n - 1, a) })
+    }
+}
+
+fn main() {
+    loop(1000000, 0)
+}
+`,
+			checkStdout: true,
+			wantStdout:  "1000000",
+		},
+		{
+			name: "forEach prints 100000 lines",
+			src: `import "std/list"
+import "std/io"
+
+fn main() {
+    forEach(range(0, 100000), fn(n: Int) -> IO[Unit] { print("\n") })
+}
+`,
+			wantNewlines: 100000,
+		},
+		{
+			name: "stdin over 64KiB",
+			src: `fn main() {
+    bind(readStdin(), fn(s: String) -> IO[Unit] { print(s) })
+}
+`,
+			stdin:       large,
+			checkStdout: true,
+			wantStdout:  large,
+		},
+		{
+			name: "write and read over 64KiB",
+			src: `fn main() {
+    bind(readStdin(), fn(s: String) -> IO[Unit] {
+        bind(writeFile("big.txt", s), fn(ignored: Unit) -> IO[Unit] {
+            bind(readFile("big.txt"), fn(t: String) -> IO[Unit] { print(t) })
+        })
+    })
+}
+`,
+			stdin:       large,
+			checkStdout: true,
+			wantStdout:  large,
+			wantFile:    "big.txt",
+			wantBody:    large,
+		},
+		{
+			name: "std io then mapIO args",
+			src: `import "std/list"
+import "std/io"
+
+fn main() {
+    bind(mapIO(pure(21), fn(n: Int) -> Int { n * 2 }), fn(n: Int) -> IO[Unit] {
+        then(
+            print(intToString(n)),
+            bind(args(), fn(xs: List[String]) -> IO[Unit] {
+                match xs {
+                    Nil => print("empty"),
+                    Cons(s, _) => print(":" ++ intToString(length(xs)) ++ ":" ++ s),
+                }
+            })
+        )
+    })
+}
+`,
+			args:        []string{"a", "b"},
+			checkStdout: true,
+			wantStdout:  "42:2:a",
+		},
+		{
+			name: "building IO does not run it",
+			src: `fn main() -> Int {
+    let ignored = print("no")
+    7
+}
+`,
+			invoke:      true,
+			checkStdout: true,
+			wantStdout:  "7\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := []byte(tt.src)
+			filename := "main.cero"
+			if tt.file != "" {
+				filename = filepath.Join(root, tt.file)
+				var err error
+				src, err = os.ReadFile(filename)
+				if err != nil {
+					t.Fatalf("read %s: %v", tt.file, err)
+				}
+			}
+			out, err := CompileProgram(filename, src, os.ReadFile)
+			if err != nil {
+				t.Fatalf("CompileProgram() error = %v", err)
+			}
+			if out.Command == tt.invoke {
+				t.Fatalf("Command = %v, want %v", out.Command, !tt.invoke)
+			}
+			dir := t.TempDir()
+			for name, body := range tt.files {
+				path := filepath.Join(dir, name)
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+			}
+			wasmPath := filepath.Join(dir, "main.wasm")
+			if err := os.WriteFile(wasmPath, out.Wasm, 0o644); err != nil {
+				t.Fatalf("write wasm: %v", err)
+			}
+			var cmd *exec.Cmd
+			if tt.invoke {
+				cmd = exec.Command("wasmtime", "run", "--invoke", "main", wasmPath)
+			} else {
+				cmdArgs := append([]string{"run", "--dir=.", wasmPath}, tt.args...)
+				cmd = exec.Command("wasmtime", cmdArgs...)
+				cmd.Dir = dir
+				cmd.Stdin = strings.NewReader(tt.stdin)
+			}
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			err = cmd.Run()
+			code := 0
+			if err != nil {
+				exit, ok := err.(*exec.ExitError)
+				if !ok {
+					t.Fatalf("wasmtime: %v\nstderr:\n%s", err, stderr.String())
+				}
+				code = exit.ExitCode()
+			}
+			if tt.wantExit == -1 {
+				if code == 0 {
+					t.Errorf("exit = 0, want non-zero\nstdout: %q\nstderr: %q", stdout.String(), stderr.String())
+				}
+			} else if code != tt.wantExit {
+				t.Errorf("exit = %d, want %d\nstdout: %q\nstderr: %q", code, tt.wantExit, stdout.String(), stderr.String())
+			}
+			if tt.checkStdout && stdout.String() != tt.wantStdout {
+				got := stdout.String()
+				if len(got) > 200 {
+					got = got[:200] + "..."
+				}
+				want := tt.wantStdout
+				if len(want) > 200 {
+					want = want[:200] + "..."
+				}
+				t.Errorf("stdout = %q, want %q\nstderr: %q", got, want, stderr.String())
+			}
+			if tt.wantNewlines != 0 {
+				if got := strings.Count(stdout.String(), "\n"); got != tt.wantNewlines || len(stdout.String()) != tt.wantNewlines {
+					t.Errorf("newlines = %d, len = %d, want %d newlines and nothing else\nstderr: %q", got, len(stdout.String()), tt.wantNewlines, stderr.String())
+				}
+			}
+			if tt.wantStderr != "" && stderr.String() != tt.wantStderr {
+				t.Errorf("stderr = %q, want %q", stderr.String(), tt.wantStderr)
+			}
+			if tt.stderrHas != "" && !strings.Contains(stderr.String(), tt.stderrHas) {
+				t.Errorf("stderr = %q, want to contain %q", stderr.String(), tt.stderrHas)
+			}
+			if strings.Contains(stdout.String(), "no") && tt.invoke {
+				t.Errorf("stdout = %q, IO action ran", stdout.String())
+			}
+			if tt.wantFile != "" {
+				body, err := os.ReadFile(filepath.Join(dir, tt.wantFile))
+				if err != nil {
+					t.Fatalf("read %s: %v", tt.wantFile, err)
+				}
+				if string(body) != tt.wantBody {
+					t.Errorf("file %s = %q, want %q", tt.wantFile, body, tt.wantBody)
+				}
 			}
 		})
 	}
