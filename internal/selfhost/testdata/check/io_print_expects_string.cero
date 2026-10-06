@@ -1,0 +1,1 @@
+fn main() -> IO[Unit] { print(1) }

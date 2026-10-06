@@ -1,0 +1,25 @@
+type Shape =
+    | Circle(Int)
+    | Rect(Int, Int)
+
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+    }
+}
+
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + sum(rest),
+    }
+}
+
+fn main() -> Int {
+    area(Circle(2)) + sum(Cons(1, Cons(2, Nil)))
+}

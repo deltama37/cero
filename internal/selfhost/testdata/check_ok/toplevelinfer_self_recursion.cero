@@ -1,0 +1,5 @@
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+fn length(xs) { match xs { Nil => 0, Cons(_, r) => 1 + length(r) } }
+fn main() { length(Cons(1, Nil)) }

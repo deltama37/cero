@@ -1,0 +1,2 @@
+fn f(x: Text) -> Int { 1 }
+fn g() -> Int { true }

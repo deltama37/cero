@@ -1,0 +1,8 @@
+fn inc(n: Int) -> Int {
+    n + 1
+}
+
+fn main() -> Int {
+    let f = fn(n: Int) -> Int { inc(n) }
+    f(1)
+}

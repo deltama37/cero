@@ -1,0 +1,1 @@
+fn main() -> Int { let eqOne = fn(x) { x == 1 } if eqOne(1) { 1 } else { 0 } }

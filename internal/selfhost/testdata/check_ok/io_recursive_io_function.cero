@@ -1,0 +1,10 @@
+fn loop(n: Int) -> IO[Unit] {
+    if n <= 0 {
+        pure(())
+    } else {
+        loop(n - 1)
+    }
+}
+fn main() -> IO[Unit] {
+    loop(1)
+}

@@ -3,6 +3,7 @@ package typecheck
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -182,13 +183,15 @@ func (c *checker) bindImports(mod *Module, exp map[*Module]*exports) *diag.Error
 		if !ok {
 			panic(fmt.Sprintf("typecheck: module %q is imported before it is checked", dep.Path))
 		}
-		for name, sym := range ex.values {
+		for _, name := range sortedKeys(ex.values) {
+			sym := ex.values[name]
 			if prev, exists := c.importedValues[name]; exists && prev.from != dep {
 				return diag.Errorf(imp.Pos, "'%s' is imported from both '%s' and '%s'", name, prev.from.Path, dep.Path)
 			}
 			c.importedValues[name] = importedValue{sym: sym, from: dep}
 		}
-		for name, data := range ex.datas {
+		for _, name := range sortedKeys(ex.datas) {
+			data := ex.datas[name]
 			if prev, exists := c.importedDatas[name]; exists && prev.from != dep {
 				return diag.Errorf(imp.Pos, "'%s' is imported from both '%s' and '%s'", name, prev.from.Path, dep.Path)
 			}
@@ -196,6 +199,17 @@ func (c *checker) bindImports(mod *Module, exp map[*Module]*exports) *diag.Error
 		}
 	}
 	return nil
+}
+
+// sortedKeys returns the keys of m in increasing order, so that the first
+// reported import conflict does not depend on map iteration order.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (c *checker) moduleExports(file *ast.File) *exports {

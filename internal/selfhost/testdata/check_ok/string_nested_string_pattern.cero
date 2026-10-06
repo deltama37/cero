@@ -1,0 +1,7 @@
+type Box = Box(String)
+fn main() -> Int {
+    match Box("hi") {
+        Box("hi") => 1,
+        _ => 0,
+    }
+}

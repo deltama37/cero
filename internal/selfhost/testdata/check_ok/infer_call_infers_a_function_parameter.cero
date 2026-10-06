@@ -1,0 +1,1 @@
+fn main() -> Int { let applyOne = fn(f) { f(1) } applyOne(fn(x) { x * 2 }) }

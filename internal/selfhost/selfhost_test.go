@@ -16,6 +16,7 @@ import (
 
 	"github.com/deltama37/cero/internal/ast"
 	"github.com/deltama37/cero/internal/driver"
+	"github.com/deltama37/cero/internal/typecheck"
 )
 
 // buildCompiler compiles compiler/main.cero once and returns the wasm path.
@@ -129,6 +130,286 @@ func TestParseCorpusCoversErrors(t *testing.T) {
 			t.Errorf("format %q is not covered by testdata", format)
 		}
 	}
+}
+
+func TestCheck(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	for _, file := range checkSources(t, root) {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+
+			want, err := goCheckTypes(root, file)
+			stdout, stderr, code := runCero(t, root, "check", "--types", file)
+			if err != nil {
+				wantErr := err.Error() + "\n"
+				if code != 1 || stdout != "" || stderr != wantErr {
+					t.Fatalf("exit %d\nstdout %q\nstderr %q\nwant %q", code, stdout, stderr, wantErr)
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q", stderr)
+			}
+			if stdout != want {
+				t.Errorf("stdout mismatch for %s\n got %q\nwant %q", file, stdout, want)
+			}
+		})
+	}
+}
+
+func TestCheckErrors(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	files := checkErrorFiles(t, root)
+	if len(files) < 160 {
+		t.Fatalf("testdata files = %d, want at least 160", len(files))
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := goCheckTypes(root, file)
+			if err == nil {
+				t.Fatal("CheckProgram succeeded, want an error")
+			}
+			want := err.Error() + "\n"
+			stdout, stderr, code := runCero(t, root, "check", file)
+			if code != 1 {
+				t.Fatalf("exit %d, want 1\nstdout %q\nstderr %q", code, stdout, stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q", stdout)
+			}
+			if stderr != want {
+				t.Errorf("stderr = %q, want %q", stderr, want)
+			}
+		})
+	}
+}
+
+func TestCheckSuccessCorpus(t *testing.T) {
+	t.Parallel()
+	skipNoWasmtime(t)
+
+	root := repoRoot(t)
+	files := checkOKFiles(t, root)
+	if len(files) < 100 {
+		t.Fatalf("testdata files = %d, want at least 100", len(files))
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+
+			want, err := goCheckTypes(root, file)
+			if err != nil {
+				t.Fatalf("CheckProgram(%s): %v", file, err)
+			}
+			stdout, stderr, code := runCero(t, root, "check", "--types", file)
+			if code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q", stderr)
+			}
+			if stdout != want {
+				t.Errorf("stdout mismatch for %s\n got %q\nwant %q", file, stdout, want)
+			}
+		})
+	}
+}
+
+func TestCheckCorpusCoversErrors(t *testing.T) {
+	t.Parallel()
+
+	root := repoRoot(t)
+	files := checkErrorFiles(t, root)
+	var got []string
+	for _, file := range files {
+		_, err := goCheckTypes(root, file)
+		if err == nil {
+			t.Fatalf("CheckProgram(%s) succeeded, want an error", file)
+		}
+		got = append(got, err.Error())
+	}
+
+	formats := errorFormatsIn(t, root, []string{
+		"internal/typecheck/typecheck.go",
+		"internal/typecheck/exhaust.go",
+	})
+	if len(formats) == 0 {
+		t.Fatal("no diag.Errorf formats found")
+	}
+	for _, format := range formats {
+		if !checkFormatReachable(format) {
+			continue
+		}
+		re, err := formatRegexp(format)
+		if err != nil {
+			t.Fatalf("format %q: %v", format, err)
+		}
+		found := false
+		for _, msg := range got {
+			if re.MatchString(msg) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("format %q is not covered by testdata", format)
+		}
+	}
+}
+
+func checkSources(t *testing.T, root string) []string {
+	t.Helper()
+
+	files := relGlob(t, root, "examples/*.cero")
+	files = append(files, relGlob(t, root, "examples/io/*.cero")...)
+	files = append(files, "examples/modules/main.cero")
+	files = append(files, relGlob(t, root, "std/*.cero")...)
+	files = append(files, "compiler/main.cero")
+	return files
+}
+
+func checkErrorFiles(t *testing.T, root string) []string {
+	t.Helper()
+
+	files := relGlob(t, root, "internal/selfhost/testdata/check/*.cero")
+	files = append(files, moduleEntries(t, root, "internal/selfhost/testdata/check/modules")...)
+	sort.Strings(files)
+	return files
+}
+
+func checkOKFiles(t *testing.T, root string) []string {
+	t.Helper()
+
+	files := relGlob(t, root, "internal/selfhost/testdata/check_ok/*.cero")
+	files = append(files, moduleEntries(t, root, "internal/selfhost/testdata/check_ok/modules")...)
+	sort.Strings(files)
+	return files
+}
+
+func moduleEntries(t *testing.T, root, dir string) []string {
+	t.Helper()
+
+	subs, err := os.ReadDir(filepath.Join(root, dir))
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	var out []string
+	for _, sub := range subs {
+		if !sub.IsDir() {
+			continue
+		}
+		entry := moduleEntry(t, filepath.Join(root, dir, sub.Name()))
+		rel, err := filepath.Rel(root, entry)
+		if err != nil {
+			t.Fatalf("rel %s: %v", entry, err)
+		}
+		out = append(out, rel)
+	}
+	return out
+}
+
+func moduleEntry(t *testing.T, dir string) string {
+	t.Helper()
+
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	imported := map[string]bool{}
+	var files []string
+	for _, ent := range ents {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".cero") {
+			continue
+		}
+		files = append(files, ent.Name())
+		body, err := os.ReadFile(filepath.Join(dir, ent.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", ent.Name(), err)
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "import ") {
+				continue
+			}
+			path := strings.Trim(strings.TrimPrefix(line, "import "), "\"")
+			if i := strings.LastIndex(path, "/"); i >= 0 {
+				path = path[i+1:]
+			}
+			imported[path] = true
+		}
+	}
+	var cands []string
+	for _, name := range files {
+		if !imported[strings.TrimSuffix(name, ".cero")] {
+			cands = append(cands, filepath.Join(dir, name))
+		}
+	}
+	if len(cands) != 1 {
+		t.Fatalf("module entry in %s = %v", dir, cands)
+	}
+	return cands[0]
+}
+
+func goCheckTypes(root, file string) (string, error) {
+	src, err := os.ReadFile(filepath.Join(root, file))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", file, err)
+	}
+	mods, err := driver.Load(file, src, func(name string) ([]byte, error) {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil {
+			return nil, fmt.Errorf("read %s: %w", name, readErr)
+		}
+		return body, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	info, err := typecheck.CheckProgram(mods)
+	if err != nil {
+		return "", err
+	}
+	return formatCheckTypes(mods, info), nil
+}
+
+func formatCheckTypes(mods []*typecheck.Module, info *typecheck.Info) string {
+	var b strings.Builder
+	for _, mod := range mods {
+		fmt.Fprintf(&b, "== %s\n", mod.File)
+		for _, d := range mod.Ast.Funcs {
+			fmt.Fprintf(&b, "%s : %s\n", d.Name, formatScheme(info.Funcs[d]))
+		}
+	}
+	return b.String()
+}
+
+func formatScheme(sym *typecheck.Symbol) string {
+	if len(sym.TypeParams) == 0 {
+		return sym.Type.String()
+	}
+	names := make([]string, len(sym.TypeParams))
+	for i, tp := range sym.TypeParams {
+		names[i] = tp.Name
+	}
+	return "forall " + strings.Join(names, ", ") + ". " + sym.Type.String()
+}
+
+func checkFormatReachable(format string) bool {
+	if strings.Contains(format, "%T") {
+		return false
+	}
+	return !strings.HasPrefix(format, "unhandled ")
 }
 
 func skipNoWasmtime(t *testing.T) {
@@ -270,8 +551,14 @@ var errorfRE = regexp.MustCompile(`diag\.Errorf\([^"\n]*"((?:\\.|[^"\\])*)"`)
 func errorFormats(t *testing.T, root string) []string {
 	t.Helper()
 
+	return errorFormatsIn(t, root, []string{"internal/lexer/lexer.go", "internal/parser/parser.go"})
+}
+
+func errorFormatsIn(t *testing.T, root string, rels []string) []string {
+	t.Helper()
+
 	var formats []string
-	for _, rel := range []string{"internal/lexer/lexer.go", "internal/parser/parser.go"} {
+	for _, rel := range rels {
 		body, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)

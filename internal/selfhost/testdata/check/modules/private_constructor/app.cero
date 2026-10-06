@@ -1,0 +1,6 @@
+import "lib"
+fn main() -> Int {
+    match 0 {
+        Hidden => 0
+    }
+}

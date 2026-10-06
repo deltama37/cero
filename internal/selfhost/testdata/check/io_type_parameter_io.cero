@@ -1,0 +1,1 @@
+fn f[IO](x: Int) -> Int { x }

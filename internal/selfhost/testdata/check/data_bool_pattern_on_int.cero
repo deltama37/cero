@@ -1,0 +1,7 @@
+fn main() -> Int {
+    let n = 1
+    match n {
+        true => 1,
+        _ => 2,
+    }
+}

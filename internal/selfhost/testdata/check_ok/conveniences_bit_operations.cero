@@ -1,0 +1,9 @@
+fn main() -> Int {
+    let a = bitAnd(12, 10)
+    let b = bitOr(12, 10)
+    let c = bitXor(12, 10)
+    let d = shiftLeft(1, 2)
+    let e = shiftRight(-8, 1)
+    let f = shiftRightUnsigned(1, 2)
+    a + b + c + d + e + f
+}

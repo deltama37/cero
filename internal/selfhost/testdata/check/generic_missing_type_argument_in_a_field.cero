@@ -1,0 +1,1 @@
+type List[T] = | Nil | Cons(T, List)

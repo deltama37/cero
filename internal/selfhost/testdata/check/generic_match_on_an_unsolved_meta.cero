@@ -1,0 +1,2 @@
+fn nothing[T]() -> T { nothing() }
+fn main() -> Int { match nothing() { _ => 0 } }

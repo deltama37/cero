@@ -1,0 +1,8 @@
+fn main() -> Int {
+    let f = fn(n: Int) -> Int {
+        match n {
+            x => x,
+        }
+    }
+    f(1)
+}

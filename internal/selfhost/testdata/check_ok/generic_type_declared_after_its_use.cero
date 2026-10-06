@@ -1,0 +1,2 @@
+fn main() -> Int { let o: Opt[Int] = Non 0 }
+type Opt[T] = | Non | Som(T)

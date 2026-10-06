@@ -1,0 +1,2 @@
+type Option[T] = | None | Some(T)
+fn main() -> Int { let f = fn(o) { match o { Some(n) => n, 0 => 0 } } 0 }

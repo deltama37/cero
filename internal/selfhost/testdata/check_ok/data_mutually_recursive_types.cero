@@ -1,0 +1,18 @@
+type A =
+    | A0
+    | A1(B)
+
+type B =
+    | B0(A)
+
+fn main() -> Int {
+    match A1(B0(A0)) {
+        A0 => 0,
+        A1(b) => match b {
+            B0(a) => match a {
+                A0 => 1,
+                A1(_) => 2,
+            },
+        },
+    }
+}

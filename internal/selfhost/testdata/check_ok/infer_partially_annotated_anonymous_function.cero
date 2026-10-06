@@ -1,0 +1,1 @@
+fn main() -> Int { let add = fn(a: Int, b) -> Int { a + b } add(1, 2) }

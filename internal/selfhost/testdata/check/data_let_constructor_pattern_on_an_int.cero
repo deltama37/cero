@@ -1,0 +1,5 @@
+type L = Nil
+fn main() -> Int {
+    let Nil = 1
+    1
+}

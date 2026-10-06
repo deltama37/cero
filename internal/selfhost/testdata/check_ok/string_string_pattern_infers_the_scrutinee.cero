@@ -1,0 +1,7 @@
+fn g(s) {
+    match s {
+        "a" => 1,
+        _ => 0,
+    }
+}
+fn main() -> Int { 0 }

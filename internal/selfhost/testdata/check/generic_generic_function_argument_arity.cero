@@ -1,0 +1,2 @@
+fn apply2[T](f: (T, T) -> T, x: T) -> T { f(x, x) }
+fn main() -> Int { apply2(fn(a: Int) -> Int { a }, 1) }

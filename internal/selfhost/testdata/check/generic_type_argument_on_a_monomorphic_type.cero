@@ -1,0 +1,2 @@
+type Box = Box(Int)
+fn f(x: Box[Int]) -> Int { 0 }

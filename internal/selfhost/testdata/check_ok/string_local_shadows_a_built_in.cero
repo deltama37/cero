@@ -1,0 +1,4 @@
+fn main() -> Int {
+    let stringLength = 1
+    stringLength
+}

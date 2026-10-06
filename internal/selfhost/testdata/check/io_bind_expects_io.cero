@@ -1,0 +1,2 @@
+fn f(x: Int) -> IO[Int] { pure(x) }
+fn main() -> IO[Unit] { bind(1, f) }

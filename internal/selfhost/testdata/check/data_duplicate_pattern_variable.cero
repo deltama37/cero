@@ -1,0 +1,6 @@
+type Pair = | Pair(Int, Int)
+fn main() -> Int {
+    match Pair(1, 2) {
+        Pair(x, x) => x,
+    }
+}

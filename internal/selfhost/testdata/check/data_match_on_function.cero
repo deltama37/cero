@@ -1,0 +1,6 @@
+fn id(x: Int) -> Int { x }
+fn main() -> Int {
+    match id {
+        _ => 0,
+    }
+}

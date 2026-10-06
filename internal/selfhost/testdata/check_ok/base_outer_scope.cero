@@ -1,0 +1,8 @@
+fn main() -> Int {
+    let x = 1
+    let y = {
+        let z = 2
+        x + z
+    }
+    y
+}

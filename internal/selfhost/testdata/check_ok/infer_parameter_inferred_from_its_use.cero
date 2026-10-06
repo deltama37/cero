@@ -1,0 +1,1 @@
+fn main() -> Int { let inc = fn(x) { x + 1 } inc(41) }

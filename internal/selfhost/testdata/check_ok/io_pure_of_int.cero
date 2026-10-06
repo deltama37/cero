@@ -1,0 +1,4 @@
+fn main() -> Int {
+    let m = pure(1)
+    0
+}

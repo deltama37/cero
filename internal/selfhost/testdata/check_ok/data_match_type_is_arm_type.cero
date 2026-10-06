@@ -1,0 +1,12 @@
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn main() -> Int {
+    let xs = Nil
+    let b = match xs {
+        Nil => true,
+        Cons(x, r) => false,
+    }
+    if b { 1 } else { 0 }
+}

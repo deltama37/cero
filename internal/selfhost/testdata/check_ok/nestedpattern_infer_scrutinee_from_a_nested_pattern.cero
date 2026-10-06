@@ -1,0 +1,14 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+fn f(p) {
+    match p {
+        Some(Cons(x, _)) => x,
+        _ => 0,
+    }
+}
+fn main() { f(Some(Cons(1, Nil))) }

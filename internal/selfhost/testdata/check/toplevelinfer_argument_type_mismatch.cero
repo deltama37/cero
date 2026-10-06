@@ -1,0 +1,2 @@
+fn inc(x) { x + 1 }
+fn main() { inc(true) }

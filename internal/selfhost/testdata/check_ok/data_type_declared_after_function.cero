@@ -1,0 +1,14 @@
+fn sum(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(x, r) => x + sum(r),
+    }
+}
+
+fn main() -> Int {
+    sum(Cons(1, Nil))
+}
+
+type IntList =
+    | Nil
+    | Cons(Int, IntList)

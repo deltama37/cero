@@ -1,0 +1,3 @@
+fn eq(s) { s == "a" }
+fn ne(s) { s != "b" }
+fn main() -> Int { 0 }

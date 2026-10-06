@@ -1,0 +1,1 @@
+fn f[Unit](x: Int) -> Int { x }

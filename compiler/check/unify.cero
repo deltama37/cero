@@ -1,0 +1,105 @@
+import "std/list"
+import "std/pair"
+import "types/types"
+import "util/intmap"
+
+fn envSolve(env: TyEnv, id: Int, t: Type) -> TyEnv {
+    let TyEnv(datas, names, sols) = env
+    TyEnv(datas, names, imInsert(sols, id, t))
+}
+
+fn unifyList(env: TyEnv, xs: List[Type], ys: List[Type]) -> Pair[TyEnv, Bool] {
+    match xs {
+        Nil => match ys {
+            Nil => Pair(env, true),
+            Cons(_, _) => Pair(env, false),
+        },
+        Cons(x, xr) => match ys {
+            Nil => Pair(env, false),
+            Cons(y, yr) => {
+                let Pair(env2, ok) = ckUnify(env, x, y)
+                if ok {
+                    unifyList(env2, xr, yr)
+                } else {
+                    Pair(env2, false)
+                }
+            },
+        },
+    }
+}
+
+pub fn ckUnify(env: TyEnv, a: Type, b: Type) -> Pair[TyEnv, Bool] {
+    let a2 = tyPrune(env, a)
+    let b2 = tyPrune(env, b)
+    match a2 {
+        TyMeta(ia) => match b2 {
+            TyMeta(ib) => if ia == ib {
+                Pair(env, true)
+            } else if tyMentions(env, b2, a2) {
+                Pair(env, false)
+            } else {
+                Pair(envSolve(env, ia, b2), true)
+            },
+            _ => if tyMentions(env, b2, a2) {
+                Pair(env, false)
+            } else {
+                Pair(envSolve(env, ia, b2), true)
+            },
+        },
+        _ => match b2 {
+            TyMeta(ib) => if tyMentions(env, a2, b2) {
+                Pair(env, false)
+            } else {
+                Pair(envSolve(env, ib, a2), true)
+            },
+            _ => unifyRigid(env, a2, b2),
+        },
+    }
+}
+
+fn unifyRigid(env: TyEnv, a: Type, b: Type) -> Pair[TyEnv, Bool] {
+    match a {
+        TyInt => match b {
+            TyInt => Pair(env, true),
+            _ => Pair(env, false),
+        },
+        TyBool => match b {
+            TyBool => Pair(env, true),
+            _ => Pair(env, false),
+        },
+        TyString => match b {
+            TyString => Pair(env, true),
+            _ => Pair(env, false),
+        },
+        TyUnit => match b {
+            TyUnit => Pair(env, true),
+            _ => Pair(env, false),
+        },
+        TyParam(ia, _) => match b {
+            TyParam(ib, _) => Pair(env, ia == ib),
+            _ => Pair(env, false),
+        },
+        TyFunc(ps, r) => match b {
+            TyFunc(qs, s) => if length(ps) != length(qs) {
+                Pair(env, false)
+            } else {
+                let Pair(env2, ok) = unifyList(env, ps, qs)
+                if ok {
+                    ckUnify(env2, r, s)
+                } else {
+                    Pair(env2, false)
+                }
+            },
+            _ => Pair(env, false),
+        },
+        TyNamed(ia, as) => match b {
+            TyNamed(ib, bs) => if ia == ib && length(as) == length(bs) {
+                unifyList(env, as, bs)
+            } else {
+                Pair(env, false)
+            },
+            _ => Pair(env, false),
+        },
+        TyMeta(_) => Pair(env, false),
+    }
+}

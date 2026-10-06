@@ -1,0 +1,2 @@
+fn twice[T](x: T) -> T { let id = fn(y) { y } id(id(x)) }
+fn main() -> Int { twice(1) }

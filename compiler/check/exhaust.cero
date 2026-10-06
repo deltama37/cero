@@ -1,0 +1,527 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "std/string"
+import "syntax/ast"
+import "types/types"
+import "util/intmap"
+import "util/quote"
+
+pub type CkPatK =
+    | CkWild
+    | CkCtorK
+    | CkIntK
+    | CkBoolK
+    | CkStrK
+
+pub type CkSpat = | CkSpat(CkPatK, Int, Int, String, List[CkSpat], Int, Bool)
+
+type CkHeads = | CkHeads(CkPatK, Int, IntMap[Bool], Bool, Bool)
+
+fn ctorFields(env: TyEnv, dataId: Int, tag: Int) -> List[Type] {
+    let TyEnv(datas, _, _) = env
+    match imLookup(datas, dataId) {
+        None => Nil,
+        Some(info) => match info {
+            DataInfo(_, _, ctors) => fieldsOf(ctors, tag),
+        },
+    }
+}
+
+fn fieldsOf(ctors: List[CtorInfo], tag: Int) -> List[Type] {
+    match ctors {
+        Nil => Nil,
+        Cons(c, rest) => match c {
+            CtorInfo(_, t, fields, _) => if t == tag {
+                fields
+            } else {
+                fieldsOf(rest, tag)
+            },
+        },
+    }
+}
+
+fn ctorNameOf(env: TyEnv, dataId: Int, tag: Int) -> String {
+    let TyEnv(datas, _, _) = env
+    match imLookup(datas, dataId) {
+        None => "",
+        Some(info) => match info {
+            DataInfo(_, _, ctors) => nameOfTag(ctors, tag),
+        },
+    }
+}
+
+fn nameOfTag(ctors: List[CtorInfo], tag: Int) -> String {
+    match ctors {
+        Nil => "",
+        Cons(c, rest) => match c {
+            CtorInfo(name, t, _, _) => if t == tag {
+                name
+            } else {
+                nameOfTag(rest, tag)
+            },
+        },
+    }
+}
+
+fn dataCtors(env: TyEnv, dataId: Int) -> List[CtorInfo] {
+    let TyEnv(datas, _, _) = env
+    match imLookup(datas, dataId) {
+        None => Nil,
+        Some(info) => match info {
+            DataInfo(_, _, ctors) => ctors,
+        },
+    }
+}
+
+fn wild() -> CkSpat {
+    CkSpat(CkWild, -1, -1, "", Nil, 0, false)
+}
+
+fn spatArgs(ctors: IntMap[Pair[Int, Int]], env: TyEnv, ps: List[Pattern], acc: List[CkSpat]) -> List[CkSpat] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(p, rest) => spatArgs(ctors, env, rest, Cons(ckToSpat(env, p, ctors), acc)),
+    }
+}
+
+pub fn ckToSpat(env: TyEnv, p: Pattern, ctors: IntMap[Pair[Int, Int]]) -> CkSpat {
+    match p {
+        WildP(_, _) => wild(),
+        VarP(_, _, _) => wild(),
+        IntP(_, _, v) => CkSpat(CkIntK, -1, -1, "", Nil, v, false),
+        StrP(_, _, s) => CkSpat(CkStrK, -1, -1, s, Nil, 0, false),
+        BoolP(_, _, v) => CkSpat(CkBoolK, -1, -1, "", Nil, 0, v),
+        CtorP(id, _, name, args) => match imLookup(ctors, id) {
+            None => CkSpat(CkCtorK, -1, -1, name, spatArgs(ctors, env, args, Nil), 0, false),
+            Some(pair) => {
+                let Pair(dataId, tag) = pair
+                CkSpat(CkCtorK, dataId, tag, ctorNameOf(env, dataId, tag), spatArgs(ctors, env, args, Nil), 0, false)
+            },
+        },
+    }
+}
+
+fn kindOf(p: CkSpat) -> CkPatK {
+    let CkSpat(k, _, _, _, _, _, _) = p
+    k
+}
+
+fn sameHead(a: CkSpat, b: CkSpat) -> Bool {
+    let CkSpat(ka, da, ta, sa, _, ia, ba) = a
+    let CkSpat(kb, db, tb, sb, _, ib, bb) = b
+    match ka {
+        CkWild => false,
+        CkCtorK => match kb {
+            CkCtorK => da == db && ta == tb,
+            _ => false,
+        },
+        CkIntK => match kb {
+            CkIntK => ia == ib,
+            _ => false,
+        },
+        CkStrK => match kb {
+            CkStrK => sa == sb,
+            _ => false,
+        },
+        CkBoolK => match kb {
+            CkBoolK => ba == bb,
+            _ => false,
+        },
+    }
+}
+
+fn arity(env: TyEnv, h: CkSpat) -> Int {
+    let CkSpat(k, dataId, tag, _, _, _, _) = h
+    match k {
+        CkCtorK => length(ctorFields(env, dataId, tag)),
+        CkIntK => 0,
+        CkBoolK => 0,
+        CkStrK => 0,
+        CkWild => 0,
+    }
+}
+
+fn columnHeads(rows: List[List[CkSpat]]) -> CkHeads {
+    columnAcc(rows, CkHeads(CkWild, -1, imEmpty(), false, false))
+}
+
+fn columnAcc(rows: List[List[CkSpat]], s: CkHeads) -> CkHeads {
+    match rows {
+        Nil => s,
+        Cons(row, rest) => match row {
+            Nil => columnAcc(rest, s),
+            Cons(h, _) => columnAcc(rest, addHead(s, h)),
+        },
+    }
+}
+
+fn keepKind(kind: CkPatK, hk: CkPatK) -> CkPatK {
+    match kind {
+        CkWild => hk,
+        CkCtorK => CkCtorK,
+        CkIntK => CkIntK,
+        CkBoolK => CkBoolK,
+        CkStrK => CkStrK,
+    }
+}
+
+fn addHead(s: CkHeads, h: CkSpat) -> CkHeads {
+    let CkHeads(kind, data, ctors, tseen, fseen) = s
+    let CkSpat(hk, hd, htag, _, _, _, hb) = h
+    match hk {
+        CkWild => s,
+        _ => {
+            let kind2 = keepKind(kind, hk)
+            match hk {
+                CkCtorK => {
+                    let data2 = if data < 0 { hd } else { data }
+                    CkHeads(kind2, data2, imInsert(ctors, htag, true), tseen, fseen)
+                },
+                CkBoolK => if hb {
+                    CkHeads(kind2, data, ctors, true, fseen)
+                } else {
+                    CkHeads(kind2, data, ctors, tseen, true)
+                },
+                _ => CkHeads(kind2, data, ctors, tseen, fseen),
+            }
+        },
+    }
+}
+
+fn allCtors(ctors: List[CtorInfo], seen: IntMap[Bool]) -> Bool {
+    match ctors {
+        Nil => true,
+        Cons(c, rest) => match c {
+            CtorInfo(_, tag, _, _) => if imMember(seen, tag) {
+                allCtors(rest, seen)
+            } else {
+                false
+            },
+        },
+    }
+}
+
+fn complete(env: TyEnv, s: CkHeads) -> Bool {
+    let CkHeads(kind, data, ctors, tseen, fseen) = s
+    match kind {
+        CkCtorK => if data < 0 {
+            false
+        } else {
+            let cs = dataCtors(env, data)
+            match cs {
+                Nil => false,
+                _ => allCtors(cs, ctors),
+            }
+        },
+        CkBoolK => tseen && fseen,
+        _ => false,
+    }
+}
+
+fn headsOf(env: TyEnv, s: CkHeads) -> List[CkSpat] {
+    let CkHeads(kind, data, _, _, _) = s
+    match kind {
+        CkCtorK => ctorHeads(env, dataCtors(env, data), Nil),
+        CkBoolK => Cons(CkSpat(CkBoolK, -1, -1, "", Nil, 0, true), Cons(CkSpat(CkBoolK, -1, -1, "", Nil, 0, false), Nil)),
+        _ => Nil,
+    }
+}
+
+fn ctorHeads(env: TyEnv, ctors: List[CtorInfo], acc: List[CkSpat]) -> List[CkSpat] {
+    match ctors {
+        Nil => reverse(acc),
+        Cons(c, rest) => match c {
+            CtorInfo(name, tag, _, dataId) => ctorHeads(env, rest, Cons(CkSpat(CkCtorK, dataId, tag, name, Nil, 0, false), acc)),
+        },
+    }
+}
+
+fn wilds(n: Int, acc: List[CkSpat]) -> List[CkSpat] {
+    if n <= 0 {
+        acc
+    } else {
+        wilds(n - 1, Cons(wild(), acc))
+    }
+}
+
+fn wildArgs(env: TyEnv, dataId: Int, tag: Int, name: String) -> CkSpat {
+    CkSpat(CkCtorK, dataId, tag, name, wilds(length(ctorFields(env, dataId, tag)), Nil), 0, false)
+}
+
+fn missingHead(env: TyEnv, s: CkHeads) -> CkSpat {
+    let CkHeads(kind, data, ctors, tseen, _) = s
+    match kind {
+        CkWild => wild(),
+        CkCtorK => firstMissing(env, dataCtors(env, data), ctors),
+        CkBoolK => if tseen {
+            CkSpat(CkBoolK, -1, -1, "", Nil, 0, false)
+        } else {
+            CkSpat(CkBoolK, -1, -1, "", Nil, 0, true)
+        },
+        CkIntK => wild(),
+        CkStrK => wild(),
+    }
+}
+
+fn firstMissing(env: TyEnv, ctors: List[CtorInfo], seen: IntMap[Bool]) -> CkSpat {
+    match ctors {
+        Nil => wild(),
+        Cons(c, rest) => match c {
+            CtorInfo(name, tag, _, dataId) => if imMember(seen, tag) {
+                firstMissing(env, rest, seen)
+            } else {
+                wildArgs(env, dataId, tag, name)
+            },
+        },
+    }
+}
+
+fn formatParts(env: TyEnv, ps: List[CkSpat], acc: String) -> String {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match rest {
+            Nil => acc ++ formatSpat(env, p),
+            Cons(_, _) => formatParts(env, rest, acc ++ formatSpat(env, p) ++ ", "),
+        },
+    }
+}
+
+fn formatSpat(env: TyEnv, p: CkSpat) -> String {
+    let CkSpat(k, _, _, s, args, i, b) = p
+    match k {
+        CkWild => "_",
+        CkIntK => intToString(i),
+        CkStrK => quoteString(s),
+        CkBoolK => if b { "true" } else { "false" },
+        CkCtorK => match args {
+            Nil => s,
+            _ => s ++ "(" ++ formatParts(env, args, "") ++ ")",
+        },
+    }
+}
+
+fn formatMissing(env: TyEnv, s: CkHeads) -> String {
+    let CkHeads(kind, data, ctors, tseen, fseen) = s
+    match kind {
+        CkCtorK => joinMissing(env, dataCtors(env, data), ctors, Nil),
+        CkBoolK => {
+            let ts = if tseen { Nil } else { Cons("true", Nil) }
+            let bs = if fseen { ts } else { append(ts, Cons("false", Nil)) }
+            join(bs, ", ")
+        },
+        CkIntK => "_",
+        CkStrK => "_",
+        CkWild => "_",
+    }
+}
+
+fn joinMissing(env: TyEnv, ctors: List[CtorInfo], seen: IntMap[Bool], acc: List[String]) -> String {
+    match ctors {
+        Nil => join(reverse(acc), ", "),
+        Cons(c, rest) => match c {
+            CtorInfo(name, tag, _, dataId) => if imMember(seen, tag) {
+                joinMissing(env, rest, seen, acc)
+            } else {
+                joinMissing(env, rest, seen, Cons(formatSpat(env, wildArgs(env, dataId, tag, name)), acc))
+            },
+        },
+    }
+}
+
+fn rowRest(row: List[CkSpat]) -> List[CkSpat] {
+    match row {
+        Nil => Nil,
+        Cons(_, rest) => rest,
+    }
+}
+
+fn rowHead(row: List[CkSpat]) -> CkSpat {
+    match row {
+        Nil => wild(),
+        Cons(h, _) => h,
+    }
+}
+
+fn specialize(env: TyEnv, h: CkSpat, rows: List[List[CkSpat]]) -> List[List[CkSpat]] {
+    specAcc(env, h, arity(env, h), rows, Nil)
+}
+
+fn specAcc(env: TyEnv, h: CkSpat, a: Int, rows: List[List[CkSpat]], acc: List[List[CkSpat]]) -> List[List[CkSpat]] {
+    match rows {
+        Nil => reverse(acc),
+        Cons(row, rest) => {
+            let head = rowHead(row)
+            let tail = rowRest(row)
+            let CkSpat(k, _, _, _, args, _, _) = head
+            let acc2 = if sameHead(head, h) {
+                Cons(append(args, tail), acc)
+            } else {
+                match k {
+                    CkWild => Cons(append(wilds(a, Nil), tail), acc),
+                    _ => acc,
+                }
+            }
+            specAcc(env, h, a, rest, acc2)
+        },
+    }
+}
+
+fn specializeQuery(env: TyEnv, h: CkSpat, q: List[CkSpat]) -> List[CkSpat] {
+    match specialize(env, h, Cons(q, Nil)) {
+        Cons(row, _) => row,
+        Nil => Nil,
+    }
+}
+
+fn defaultMatrix(rows: List[List[CkSpat]]) -> List[List[CkSpat]] {
+    defAcc(rows, Nil)
+}
+
+fn defAcc(rows: List[List[CkSpat]], acc: List[List[CkSpat]]) -> List[List[CkSpat]] {
+    match rows {
+        Nil => reverse(acc),
+        Cons(row, rest) => {
+            let CkSpat(k, _, _, _, _, _, _) = rowHead(row)
+            match k {
+                CkWild => defAcc(rest, Cons(rowRest(row), acc)),
+                _ => defAcc(rest, acc),
+            }
+        },
+    }
+}
+
+fn hasWildcard(rows: List[List[CkSpat]]) -> Bool {
+    match rows {
+        Nil => false,
+        Cons(row, rest) => {
+            let CkSpat(k, _, _, _, _, _, _) = rowHead(row)
+            match k {
+                CkWild => true,
+                _ => hasWildcard(rest),
+            }
+        },
+    }
+}
+
+pub fn ckUseful(env: TyEnv, rows: List[List[CkSpat]], q: List[CkSpat]) -> Bool {
+    match q {
+        Nil => match rows {
+            Nil => true,
+            Cons(_, _) => false,
+        },
+        Cons(h, _) => {
+            let CkSpat(k, _, _, _, _, _, _) = h
+            match k {
+                CkWild => {
+                    let sig = columnHeads(rows)
+                    if complete(env, sig) {
+                        usefulHeads(env, headsOf(env, sig), rows, q)
+                    } else {
+                        ckUseful(env, defaultMatrix(rows), rowRest(q))
+                    }
+                },
+                _ => ckUseful(env, specialize(env, h, rows), specializeQuery(env, h, q)),
+            }
+        },
+    }
+}
+
+fn usefulHeads(env: TyEnv, heads: List[CkSpat], rows: List[List[CkSpat]], q: List[CkSpat]) -> Bool {
+    match heads {
+        Nil => false,
+        Cons(c, rest) => if ckUseful(env, specialize(env, c, rows), specializeQuery(env, c, q)) {
+            true
+        } else {
+            usefulHeads(env, rest, rows, q)
+        },
+    }
+}
+
+fn takeN(xs: List[CkSpat], n: Int, acc: List[CkSpat]) -> List[CkSpat] {
+    if n <= 0 {
+        reverse(acc)
+    } else {
+        match xs {
+            Nil => reverse(acc),
+            Cons(x, rest) => takeN(rest, n - 1, Cons(x, acc)),
+        }
+    }
+}
+
+fn dropN(xs: List[CkSpat], n: Int) -> List[CkSpat] {
+    if n <= 0 {
+        xs
+    } else {
+        match xs {
+            Nil => Nil,
+            Cons(_, rest) => dropN(rest, n - 1),
+        }
+    }
+}
+
+fn witness(env: TyEnv, rows: List[List[CkSpat]], n: Int) -> Option[List[CkSpat]] {
+    if n == 0 {
+        match rows {
+            Nil => Some(Nil),
+            Cons(_, _) => None,
+        }
+    } else {
+        let sig = columnHeads(rows)
+        if complete(env, sig) {
+            witnessHeads(env, headsOf(env, sig), rows, n)
+        } else {
+            match witness(env, defaultMatrix(rows), n - 1) {
+                None => None,
+                Some(w) => Some(Cons(missingHead(env, sig), w)),
+            }
+        }
+    }
+}
+
+fn witnessHeads(env: TyEnv, heads: List[CkSpat], rows: List[List[CkSpat]], n: Int) -> Option[List[CkSpat]] {
+    match heads {
+        Nil => None,
+        Cons(c, rest) => {
+            let a = arity(env, c)
+            match witness(env, specialize(env, c, rows), a + n - 1) {
+                None => witnessHeads(env, rest, rows, n),
+                Some(w) => {
+                    let CkSpat(k, d, t, name, _, i, b) = c
+                    let head = match k {
+                        CkCtorK => CkSpat(k, d, t, name, takeN(w, a, Nil), i, b),
+                        _ => c,
+                    }
+                    Some(Cons(head, dropN(w, a)))
+                },
+            }
+        },
+    }
+}
+
+pub fn ckMissing(env: TyEnv, rows: List[List[CkSpat]]) -> String {
+    let sig = columnHeads(rows)
+    if hasWildcard(rows) {
+        missingWitness(env, rows)
+    } else {
+        let CkHeads(kind, _, _, _, _) = sig
+        match kind {
+            CkWild => missingWitness(env, rows),
+            _ => if complete(env, sig) {
+                missingWitness(env, rows)
+            } else {
+                formatMissing(env, sig)
+            },
+        }
+    }
+}
+
+fn missingWitness(env: TyEnv, rows: List[List[CkSpat]]) -> String {
+    match witness(env, rows, 1) {
+        None => "",
+        Some(w) => match w {
+            Nil => "",
+            Cons(p, _) => formatSpat(env, p),
+        },
+    }
+}

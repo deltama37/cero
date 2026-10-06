@@ -1,0 +1,1 @@
+fn main() -> Int { let id = fn(x) { x } let g = fn(y) { id(y) } 0 }

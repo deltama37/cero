@@ -1,0 +1,827 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/diag"
+import "types/types"
+import "util/intmap"
+import "util/strmap"
+import "check/unify"
+
+pub type SymKind =
+    | CkSymFunc
+    | CkSymParam
+    | CkSymLocal
+    | CkSymCtor
+    | CkSymBuiltin
+
+pub type Symbol = | Symbol(SymKind, String, Type, Pos, Int, Option[Pair[Int, Int]], List[Type], Int)
+
+pub type Info = | Info(
+    IntMap[Type],
+    IntMap[Int],
+    IntMap[Int],
+    IntMap[Int],
+    IntMap[Int],
+    IntMap[Type],
+    IntMap[Int],
+    IntMap[Pair[Int, Int]],
+    IntMap[Int],
+    IntMap[List[Type]],
+    IntMap[Symbol],
+    IntMap[DataInfo],
+    Int,
+    Bool,
+    IntMap[Int]
+)
+
+pub type CkPending = | CkPending(Int, Pos, String, Int)
+
+pub type CkCompRef = | CkCompRef(Int, Int, Int, Pos)
+
+pub type CkImport = | CkImport(Int, String)
+
+pub type CkMaps = | CkMaps(
+    IntMap[Type],
+    IntMap[Int],
+    IntMap[Int],
+    IntMap[Int],
+    IntMap[Int],
+    IntMap[Type],
+    IntMap[Int],
+    IntMap[Pair[Int, Int]],
+    IntMap[Int],
+    IntMap[List[Type]],
+    IntMap[Symbol],
+    Int,
+    Bool,
+    IntMap[Int]
+)
+
+pub type CkLocal = | CkLocal(
+    StrMap[Int],
+    StrMap[Int],
+    StrMap[Int],
+    StrMap[CkImport],
+    StrMap[CkImport],
+    Bool,
+    StrMap[Type],
+    List[CkPending],
+    Int,
+    IntMap[Bool],
+    List[CkCompRef],
+    IntMap[Bool],
+    Int
+)
+
+pub type CkState = | CkState(CkMaps, CkLocal, TyEnv, Int)
+
+pub type CkScope = | CkScope(StrMap[Int])
+
+pub type CkCtx = | CkCtx(Option[CkCtx], List[CkScope])
+
+pub type CkResult[A] =
+    | CkOk(A, CkState)
+    | CkErr(Error)
+
+pub type Check[A] = | Check(CkState -> CkResult[A])
+
+pub fn bind[A, B](m: Check[A], f: A -> Check[B]) -> Check[B] {
+    Check(fn(s: CkState) -> CkResult[B] {
+        match m {
+            Check(run) => match run(s) {
+                CkErr(e) => CkErr(e),
+                CkOk(x, s2) => match f(x) {
+                    Check(run2) => run2(s2),
+                },
+            },
+        }
+    })
+}
+
+pub fn pure[A](x: A) -> Check[A] {
+    Check(fn(s: CkState) -> CkResult[A] { CkOk(x, s) })
+}
+
+pub fn ckFail[A](e: Error) -> Check[A] {
+    Check(fn(_: CkState) -> CkResult[A] { CkErr(e) })
+}
+
+pub fn ckRun[A](m: Check[A], s: CkState) -> CkResult[A] {
+    let Check(f) = m
+    f(s)
+}
+
+pub fn ckGet() -> Check[CkState] {
+    Check(fn(s: CkState) -> CkResult[CkState] { CkOk(s, s) })
+}
+
+pub fn ckModify(f: CkState -> CkState) -> Check[Unit] {
+    Check(fn(s: CkState) -> CkResult[Unit] { CkOk((), f(s)) })
+}
+
+fn mapsEmpty() -> CkMaps {
+    CkMaps(imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), imEmpty(), -1, false, imEmpty())
+}
+
+fn localEmpty(isEntry: Bool) -> CkLocal {
+    CkLocal(smEmpty(), smEmpty(), smEmpty(), smEmpty(), smEmpty(), isEntry, smEmpty(), Nil, 0, imEmpty(), Nil, imEmpty(), -1)
+}
+
+fn envInitial() -> TyEnv {
+    let io = DataInfo("IO", Cons(TyParam(0, "T"), Nil), Nil)
+    TyEnv(imInsert(imEmpty(), 0, io), imEmpty(), imEmpty())
+}
+
+pub fn ckInitial() -> CkState {
+    CkState(mapsEmpty(), localEmpty(false), envInitial(), 1)
+}
+
+pub fn ckEmptyCtx() -> CkCtx {
+    CkCtx(None, Nil)
+}
+
+fn envOf(st: CkState) -> TyEnv {
+    let CkState(_, _, env, _) = st
+    env
+}
+
+fn mapsOf(st: CkState) -> CkMaps {
+    let CkState(maps, _, _, _) = st
+    maps
+}
+
+fn localOf(st: CkState) -> CkLocal {
+    let CkState(_, local, _, _) = st
+    local
+}
+
+fn withEnv(st: CkState, env: TyEnv) -> CkState {
+    let CkState(maps, local, _, next) = st
+    CkState(maps, local, env, next)
+}
+
+fn withMaps(st: CkState, maps: CkMaps) -> CkState {
+    let CkState(_, local, env, next) = st
+    CkState(maps, local, env, next)
+}
+
+fn withLocal(st: CkState, local: CkLocal) -> CkState {
+    let CkState(maps, _, env, next) = st
+    CkState(maps, local, env, next)
+}
+
+fn withNext(st: CkState, next: Int) -> CkState {
+    let CkState(maps, local, env, _) = st
+    CkState(maps, local, env, next)
+}
+
+pub fn ckEnv() -> Check[TyEnv] {
+    let! st = ckGet()
+    pure(envOf(st))
+}
+
+pub fn ckSetEnv(env: TyEnv) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withEnv(st, env) })
+}
+
+pub fn ckAlloc() -> Check[Int] {
+    Check(fn(st: CkState) -> CkResult[Int] {
+        let CkState(_, _, _, next) = st
+        CkOk(next, withNext(st, next + 1))
+    })
+}
+
+pub fn ckAllocTyParam(name: String) -> Check[Type] {
+    let! id = ckAlloc()
+    pure(TyParam(id, name))
+}
+
+fn symsOf(maps: CkMaps) -> IntMap[Symbol] {
+    let CkMaps(_, _, _, _, _, _, _, _, _, _, syms, _, _, _) = maps
+    syms
+}
+
+fn putSymMap(maps: CkMaps, id: Int, sym: Symbol) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, _, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, imInsert(symsOf(maps), id, sym), mainId, mainIO, fmods)
+}
+
+pub fn ckSym(st: CkState, id: Int) -> Symbol {
+    withDefault(imLookup(symsOf(mapsOf(st)), id), Symbol(CkSymBuiltin, "", TyUnit, Pos(0, 0), -1, None, Nil, -1))
+}
+
+pub fn ckPutSym(id: Int, sym: Symbol) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putSymMap(mapsOf(st), id, sym)) })
+}
+
+pub fn ckNewSym(
+    kind: SymKind,
+    name: String,
+    typ: Type,
+    pos: Pos,
+    decl: Int,
+    ctor: Option[Pair[Int, Int]],
+    tps: List[Type],
+    bno: Int
+) -> Check[Int] {
+    let! id = ckAlloc()
+    let! _ = ckPutSym(id, Symbol(kind, name, typ, pos, decl, ctor, tps, bno))
+    pure(id)
+}
+
+pub fn ckSetSymType(id: Int, typ: Type, tps: List[Type]) -> Check[Unit] {
+    let! st = ckGet()
+    let Symbol(k, name, _, pos, decl, ctor, _, bno) = ckSym(st, id)
+    ckPutSym(id, Symbol(k, name, typ, pos, decl, ctor, tps, bno))
+}
+
+fn putTypes(maps: CkMaps, id: Int, t: Type) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(imInsert(types, id, t), uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putUses(maps: CkMaps, id: Int, sym: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, imInsert(uses, id, sym), defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putDefs(maps: CkMaps, id: Int, sym: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, imInsert(defs, id, sym), params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putParams(maps: CkMaps, id: Int, sym: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, imInsert(params, id, sym), funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putFuncs(maps: CkMaps, id: Int, sym: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, imInsert(funcs, id, sym), lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putLits(maps: CkMaps, id: Int, t: Type) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, imInsert(lits, id, t), datas, cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putDatas(maps: CkMaps, id: Int, data: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, imInsert(datas, id, data), cpats, pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putCpats(maps: CkMaps, id: Int, pair: Pair[Int, Int]) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, datas, imInsert(cpats, id, pair), pvars, targs, syms, mainId, mainIO, fmods)
+}
+
+fn putPvars(maps: CkMaps, id: Int, sym: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, imInsert(pvars, id, sym), targs, syms, mainId, mainIO, fmods)
+}
+
+fn putTargs(maps: CkMaps, id: Int, args: List[Type]) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, imInsert(targs, id, args), syms, mainId, mainIO, fmods)
+}
+
+fn putFmod(maps: CkMaps, id: Int, modIdx: Int) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, imInsert(fmods, id, modIdx))
+}
+
+fn putMain(maps: CkMaps, sym: Int, io: Bool) -> CkMaps {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, _, _, fmods) = maps
+    CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, sym, io, fmods)
+}
+
+pub fn ckSetType(id: Int, t: Type) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putTypes(mapsOf(st), id, t)) })
+}
+
+pub fn ckSetUse(id: Int, sym: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putUses(mapsOf(st), id, sym)) })
+}
+
+pub fn ckSetDef(id: Int, sym: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putDefs(mapsOf(st), id, sym)) })
+}
+
+pub fn ckSetParam(id: Int, sym: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putParams(mapsOf(st), id, sym)) })
+}
+
+pub fn ckSetFunc(id: Int, sym: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putFuncs(mapsOf(st), id, sym)) })
+}
+
+pub fn ckSetFuncLit(id: Int, t: Type) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putLits(mapsOf(st), id, t)) })
+}
+
+pub fn ckSetData(id: Int, data: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putDatas(mapsOf(st), id, data)) })
+}
+
+pub fn ckSetCtorPat(id: Int, data: Int, tag: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putCpats(mapsOf(st), id, Pair(data, tag))) })
+}
+
+pub fn ckSetPatVar(id: Int, sym: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putPvars(mapsOf(st), id, sym)) })
+}
+
+pub fn ckSetTypeArgs(id: Int, args: List[Type]) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putTargs(mapsOf(st), id, args)) })
+}
+
+pub fn ckSetFuncMod(id: Int, modIdx: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putFmod(mapsOf(st), id, modIdx)) })
+}
+
+pub fn ckSetMain(sym: Int, io: Bool) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withMaps(st, putMain(mapsOf(st), sym, io)) })
+}
+
+pub fn ckFuncSym(st: CkState, decl: Int) -> Int {
+    let CkMaps(_, _, _, _, funcs, _, _, _, _, _, _, _, _, _) = mapsOf(st)
+    withDefault(imLookup(funcs, decl), -1)
+}
+
+pub fn ckCtorPats(st: CkState) -> IntMap[Pair[Int, Int]] {
+    let CkMaps(_, _, _, _, _, _, _, cpats, _, _, _, _, _, _) = mapsOf(st)
+    cpats
+}
+
+fn putGlobal(local: CkLocal, name: String, id: Int) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current) = local
+    CkLocal(smInsert(globals, name, id), builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putBuiltin(local: CkLocal, name: String, id: Int) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current) = local
+    CkLocal(globals, smInsert(builtins, name, id), dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putDName(local: CkLocal, name: String, id: Int) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current) = local
+    CkLocal(globals, builtins, smInsert(dnames, name, id), ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putIVal(local: CkLocal, name: String, imp: CkImport) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current) = local
+    CkLocal(globals, builtins, dnames, smInsert(ivals, name, imp), idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putIData(local: CkLocal, name: String, imp: CkImport) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current) = local
+    CkLocal(globals, builtins, dnames, ivals, smInsert(idatas, name, imp), isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putTParams(local: CkLocal, tparams: StrMap[Type]) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, _, metas, fresh, comp, crefs, ctps, current) = local
+    CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putMetas(local: CkLocal, metas: List[CkPending], fresh: Int) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, _, _, comp, crefs, ctps, current) = local
+    CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putComp(local: CkLocal, comp: IntMap[Bool]) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, _, crefs, ctps, current) = local
+    CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putCrefs(local: CkLocal, crefs: List[CkCompRef]) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, _, ctps, current) = local
+    CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putCTPs(local: CkLocal, ctps: IntMap[Bool]) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, _, current) = local
+    CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+fn putCurrent(local: CkLocal, current: Int) -> CkLocal {
+    let CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, _) = local
+    CkLocal(globals, builtins, dnames, ivals, idatas, isEntry, tparams, metas, fresh, comp, crefs, ctps, current)
+}
+
+pub fn ckBindGlobal(name: String, id: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putGlobal(localOf(st), name, id)) })
+}
+
+pub fn ckPutDataName(name: String, id: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putDName(localOf(st), name, id)) })
+}
+
+pub fn ckPutImportVal(name: String, imp: CkImport) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putIVal(localOf(st), name, imp)) })
+}
+
+pub fn ckPutImportData(name: String, imp: CkImport) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putIData(localOf(st), name, imp)) })
+}
+
+pub fn ckSetTParams(tparams: StrMap[Type]) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putTParams(localOf(st), tparams)) })
+}
+
+pub fn ckResetMetas() -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putMetas(localOf(st), Nil, 0)) })
+}
+
+pub fn ckSetCurrent(id: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState { withLocal(st, putCurrent(localOf(st), id)) })
+}
+
+pub fn ckAddComp(id: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let CkLocal(_, _, _, _, _, _, _, _, _, comp, _, _, _) = localOf(st)
+        withLocal(st, putComp(localOf(st), imInsert(comp, id, true)))
+    })
+}
+
+pub fn ckClearComp() -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let local = putComp(localOf(st), imEmpty())
+        let local2 = putCrefs(local, Nil)
+        withLocal(st, putCTPs(local2, imEmpty()))
+    })
+}
+
+pub fn ckAddCompRef(id: Int, sym: Int, owner: Int, pos: Pos) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let CkLocal(_, _, _, _, _, _, _, _, _, _, crefs, _, _) = localOf(st)
+        withLocal(st, putCrefs(localOf(st), append(crefs, Cons(CkCompRef(id, sym, owner, pos), Nil))))
+    })
+}
+
+pub fn ckAddCompTP(id: Int) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let CkLocal(_, _, _, _, _, _, _, _, _, _, _, ctps, _) = localOf(st)
+        withLocal(st, putCTPs(localOf(st), imInsert(ctps, id, true)))
+    })
+}
+
+fn globalsOf(local: CkLocal) -> StrMap[Int] {
+    let CkLocal(globals, _, _, _, _, _, _, _, _, _, _, _, _) = local
+    globals
+}
+
+fn builtinsOf(local: CkLocal) -> StrMap[Int] {
+    let CkLocal(_, builtins, _, _, _, _, _, _, _, _, _, _, _) = local
+    builtins
+}
+
+fn dnamesOf(local: CkLocal) -> StrMap[Int] {
+    let CkLocal(_, _, dnames, _, _, _, _, _, _, _, _, _, _) = local
+    dnames
+}
+
+fn ivalsOf(local: CkLocal) -> StrMap[CkImport] {
+    let CkLocal(_, _, _, ivals, _, _, _, _, _, _, _, _, _) = local
+    ivals
+}
+
+fn idatasOf(local: CkLocal) -> StrMap[CkImport] {
+    let CkLocal(_, _, _, _, idatas, _, _, _, _, _, _, _, _) = local
+    idatas
+}
+
+pub fn ckIsEntry(st: CkState) -> Bool {
+    let CkLocal(_, _, _, _, _, isEntry, _, _, _, _, _, _, _) = localOf(st)
+    isEntry
+}
+
+pub fn ckCurrent(st: CkState) -> Int {
+    let CkLocal(_, _, _, _, _, _, _, _, _, _, _, _, current) = localOf(st)
+    current
+}
+
+pub fn ckFresh(st: CkState) -> Int {
+    let CkLocal(_, _, _, _, _, _, _, _, fresh, _, _, _, _) = localOf(st)
+    fresh
+}
+
+pub fn ckTParam(st: CkState, name: String) -> Option[Type] {
+    let CkLocal(_, _, _, _, _, _, tparams, _, _, _, _, _, _) = localOf(st)
+    smLookup(tparams, name)
+}
+
+pub fn ckPendings(st: CkState) -> List[CkPending] {
+    let CkLocal(_, _, _, _, _, _, _, metas, _, _, _, _, _) = localOf(st)
+    metas
+}
+
+pub fn ckCompRefs(st: CkState) -> List[CkCompRef] {
+    let CkLocal(_, _, _, _, _, _, _, _, _, _, crefs, _, _) = localOf(st)
+    crefs
+}
+
+pub fn ckInComp(st: CkState, id: Int) -> Bool {
+    let CkLocal(_, _, _, _, _, _, _, _, _, comp, _, _, _) = localOf(st)
+    imMember(comp, id)
+}
+
+pub fn ckCompPairs(st: CkState) -> List[Pair[Int, Bool]] {
+    let CkLocal(_, _, _, _, _, _, _, _, _, comp, _, _, _) = localOf(st)
+    imToList(comp)
+}
+
+pub fn ckHasCompTP(st: CkState, id: Int) -> Bool {
+    let CkLocal(_, _, _, _, _, _, _, _, _, _, _, ctps, _) = localOf(st)
+    imMember(ctps, id)
+}
+
+pub fn ckLookupOwn(st: CkState, name: String) -> Option[Int] {
+    smLookup(globalsOf(localOf(st)), name)
+}
+
+pub fn ckLookupGlobal(st: CkState, name: String) -> Option[Int] {
+    match ckLookupOwn(st, name) {
+        Some(id) => Some(id),
+        None => match smLookup(ivalsOf(localOf(st)), name) {
+            Some(imp) => match imp {
+                CkImport(id, _) => Some(id),
+            },
+            None => smLookup(builtinsOf(localOf(st)), name),
+        },
+    }
+}
+
+pub fn ckLookupOwnData(st: CkState, name: String) -> Option[Int] {
+    smLookup(dnamesOf(localOf(st)), name)
+}
+
+pub fn ckLookupData(st: CkState, name: String) -> Option[Int] {
+    match ckLookupOwnData(st, name) {
+        Some(id) => Some(id),
+        None => match smLookup(idatasOf(localOf(st)), name) {
+            Some(imp) => match imp {
+                CkImport(id, _) => Some(id),
+            },
+            None => None,
+        },
+    }
+}
+
+pub fn ckImportVal(st: CkState, name: String) -> Option[CkImport] {
+    smLookup(ivalsOf(localOf(st)), name)
+}
+
+pub fn ckImportData(st: CkState, name: String) -> Option[CkImport] {
+    smLookup(idatasOf(localOf(st)), name)
+}
+
+pub fn ckPutDataInfo(id: Int, info: DataInfo) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let TyEnv(datas, names, sols) = envOf(st)
+        withEnv(st, TyEnv(imInsert(datas, id, info), names, sols))
+    })
+}
+
+pub fn ckDataInfo(st: CkState, id: Int) -> Option[DataInfo] {
+    let TyEnv(datas, _, _) = envOf(st)
+    imLookup(datas, id)
+}
+
+pub fn ckMetaName(st: CkState, id: Int) -> String {
+    let TyEnv(_, names, _) = envOf(st)
+    withDefault(imLookup(names, id), "")
+}
+
+fn putMetaName(st: CkState, id: Int, name: String) -> CkState {
+    let TyEnv(datas, names, sols) = envOf(st)
+    withEnv(st, TyEnv(datas, imInsert(names, id, name), sols))
+}
+
+pub fn ckSolve(id: Int, t: Type) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let TyEnv(datas, names, sols) = envOf(st)
+        withEnv(st, TyEnv(datas, names, imInsert(sols, id, t)))
+    })
+}
+
+pub fn ckAddPending(p: CkPending) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let metas = ckPendings(st)
+        let fresh = ckFresh(st)
+        withLocal(st, putMetas(localOf(st), append(metas, Cons(p, Nil)), fresh))
+    })
+}
+
+fn setFresh(st: CkState, n: Int) -> CkState {
+    withLocal(st, putMetas(localOf(st), ckPendings(st), n))
+}
+
+pub fn ckFreshName() -> Check[String] {
+    let! st = ckGet()
+    let n = ckFresh(st) + 1
+    let! _ = ckModify(fn(s: CkState) -> CkState { setFresh(s, n) })
+    pure("t" ++ intToString(n))
+}
+
+pub fn ckNewMeta(name: String, pos: Pos, msg: String) -> Check[Type] {
+    let! id = ckAlloc()
+    let! _ = ckModify(fn(st: CkState) -> CkState { putMetaName(st, id, name) })
+    let! st = ckGet()
+    let! _ = ckAddPending(CkPending(id, pos, msg, ckCurrent(st)))
+    pure(TyMeta(id))
+}
+
+pub fn ckUnifyM(a: Type, b: Type) -> Check[Bool] {
+    let! st = ckGet()
+    let Pair(env2, ok) = ckUnify(envOf(st), a, b)
+    let! _ = ckSetEnv(env2)
+    pure(ok)
+}
+
+fn allocPure(st: CkState, name: String) -> Pair[CkState, Type] {
+    let CkState(maps, local, env, next) = st
+    Pair(CkState(maps, local, env, next + 1), TyParam(next, name))
+}
+
+fn addBuiltin(st: CkState, name: String, bno: Int, typ: Type, tps: List[Type]) -> CkState {
+    let CkState(maps, local, env, next) = st
+    let sym = Symbol(CkSymBuiltin, name, typ, Pos(0, 0), -1, None, tps, bno)
+    let maps2 = putSymMap(maps, next, sym)
+    let local2 = putBuiltin(local, name, next)
+    CkState(maps2, local2, env, next + 1)
+}
+
+fn ckInstallBuiltins(st: CkState) -> CkState {
+    let Pair(st1, t) = allocPure(st, "T")
+    let Pair(st2, a) = allocPure(st1, "A")
+    let Pair(st3, b) = allocPure(st2, "B")
+    let ioT = TyNamed(tyIOData(), Cons(t, Nil))
+    let ioA = TyNamed(tyIOData(), Cons(a, Nil))
+    let ioB = TyNamed(tyIOData(), Cons(b, Nil))
+    let ioU = TyNamed(tyIOData(), Cons(TyUnit, Nil))
+    let intBin = TyFunc(Cons(TyInt, Cons(TyInt, Nil)), TyInt)
+    let cont = TyFunc(Cons(a, Nil), ioB)
+    let st4 = addBuiltin(st3, "stringLength", 0, TyFunc(Cons(TyString, Nil), TyInt), Nil)
+    let st5 = addBuiltin(st4, "stringByteAt", 1, TyFunc(Cons(TyString, Cons(TyInt, Nil)), TyInt), Nil)
+    let st6 = addBuiltin(st5, "stringSlice", 2, TyFunc(Cons(TyString, Cons(TyInt, Cons(TyInt, Nil))), TyString), Nil)
+    let st7 = addBuiltin(st6, "stringFromByte", 3, TyFunc(Cons(TyInt, Nil), TyString), Nil)
+    let st8 = addBuiltin(st7, "stringCompare", 4, TyFunc(Cons(TyString, Cons(TyString, Nil)), TyInt), Nil)
+    let st9 = addBuiltin(st8, "intToString", 5, TyFunc(Cons(TyInt, Nil), TyString), Nil)
+    let st10 = addBuiltin(st9, "pure", 6, TyFunc(Cons(t, Nil), ioT), Cons(t, Nil))
+    let st11 = addBuiltin(st10, "bind", 7, TyFunc(Cons(ioA, Cons(cont, Nil)), ioB), Cons(a, Cons(b, Nil)))
+    let st12 = addBuiltin(st11, "print", 8, TyFunc(Cons(TyString, Nil), ioU), Nil)
+    let st13 = addBuiltin(st12, "eprint", 9, TyFunc(Cons(TyString, Nil), ioU), Nil)
+    let st14 = addBuiltin(st13, "readStdin", 10, TyFunc(Nil, TyNamed(tyIOData(), Cons(TyString, Nil))), Nil)
+    let st15 = addBuiltin(st14, "readFile", 11, TyFunc(Cons(TyString, Nil), TyNamed(tyIOData(), Cons(TyString, Nil))), Nil)
+    let st16 = addBuiltin(st15, "fileExists", 12, TyFunc(Cons(TyString, Nil), TyNamed(tyIOData(), Cons(TyBool, Nil))), Nil)
+    let st17 = addBuiltin(st16, "writeFile", 13, TyFunc(Cons(TyString, Cons(TyString, Nil)), ioU), Nil)
+    let st18 = addBuiltin(st17, "argCount", 14, TyFunc(Nil, TyNamed(tyIOData(), Cons(TyInt, Nil))), Nil)
+    let st19 = addBuiltin(st18, "argAt", 15, TyFunc(Cons(TyInt, Nil), TyNamed(tyIOData(), Cons(TyString, Nil))), Nil)
+    let st20 = addBuiltin(st19, "exit", 16, TyFunc(Cons(TyInt, Nil), ioU), Nil)
+    let st21 = addBuiltin(st20, "bitAnd", 17, intBin, Nil)
+    let st22 = addBuiltin(st21, "bitOr", 18, intBin, Nil)
+    let st23 = addBuiltin(st22, "bitXor", 19, intBin, Nil)
+    let st24 = addBuiltin(st23, "shiftLeft", 20, intBin, Nil)
+    let st25 = addBuiltin(st24, "shiftRight", 21, intBin, Nil)
+    addBuiltin(st25, "shiftRightUnsigned", 22, intBin, Nil)
+}
+
+pub fn ckBeginModule(isEntry: Bool) -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let CkState(maps, _, env, next) = st
+        let TyEnv(datas, _, _) = env
+        ckInstallBuiltins(CkState(maps, localEmpty(isEntry), TyEnv(datas, imEmpty(), imEmpty()), next))
+    })
+}
+
+fn resolveTypes(env: TyEnv, ts: List[Type], acc: List[Type]) -> List[Type] {
+    match ts {
+        Nil => reverse(acc),
+        Cons(t, rest) => resolveTypes(env, rest, Cons(tyResolve(env, t), acc)),
+    }
+}
+
+fn rebuildTypes(env: TyEnv, ps: List[Pair[Int, Type]], acc: IntMap[Type]) -> IntMap[Type] {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(k, v) => rebuildTypes(env, rest, imInsert(acc, k, tyResolve(env, v))),
+        },
+    }
+}
+
+fn rebuildArgs(env: TyEnv, ps: List[Pair[Int, List[Type]]], acc: IntMap[List[Type]]) -> IntMap[List[Type]] {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(k, v) => rebuildArgs(env, rest, imInsert(acc, k, resolveTypes(env, v, Nil))),
+        },
+    }
+}
+
+fn resolveSym(env: TyEnv, sym: Symbol) -> Symbol {
+    let Symbol(k, name, t, pos, decl, ctor, tps, bno) = sym
+    Symbol(k, name, tyResolve(env, t), pos, decl, ctor, tps, bno)
+}
+
+fn rebuildSyms(env: TyEnv, ps: List[Pair[Int, Symbol]], acc: IntMap[Symbol]) -> IntMap[Symbol] {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(k, v) => rebuildSyms(env, rest, imInsert(acc, k, resolveSym(env, v))),
+        },
+    }
+}
+
+pub fn ckResolveInfo() -> Check[Unit] {
+    ckModify(fn(st: CkState) -> CkState {
+        let env = envOf(st)
+        let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = mapsOf(st)
+        let types2 = rebuildTypes(env, imToList(types), imEmpty())
+        let lits2 = rebuildTypes(env, imToList(lits), imEmpty())
+        let targs2 = rebuildArgs(env, imToList(targs), imEmpty())
+        let syms2 = rebuildSyms(env, imToList(syms), imEmpty())
+        withMaps(st, CkMaps(types2, uses, defs, params, funcs, lits2, datas, cpats, pvars, targs2, syms2, mainId, mainIO, fmods))
+    })
+}
+
+pub fn infoTypes(info: Info) -> IntMap[Type] {
+    let Info(a, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoUses(info: Info) -> IntMap[Int] {
+    let Info(_, a, _, _, _, _, _, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoDefs(info: Info) -> IntMap[Int] {
+    let Info(_, _, a, _, _, _, _, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoParams(info: Info) -> IntMap[Int] {
+    let Info(_, _, _, a, _, _, _, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoFuncs(info: Info) -> IntMap[Int] {
+    let Info(_, _, _, _, a, _, _, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoFuncLits(info: Info) -> IntMap[Type] {
+    let Info(_, _, _, _, _, a, _, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoDatas(info: Info) -> IntMap[Int] {
+    let Info(_, _, _, _, _, _, a, _, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoCtorPats(info: Info) -> IntMap[Pair[Int, Int]] {
+    let Info(_, _, _, _, _, _, _, a, _, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoPatVars(info: Info) -> IntMap[Int] {
+    let Info(_, _, _, _, _, _, _, _, a, _, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoTypeArgs(info: Info) -> IntMap[List[Type]] {
+    let Info(_, _, _, _, _, _, _, _, _, a, _, _, _, _, _) = info
+    a
+}
+
+pub fn infoSymbols(info: Info) -> IntMap[Symbol] {
+    let Info(_, _, _, _, _, _, _, _, _, _, a, _, _, _, _) = info
+    a
+}
+
+pub fn infoDataInfos(info: Info) -> IntMap[DataInfo] {
+    let Info(_, _, _, _, _, _, _, _, _, _, _, a, _, _, _) = info
+    a
+}
+
+pub fn infoMain(info: Info) -> Int {
+    let Info(_, _, _, _, _, _, _, _, _, _, _, _, a, _, _) = info
+    a
+}
+
+pub fn infoMainIO(info: Info) -> Bool {
+    let Info(_, _, _, _, _, _, _, _, _, _, _, _, _, a, _) = info
+    a
+}
+
+pub fn infoFuncModule(info: Info) -> IntMap[Int] {
+    let Info(_, _, _, _, _, _, _, _, _, _, _, _, _, _, a) = info
+    a
+}
+
+pub fn ckToInfo(st: CkState) -> Info {
+    let CkMaps(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, mainId, mainIO, fmods) = mapsOf(st)
+    let TyEnv(dinfos, _, _) = envOf(st)
+    Info(types, uses, defs, params, funcs, lits, datas, cpats, pvars, targs, syms, dinfos, mainId, mainIO, fmods)
+}

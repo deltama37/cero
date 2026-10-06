@@ -1,0 +1,6 @@
+fn main() -> Int {
+    match "fn" {
+        "fn" => 1,
+        _ => 0,
+    }
+}

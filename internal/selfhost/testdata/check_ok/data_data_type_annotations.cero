@@ -1,0 +1,16 @@
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn id(xs: IntList) -> IntList {
+    let ys: IntList = xs
+    ys
+}
+
+fn main() -> Int {
+    let zs: IntList = id(Nil)
+    match zs {
+        Nil => 0,
+        Cons(x, r) => x,
+    }
+}

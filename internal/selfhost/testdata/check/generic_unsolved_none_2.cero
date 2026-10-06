@@ -1,0 +1,3 @@
+type Option[T] = | None | Some(T)
+fn none[T]() -> Option[T] { None }
+fn main() -> Int { match none() { _ => 0 } }

@@ -1,0 +1,965 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/ast"
+import "syntax/diag"
+import "syntax/k"
+import "types/types"
+import "util/intmap"
+import "util/strmap"
+import "check/state"
+import "check/exhaust"
+
+fn resultPos(e: Expr) -> Pos {
+    match e {
+        BlockE(b) => match b {
+            Block(_, _, _, result) => resultPos(result),
+        },
+        _ => exprPos(e),
+    }
+}
+
+fn lookupScopes(scopes: List[CkScope], name: String) -> Option[Int] {
+    match scopes {
+        Nil => None,
+        Cons(sc, rest) => match sc {
+            CkScope(m) => match smLookup(m, name) {
+                Some(id) => Some(id),
+                None => lookupScopes(rest, name),
+            },
+        },
+    }
+}
+
+fn lookupCtx(st: CkState, ctx: CkCtx, name: String) -> Option[Int] {
+    let CkCtx(parent, scopes) = ctx
+    match lookupScopes(scopes, name) {
+        Some(id) => Some(id),
+        None => match parent {
+            Some(p) => lookupCtx(st, p, name),
+            None => ckLookupGlobal(st, name),
+        },
+    }
+}
+
+fn lookupHere(ctx: CkCtx, name: String) -> Bool {
+    let CkCtx(_, scopes) = ctx
+    match scopes {
+        Nil => false,
+        Cons(sc, _) => match sc {
+            CkScope(m) => smMember(m, name),
+        },
+    }
+}
+
+fn bindScope(ctx: CkCtx, name: String, id: Int) -> CkCtx {
+    let CkCtx(parent, scopes) = ctx
+    match scopes {
+        Nil => ctx,
+        Cons(sc, rest) => match sc {
+            CkScope(m) => CkCtx(parent, Cons(CkScope(smInsert(m, name, id)), rest)),
+        },
+    }
+}
+
+fn pushScope(ctx: CkCtx) -> CkCtx {
+    let CkCtx(parent, scopes) = ctx
+    CkCtx(parent, Cons(CkScope(smEmpty()), scopes))
+}
+
+fn freshFn(ctx: CkCtx) -> CkCtx {
+    let CkCtx(parent, _) = ctx
+    CkCtx(parent, Cons(CkScope(smEmpty()), Nil))
+}
+
+fn lookupCtor(st: CkState, name: String) -> Option[Pair[Int, Int]] {
+    match ckLookupGlobal(st, name) {
+        None => None,
+        Some(id) => {
+            let Symbol(k, _, _, _, _, ctor, _, _) = ckSym(st, id)
+            match k {
+                CkSymCtor => ctor,
+                _ => None,
+            }
+        },
+    }
+}
+
+fn checkBindable(name: String, pos: Pos) -> Check[Unit] {
+    let! st = ckGet()
+    match lookupCtor(st, name) {
+        Some(_) => ckFail(errorf(pos, "cannot use constructor name '" ++ name ++ "' as a variable")),
+        None => pure(()),
+    }
+}
+
+fn dataParams(st: CkState, id: Int) -> List[Type] {
+    match ckDataInfo(st, id) {
+        Some(info) => match info {
+            DataInfo(_, ps, _) => ps,
+        },
+        None => Nil,
+    }
+}
+
+fn ctorByTag(st: CkState, dataId: Int, tag: Int) -> Option[CtorInfo] {
+    match ckDataInfo(st, dataId) {
+        None => None,
+        Some(info) => match info {
+            DataInfo(_, _, ctors) => findTag(ctors, tag),
+        },
+    }
+}
+
+fn findTag(ctors: List[CtorInfo], tag: Int) -> Option[CtorInfo] {
+    match ctors {
+        Nil => None,
+        Cons(c, rest) => match c {
+            CtorInfo(_, t, _, _) => if t == tag {
+                Some(c)
+            } else {
+                findTag(rest, tag)
+            },
+        },
+    }
+}
+
+fn fieldCount(st: CkState, ctor: Option[Pair[Int, Int]]) -> Int {
+    match ctor {
+        None => 0,
+        Some(p) => {
+            let Pair(dataId, tag) = p
+            match ctorByTag(st, dataId, tag) {
+                Some(info) => match info {
+                    CtorInfo(_, _, fields, _) => length(fields),
+                },
+                None => 0,
+            }
+        },
+    }
+}
+
+fn baseType(name: String) -> Type {
+    if name == "Int" {
+        TyInt
+    } else if name == "Bool" {
+        TyBool
+    } else if name == "Unit" {
+        TyUnit
+    } else {
+        TyString
+    }
+}
+
+pub fn ckResolveType(t: TypeExpr) -> Check[Type] {
+    match t {
+        NamedType(pos, name, args) => {
+            let! st = ckGet()
+            match ckTParam(st, name) {
+                Some(tp) => if length(args) != 0 {
+                    ckFail(errorf(pos, "wrong number of type arguments for '" ++ name ++ "': expected 0, found " ++ intToString(length(args))))
+                } else {
+                    pure(tp)
+                },
+                None => if name == "Int" || name == "Bool" || name == "String" || name == "Unit" {
+                    if length(args) != 0 {
+                        ckFail(errorf(pos, "wrong number of type arguments for '" ++ name ++ "': expected 0, found " ++ intToString(length(args))))
+                    } else {
+                        pure(baseType(name))
+                    }
+                } else if name == "IO" {
+                    if length(args) != 1 {
+                        ckFail(errorf(pos, "wrong number of type arguments for 'IO': expected 1, found " ++ intToString(length(args))))
+                    } else {
+                        match args {
+                            Cons(a, _) => {
+                                let! at = ckResolveType(a)
+                                pure(TyNamed(tyIOData(), Cons(at, Nil)))
+                            },
+                            Nil => ckFail(errorf(pos, "wrong number of type arguments for 'IO': expected 1, found 0")),
+                        }
+                    }
+                } else {
+                    match ckLookupData(st, name) {
+                        None => ckFail(errorf(pos, "unknown type '" ++ name ++ "'")),
+                        Some(id) => {
+                            let n = length(dataParams(st, id))
+                            let m = length(args)
+                            if m != n {
+                                ckFail(errorf(pos, "wrong number of type arguments for '" ++ name ++ "': expected " ++ intToString(n) ++ ", found " ++ intToString(m)))
+                            } else if n == 0 {
+                                pure(TyNamed(id, Nil))
+                            } else {
+                                let! as = resolveTypes(args, Nil)
+                                pure(TyNamed(id, as))
+                            }
+                        },
+                    }
+                },
+            }
+        },
+        FuncType(_, ps, r) => {
+            let! pts = resolveTypes(ps, Nil)
+            let! rt = ckResolveType(r)
+            pure(TyFunc(pts, rt))
+        },
+    }
+}
+
+fn resolveTypes(ts: List[TypeExpr], acc: List[Type]) -> Check[List[Type]] {
+    match ts {
+        Nil => pure(reverse(acc)),
+        Cons(t, rest) => {
+            let! a = ckResolveType(t)
+            resolveTypes(rest, Cons(a, acc))
+        },
+    }
+}
+
+fn bindParams(ctx: CkCtx, params: List[Param], pts: List[Type]) -> Check[CkCtx] {
+    match params {
+        Nil => pure(ctx),
+        Cons(p, prest) => match pts {
+            Nil => pure(ctx),
+            Cons(pt, trest) => {
+                let Param(id, pos, name, _) = p
+                let! sym = ckNewSym(CkSymParam, name, pt, pos, -1, None, Nil, -1)
+                let! _ = ckSetParam(id, sym)
+                if name == "_" {
+                    bindParams(ctx, prest, trest)
+                } else {
+                    let! _ = checkBindable(name, pos)
+                    if lookupHere(ctx, name) {
+                        ckFail(errorf(pos, "duplicate parameter '" ++ name ++ "'"))
+                    } else {
+                        bindParams(bindScope(ctx, name, sym), prest, trest)
+                    }
+                }
+            },
+        },
+    }
+}
+
+pub fn ckCheckFunc(ctx: CkCtx, params: List[Param], pts: List[Type], result: Option[Type], body: Block) -> Check[Type] {
+    let! ctx2 = bindParams(freshFn(ctx), params, pts)
+    match result {
+        None => infer(ctx2, BlockE(body)),
+        Some(want) => {
+            let! _ = expect(ctx2, BlockE(body), want)
+            pure(want)
+        },
+    }
+}
+
+fn expect(ctx: CkCtx, e: Expr, want: Type) -> Check[Unit] {
+    let! got = infer(ctx, e)
+    let! ok = ckUnifyM(want, got)
+    if ok {
+        pure(())
+    } else {
+        let! env = ckEnv()
+        ckFail(errorf(resultPos(e), "expected " ++ tyString(env, want) ++ ", found " ++ tyString(env, got)))
+    }
+}
+
+fn infer(ctx: CkCtx, e: Expr) -> Check[Type] {
+    let! t = inferExpr(ctx, e)
+    let! _ = ckSetType(exprId(e), t)
+    pure(t)
+}
+
+fn inferExpr(ctx: CkCtx, e: Expr) -> Check[Type] {
+    match e {
+        IntLit(_, _, _) => pure(TyInt),
+        StringLit(_, _, _) => pure(TyString),
+        BoolLit(_, _, _) => pure(TyBool),
+        UnitLit(_, _) => pure(TyUnit),
+        Ident(id, pos, name) => inferIdent(ctx, id, pos, name),
+        Unary(_, pos, op, x) => inferUnary(ctx, pos, op, x),
+        Binary(_, _, opPos, op, x, y) => inferBinary(ctx, opPos, op, x, y),
+        Call(_, _, callee, lparen, args) => inferCall(ctx, callee, lparen, args),
+        If(_, _, cond, thenB, elseE) => inferIf(ctx, cond, thenB, elseE),
+        BlockE(b) => match b {
+            Block(_, _, lets, result) => inferBlock(ctx, lets, result),
+        },
+        FuncLit(id, _, params, result, body) => inferFuncLit(ctx, id, params, result, body),
+        Match(id, pos, scrut, arms, isLet) => inferMatch(ctx, id, pos, scrut, arms, isLet),
+    }
+}
+
+fn inferIdent(ctx: CkCtx, id: Int, pos: Pos, name: String) -> Check[Type] {
+    let! st = ckGet()
+    match lookupCtx(st, ctx, name) {
+        None => ckFail(errorf(pos, "undefined name '" ++ name ++ "'")),
+        Some(symId) => {
+            let sym = ckSym(st, symId)
+            let Symbol(kind, sname, _, _, _, ctor, _, _) = sym
+            match kind {
+                CkSymCtor => if fieldCount(st, ctor) > 0 {
+                    ckFail(errorf(pos, "constructor '" ++ sname ++ "' cannot be used as a value; call it with its fields"))
+                } else {
+                    finishIdent(id, pos, symId, sym)
+                },
+                _ => finishIdent(id, pos, symId, sym),
+            }
+        },
+    }
+}
+
+fn finishIdent(id: Int, pos: Pos, symId: Int, sym: Symbol) -> Check[Type] {
+    let! _ = ckSetUse(id, symId)
+    let! st = ckGet()
+    if ckInComp(st, symId) {
+        let! owner = pure(ckCurrent(st))
+        let! _ = ckAddCompRef(id, symId, owner, pos)
+        let Symbol(_, _, typ, _, _, _, _, _) = sym
+        pure(typ)
+    } else {
+        instantiate(id, pos, sym)
+    }
+}
+
+fn freshArgs(tps: List[Type], name: String, pos: Pos, acc: List[Type]) -> Check[List[Type]] {
+    match tps {
+        Nil => pure(reverse(acc)),
+        Cons(tp, rest) => match tp {
+            TyParam(_, tn) => {
+                let! m = ckNewMeta(tn, pos, "cannot infer type argument '" ++ tn ++ "' of '" ++ name ++ "'; add a type annotation")
+                freshArgs(rest, name, pos, Cons(m, acc))
+            },
+            _ => freshArgs(rest, name, pos, acc),
+        },
+    }
+}
+
+fn instantiate(id: Int, pos: Pos, sym: Symbol) -> Check[Type] {
+    let Symbol(_, name, typ, _, _, _, tps, _) = sym
+    match tps {
+        Nil => pure(typ),
+        _ => {
+            let! args = freshArgs(tps, name, pos, Nil)
+            let! _ = ckSetTypeArgs(id, args)
+            let! env = ckEnv()
+            pure(tySubst(env, typ, tps, args))
+        },
+    }
+}
+
+fn inferUnary(ctx: CkCtx, pos: Pos, op, x: Expr) -> Check[Type] {
+    let k = kindAsInt(op)
+    if k == kMinus() {
+        let! _ = expect(ctx, x, TyInt)
+        pure(TyInt)
+    } else if k == kBang() {
+        let! _ = expect(ctx, x, TyBool)
+        pure(TyBool)
+    } else {
+        ckFail(errorf(pos, "unhandled unary operator " ++ kDescribeKind(k)))
+    }
+}
+
+fn comparable(env: TyEnv, t: Type) -> Bool {
+    tyEqual(env, t, TyInt) || tyEqual(env, t, TyBool) || tyEqual(env, t, TyString)
+}
+
+fn inferEq(ctx: CkCtx, x: Expr, y: Expr) -> Check[Type] {
+    let! t = infer(ctx, x)
+    let! env = ckEnv()
+    match tyPrune(env, t) {
+        TyMeta(_) => {
+            let! _ = expect(ctx, y, t)
+            let! env2 = ckEnv()
+            if comparable(env2, t) {
+                pure(TyBool)
+            } else {
+                ckFail(errorf(resultPos(x), "cannot compare values of type " ++ tyString(env2, t)))
+            }
+        },
+        _ => if comparable(env, t) {
+            let! _ = expect(ctx, y, t)
+            pure(TyBool)
+        } else {
+            ckFail(errorf(resultPos(x), "cannot compare values of type " ++ tyString(env, t)))
+        },
+    }
+}
+
+fn expect2(ctx: CkCtx, x: Expr, y: Expr, t: Type) -> Check[Unit] {
+    let! _ = expect(ctx, x, t)
+    expect(ctx, y, t)
+}
+
+fn inferBinary(ctx: CkCtx, opPos: Pos, op, x: Expr, y: Expr) -> Check[Type] {
+    let k = kindAsInt(op)
+    if k == kPlus() || k == kMinus() || k == kStar() || k == kSlash() || k == kPercent() {
+        let! _ = expect2(ctx, x, y, TyInt)
+        pure(TyInt)
+    } else if k == kPlusPlus() {
+        let! _ = expect2(ctx, x, y, TyString)
+        pure(TyString)
+    } else if k == kLt() || k == kLtEq() || k == kGt() || k == kGtEq() {
+        let! _ = expect2(ctx, x, y, TyInt)
+        pure(TyBool)
+    } else if k == kEq() || k == kNotEq() {
+        inferEq(ctx, x, y)
+    } else if k == kAndAnd() || k == kOrOr() {
+        let! _ = expect2(ctx, x, y, TyBool)
+        pure(TyBool)
+    } else {
+        ckFail(errorf(opPos, "unhandled binary operator " ++ kDescribeKind(k)))
+    }
+}
+
+fn inferCall(ctx: CkCtx, callee: Expr, lparen: Pos, args: List[Expr]) -> Check[Type] {
+    match callee {
+        Ident(iid, ipos, name) => {
+            let! st = ckGet()
+            match lookupCtx(st, ctx, name) {
+                Some(symId) => {
+                    let sym = ckSym(st, symId)
+                    let Symbol(kind, _, _, _, _, _, _, _) = sym
+                    match kind {
+                        CkSymCtor => inferCtorCall(ctx, iid, ipos, lparen, args, symId, sym),
+                        _ => inferCallValue(ctx, callee, lparen, args),
+                    }
+                },
+                None => inferCallValue(ctx, callee, lparen, args),
+            }
+        },
+        _ => inferCallValue(ctx, callee, lparen, args),
+    }
+}
+
+fn inferCtorCall(ctx: CkCtx, iid: Int, ipos: Pos, lparen: Pos, args: List[Expr], symId: Int, sym: Symbol) -> Check[Type] {
+    let Symbol(_, name, _, _, _, ctor, _, _) = sym
+    let! st = ckGet()
+    let! _ = ckSetUse(iid, symId)
+    let n = fieldCount(st, ctor)
+    if n == 0 {
+        ckFail(errorf(lparen, "constructor '" ++ name ++ "' has no fields; write it without parentheses"))
+    } else if length(args) != n {
+        ckFail(errorf(lparen, "wrong number of arguments: expected " ++ intToString(n) ++ ", found " ++ intToString(length(args))))
+    } else {
+        let! ft = instantiate(iid, ipos, sym)
+        let! _ = ckSetType(iid, ft)
+        let! env = ckEnv()
+        match tyPrune(env, ft) {
+            TyFunc(ps, r) => {
+                let! _ = expectArgs(ctx, args, ps)
+                pure(r)
+            },
+            _ => pure(ft),
+        }
+    }
+}
+
+fn expectArgs(ctx: CkCtx, args: List[Expr], pts: List[Type]) -> Check[Unit] {
+    match args {
+        Nil => pure(()),
+        Cons(a, arest) => match pts {
+            Nil => pure(()),
+            Cons(p, prest) => {
+                let! _ = expect(ctx, a, p)
+                expectArgs(ctx, arest, prest)
+            },
+        },
+    }
+}
+
+fn inferArgTypes(ctx: CkCtx, args: List[Expr], acc: List[Type]) -> Check[List[Type]] {
+    match args {
+        Nil => pure(reverse(acc)),
+        Cons(a, rest) => {
+            let! t = infer(ctx, a)
+            inferArgTypes(ctx, rest, Cons(t, acc))
+        },
+    }
+}
+
+fn inferCallValue(ctx: CkCtx, callee: Expr, lparen: Pos, args: List[Expr]) -> Check[Type] {
+    let! ft = infer(ctx, callee)
+    let! env = ckEnv()
+    match tyPrune(env, ft) {
+        TyFunc(ps, r) => if length(args) != length(ps) {
+            ckFail(errorf(lparen, "wrong number of arguments: expected " ++ intToString(length(ps)) ++ ", found " ++ intToString(length(args))))
+        } else {
+            let! _ = expectArgs(ctx, args, ps)
+            pure(r)
+        },
+        TyMeta(_) => {
+            let! argTypes = inferArgTypes(ctx, args, Nil)
+            let! n = ckFreshName()
+            let! res = ckNewMeta(n, lparen, "cannot infer the result type of this call; add a type annotation")
+            let want = TyFunc(argTypes, res)
+            let! ok = ckUnifyM(want, ft)
+            if ok {
+                pure(res)
+            } else {
+                let! env2 = ckEnv()
+                ckFail(errorf(resultPos(callee), "expected " ++ tyString(env2, want) ++ ", found " ++ tyString(env2, ft)))
+            }
+        },
+        _ => {
+            let! env2 = ckEnv()
+            ckFail(errorf(resultPos(callee), "cannot call non-function value of type " ++ tyString(env2, ft)))
+        },
+    }
+}
+
+fn inferIf(ctx: CkCtx, cond: Expr, thenB: Block, elseE: Expr) -> Check[Type] {
+    let! _ = expect(ctx, cond, TyBool)
+    let! tt = infer(ctx, BlockE(thenB))
+    let! et = infer(ctx, elseE)
+    let! ok = ckUnifyM(tt, et)
+    if ok {
+        pure(tt)
+    } else {
+        let! env = ckEnv()
+        ckFail(errorf(resultPos(elseE), "if branches have different types: " ++ tyString(env, tt) ++ " and " ++ tyString(env, et)))
+    }
+}
+
+fn generalizable(e: Expr) -> Bool {
+    match e {
+        FuncLit(_, _, _, _, _) => true,
+        Ident(_, _, _) => true,
+        _ => false,
+    }
+}
+
+fn addMetaList(ids: List[Int], acc: IntMap[Bool]) -> IntMap[Bool] {
+    match ids {
+        Nil => acc,
+        Cons(id, rest) => addMetaList(rest, imInsert(acc, id, true)),
+    }
+}
+
+fn nameMetas(st: CkState, env: TyEnv, pairs: List[Pair[String, Int]], acc: IntMap[Bool]) -> IntMap[Bool] {
+    match pairs {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(_, id) => {
+                let Symbol(_, _, typ, _, _, _, _, _) = ckSym(st, id)
+                nameMetas(st, env, rest, addMetaList(tyMetas(env, typ), acc))
+            },
+        },
+    }
+}
+
+fn scopeMetas(st: CkState, env: TyEnv, scopes: List[CkScope], acc: IntMap[Bool]) -> IntMap[Bool] {
+    match scopes {
+        Nil => acc,
+        Cons(sc, rest) => match sc {
+            CkScope(m) => scopeMetas(st, env, rest, nameMetas(st, env, smToList(m), acc)),
+        },
+    }
+}
+
+fn ctxMetas(st: CkState, env: TyEnv, ctx: CkCtx, acc: IntMap[Bool]) -> IntMap[Bool] {
+    let CkCtx(parent, scopes) = ctx
+    let acc2 = scopeMetas(st, env, scopes, acc)
+    match parent {
+        None => acc2,
+        Some(p) => ctxMetas(st, env, p, acc2),
+    }
+}
+
+fn compMetas(st: CkState, env: TyEnv, pairs: List[Pair[Int, Bool]], acc: IntMap[Bool]) -> IntMap[Bool] {
+    match pairs {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(id, _) => {
+                let Symbol(_, _, typ, _, _, _, _, _) = ckSym(st, id)
+                compMetas(st, env, rest, addMetaList(tyMetas(env, typ), acc))
+            },
+        },
+    }
+}
+
+fn genLoop(t: Type, cand: List[Int], blocked: IntMap[Bool], acc: List[Type]) -> Check[Pair[Type, List[Type]]] {
+    match cand {
+        Nil => match acc {
+            Nil => pure(Pair(t, Nil)),
+            _ => {
+                let! env = ckEnv()
+                pure(Pair(tyResolve(env, t), reverse(acc)))
+            },
+        },
+        Cons(id, rest) => if imMember(blocked, id) {
+            genLoop(t, rest, blocked, acc)
+        } else {
+            let! st = ckGet()
+            let! tp = ckAllocTyParam(ckMetaName(st, id))
+            let! _ = ckSolve(id, tp)
+            genLoop(t, rest, blocked, Cons(tp, acc))
+        },
+    }
+}
+
+fn ckGeneralize(ctx: CkCtx, t: Type) -> Check[Pair[Type, List[Type]]] {
+    let! st = ckGet()
+    let! env = ckEnv()
+    let cand = tyMetas(env, t)
+    match cand {
+        Nil => pure(Pair(t, Nil)),
+        _ => {
+            let blocked = compMetas(st, env, ckCompPairs(st), ctxMetas(st, env, ctx, imEmpty()))
+            genLoop(t, cand, blocked, Nil)
+        },
+    }
+}
+
+fn inferBlock(ctx: CkCtx, lets: List[LetStmt], result: Expr) -> Check[Type] {
+    let! ctx2 = checkLets(pushScope(ctx), lets)
+    infer(ctx2, result)
+}
+
+fn checkLets(ctx: CkCtx, lets: List[LetStmt]) -> Check[CkCtx] {
+    match lets {
+        Nil => pure(ctx),
+        Cons(stmt, rest) => {
+            let! ctx2 = checkLet(ctx, stmt)
+            checkLets(ctx2, rest)
+        },
+    }
+}
+
+fn checkLet(ctx: CkCtx, stmt: LetStmt) -> Check[CkCtx] {
+    let LetStmt(id, _, name, namePos, ann, value) = stmt
+    let! t0 = match ann {
+        Some(ty) => {
+            let! want = ckResolveType(ty)
+            let! _ = expect(ctx, value, want)
+            pure(want)
+        },
+        None => infer(ctx, value),
+    }
+    let! _ = checkBindable(name, namePos)
+    let! generalized = if generalizable(value) {
+        ckGeneralize(ctx, t0)
+    } else {
+        pure(Pair(t0, Nil))
+    }
+    let Pair(t, tps) = generalized
+    let! sym = ckNewSym(CkSymLocal, name, t, namePos, -1, None, tps, -1)
+    let! _ = ckSetDef(id, sym)
+    pure(bindScope(ctx, name, sym))
+}
+
+fn paramTypes(ps: List[Param], acc: List[Type]) -> Check[List[Type]] {
+    match ps {
+        Nil => pure(reverse(acc)),
+        Cons(p, rest) => match p {
+            Param(_, pos, name, ann) => match ann {
+                Some(ty) => {
+                    let! t = ckResolveType(ty)
+                    paramTypes(rest, Cons(t, acc))
+                },
+                None => {
+                    let! n = ckFreshName()
+                    let! t = ckNewMeta(n, pos, "cannot infer the type of parameter '" ++ name ++ "'; add a type annotation")
+                    paramTypes(rest, Cons(t, acc))
+                },
+            },
+        },
+    }
+}
+
+fn inferFuncLit(ctx: CkCtx, id: Int, params: List[Param], result: Option[TypeExpr], body: Block) -> Check[Type] {
+    let! pts = paramTypes(params, Nil)
+    let! resultOpt = match result {
+        None => pure(None),
+        Some(ty) => {
+            let! t = ckResolveType(ty)
+            pure(Some(t))
+        },
+    }
+    let child = CkCtx(Some(ctx), Nil)
+    let! rt = ckCheckFunc(child, params, pts, resultOpt, body)
+    let sig = TyFunc(pts, rt)
+    let! _ = ckSetFuncLit(id, sig)
+    pure(sig)
+}
+
+fn dataDisplay(st: CkState, dataId: Int) -> String {
+    match ckDataInfo(st, dataId) {
+        None => "",
+        Some(info) => match info {
+            DataInfo(name, ps, _) => match ps {
+                Nil => name,
+                _ => name ++ "[" ++ qNames(ps, "") ++ "]",
+            },
+        },
+    }
+}
+
+fn qNames(ps: List[Type], acc: String) -> String {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            TyParam(_, n) => match rest {
+                Nil => acc ++ "?" ++ n,
+                Cons(_, _) => qNames(rest, acc ++ "?" ++ n ++ ", "),
+            },
+            _ => match rest {
+                Nil => acc,
+                Cons(_, _) => qNames(rest, acc),
+            },
+        },
+    }
+}
+
+fn metasFor(ps: List[Type], name: String, pos: Pos, acc: List[Type]) -> Check[List[Type]] {
+    match ps {
+        Nil => pure(reverse(acc)),
+        Cons(p, rest) => match p {
+            TyParam(_, tn) => {
+                let! m = ckNewMeta(tn, pos, "cannot infer type argument '" ++ tn ++ "' of '" ++ name ++ "'; add a type annotation")
+                metasFor(rest, name, pos, Cons(m, acc))
+            },
+            _ => metasFor(rest, name, pos, acc),
+        },
+    }
+}
+
+fn solveMeta(mv: Int, p: Pattern) -> Check[Unit] {
+    match p {
+        CtorP(_, pos, name, _) => {
+            let! st = ckGet()
+            match lookupCtor(st, name) {
+                None => ckFail(errorf(pos, "unknown constructor '" ++ name ++ "'")),
+                Some(pair) => {
+                    let Pair(dataId, _) = pair
+                    let! args = metasFor(dataParams(st, dataId), name, pos, Nil)
+                    ckSolve(mv, TyNamed(dataId, args))
+                },
+            }
+        },
+        IntP(_, _, _) => ckSolve(mv, TyInt),
+        BoolP(_, _, _) => ckSolve(mv, TyBool),
+        StrP(_, _, _) => ckSolve(mv, TyString),
+        _ => pure(()),
+    }
+}
+
+fn inferScrutinee(mv: Int, arms: List[Arm]) -> Check[Unit] {
+    match arms {
+        Nil => pure(()),
+        Cons(arm, rest) => match arm {
+            Arm(pat, _) => match pat {
+                CtorP(_, _, _, _) => solveMeta(mv, pat),
+                IntP(_, _, _) => solveMeta(mv, pat),
+                BoolP(_, _, _) => solveMeta(mv, pat),
+                StrP(_, _, _) => solveMeta(mv, pat),
+                _ => inferScrutinee(mv, rest),
+            },
+        },
+    }
+}
+
+fn preparePat(st: Type, p: Pattern) -> Check[Type] {
+    let! env = ckEnv()
+    match tyPrune(env, st) {
+        TyMeta(id) => match p {
+            CtorP(_, _, _, _) => {
+                let! _ = solveMeta(id, p)
+                let! env2 = ckEnv()
+                pure(tyPrune(env2, TyMeta(id)))
+            },
+            IntP(_, _, _) => {
+                let! _ = solveMeta(id, p)
+                let! env2 = ckEnv()
+                pure(tyPrune(env2, TyMeta(id)))
+            },
+            BoolP(_, _, _) => {
+                let! _ = solveMeta(id, p)
+                let! env2 = ckEnv()
+                pure(tyPrune(env2, TyMeta(id)))
+            },
+            StrP(_, _, _) => {
+                let! _ = solveMeta(id, p)
+                let! env2 = ckEnv()
+                pure(tyPrune(env2, TyMeta(id)))
+            },
+            _ => pure(tyPrune(env, st)),
+        },
+        other => pure(other),
+    }
+}
+
+fn bindPatVar(ctx: CkCtx, p: Pattern, typ: Type) -> Check[CkCtx] {
+    match p {
+        VarP(id, pos, name) => {
+            let! sym = ckNewSym(CkSymLocal, name, typ, pos, -1, None, Nil, -1)
+            let! _ = ckSetPatVar(id, sym)
+            pure(bindScope(ctx, name, sym))
+        },
+        _ => pure(ctx),
+    }
+}
+
+fn checkPattern(ctx: CkCtx, p: Pattern, st: Type, seen: StrMap[Bool]) -> Check[Pair[CkCtx, StrMap[Bool]]] {
+    let! st2 = preparePat(st, p)
+    match p {
+        WildP(_, _) => pure(Pair(ctx, seen)),
+        VarP(_, pos, name) => if smMember(seen, name) {
+            ckFail(errorf(pos, "duplicate variable '" ++ name ++ "' in pattern"))
+        } else {
+            let! _ = checkBindable(name, pos)
+            let! ctx2 = bindPatVar(ctx, p, st2)
+            pure(Pair(ctx2, smInsert(seen, name, true)))
+        },
+        IntP(_, pos, _) => {
+            let! ok = ckUnifyM(st2, TyInt)
+            if ok {
+                pure(Pair(ctx, seen))
+            } else {
+                let! env = ckEnv()
+                ckFail(errorf(pos, "expected " ++ tyString(env, st2) ++ ", found Int"))
+            }
+        },
+        StrP(_, pos, _) => {
+            let! ok = ckUnifyM(st2, TyString)
+            if ok {
+                pure(Pair(ctx, seen))
+            } else {
+                let! env = ckEnv()
+                ckFail(errorf(pos, "expected " ++ tyString(env, st2) ++ ", found String"))
+            }
+        },
+        BoolP(_, pos, _) => {
+            let! ok = ckUnifyM(st2, TyBool)
+            if ok {
+                pure(Pair(ctx, seen))
+            } else {
+                let! env = ckEnv()
+                ckFail(errorf(pos, "expected " ++ tyString(env, st2) ++ ", found Bool"))
+            }
+        },
+        CtorP(id, pos, name, args) => {
+            let! stt = ckGet()
+            match lookupCtor(stt, name) {
+                None => ckFail(errorf(pos, "unknown constructor '" ++ name ++ "'")),
+                Some(pair) => {
+                    let Pair(dataId, tag) = pair
+                    let! env = ckEnv()
+                    match tyPrune(env, st2) {
+                        TyNamed(nid, nargs) => if nid != dataId {
+                            ckFail(errorf(pos, "expected " ++ tyString(env, st2) ++ ", found " ++ dataDisplay(stt, dataId)))
+                        } else {
+                            match ctorByTag(stt, dataId, tag) {
+                                None => ckFail(errorf(pos, "unknown constructor '" ++ name ++ "'")),
+                                Some(info) => match info {
+                                    CtorInfo(_, _, fields, _) => if length(args) != length(fields) {
+                                        ckFail(errorf(pos, "wrong number of fields in pattern '" ++ name ++ "': expected " ++ intToString(length(fields)) ++ ", found " ++ intToString(length(args))))
+                                    } else {
+                                        let! _ = ckSetCtorPat(id, dataId, tag)
+                                        checkFields(ctx, args, fields, dataParams(stt, dataId), nargs, seen)
+                                    },
+                                },
+                            }
+                        },
+                        _ => ckFail(errorf(pos, "expected " ++ tyString(env, st2) ++ ", found " ++ dataDisplay(stt, dataId))),
+                    }
+                },
+            }
+        },
+    }
+}
+
+fn checkFields(ctx: CkCtx, args: List[Pattern], fields: List[Type], params: List[Type], nargs: List[Type], seen: StrMap[Bool]) -> Check[Pair[CkCtx, StrMap[Bool]]] {
+    match args {
+        Nil => pure(Pair(ctx, seen)),
+        Cons(a, arest) => match fields {
+            Nil => pure(Pair(ctx, seen)),
+            Cons(f, frest) => {
+                let! env = ckEnv()
+                let field = tySubst(env, f, params, nargs)
+                let! pair = checkPattern(ctx, a, field, seen)
+                let Pair(ctx2, seen2) = pair
+                checkFields(ctx2, arest, frest, params, nargs, seen2)
+            },
+        },
+    }
+}
+
+fn inferMatchArm(ctx: CkCtx, arm: Arm, st: Type) -> Check[Type] {
+    let Arm(pat, body) = arm
+    let! pair = checkPattern(ctx, pat, st, smEmpty())
+    let Pair(ctx2, _) = pair
+    infer(ctx2, body)
+}
+
+fn armTypes(ctx: CkCtx, arms: List[Arm], st: Type, result: Option[Type]) -> Check[Type] {
+    match arms {
+        Nil => match result {
+            None => pure(TyUnit),
+            Some(t) => pure(t),
+        },
+        Cons(arm, rest) => {
+            let! t = inferMatchArm(pushScope(ctx), arm, st)
+            match result {
+                None => armTypes(ctx, rest, st, Some(t)),
+                Some(prev) => {
+                    let! ok = ckUnifyM(prev, t)
+                    if ok {
+                        armTypes(ctx, rest, st, Some(prev))
+                    } else {
+                        let Arm(_, body) = arm
+                        let! env = ckEnv()
+                        ckFail(errorf(resultPos(body), "match arms have different types: " ++ tyString(env, prev) ++ " and " ++ tyString(env, t)))
+                    }
+                },
+            }
+        },
+    }
+}
+
+fn checkRows(env: TyEnv, ctors: IntMap[Pair[Int, Int]], pos: Pos, isLet: Bool, arms: List[Arm], rows: List[List[CkSpat]]) -> Check[Unit] {
+    match arms {
+        Nil => {
+            let msg = ckMissing(env, rows)
+            if msg == "" {
+                pure(())
+            } else if isLet {
+                ckFail(errorf(pos, "refutable pattern in let: missing " ++ msg))
+            } else {
+                ckFail(errorf(pos, "non-exhaustive match: missing " ++ msg))
+            }
+        },
+        Cons(arm, rest) => {
+            let Arm(pat, _) = arm
+            let q = Cons(ckToSpat(env, pat, ctors), Nil)
+            if ckUseful(env, rows, q) {
+                checkRows(env, ctors, pos, isLet, rest, append(rows, Cons(q, Nil)))
+            } else {
+                ckFail(errorf(patternPos(pat), "unreachable match arm"))
+            }
+        },
+    }
+}
+
+fn inferMatch(ctx: CkCtx, id: Int, pos: Pos, scrut: Expr, arms: List[Arm], isLet: Bool) -> Check[Type] {
+    let! st = infer(ctx, scrut)
+    let! env = ckEnv()
+    let! _ = match tyPrune(env, st) {
+        TyMeta(mv) => inferScrutinee(mv, arms),
+        _ => pure(()),
+    }
+    let! env2 = ckEnv()
+    let pruned = tyPrune(env2, st)
+    match pruned {
+        TyFunc(_, _) => ckFail(errorf(resultPos(scrut), "cannot match on values of type " ++ tyString(env2, st))),
+        TyParam(_, _) => ckFail(errorf(resultPos(scrut), "cannot match on values of type " ++ tyString(env2, st))),
+        TyMeta(_) => ckFail(errorf(resultPos(scrut), "cannot infer the type of the matched value; add a type annotation")),
+        _ => if tyIsIO(env2, st) {
+            ckFail(errorf(resultPos(scrut), "cannot match on values of type " ++ tyString(env2, st)))
+        } else {
+            let! result = armTypes(ctx, arms, pruned, None)
+            let! stt = ckGet()
+            let! env3 = ckEnv()
+            let! _ = checkRows(env3, ckCtorPats(stt), pos, isLet, arms, Nil)
+            pure(result)
+        },
+    }
+}

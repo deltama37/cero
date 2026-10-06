@@ -1,0 +1,265 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "syntax/ast"
+import "util/intmap"
+import "util/strmap"
+
+type CkRef = | CkRef(List[String], StrMap[Bool], List[StrMap[Bool]])
+
+fn rfPush(st: CkRef) -> CkRef {
+    let CkRef(refs, seen, scopes) = st
+    CkRef(refs, seen, Cons(smEmpty(), scopes))
+}
+
+fn rfPop(st: CkRef) -> CkRef {
+    let CkRef(refs, seen, scopes) = st
+    match scopes {
+        Nil => st,
+        Cons(_, rest) => CkRef(refs, seen, rest),
+    }
+}
+
+fn rfBind(st: CkRef, name: String) -> CkRef {
+    let CkRef(refs, seen, scopes) = st
+    match scopes {
+        Nil => st,
+        Cons(top, rest) => CkRef(refs, seen, Cons(smInsert(top, name, true), rest)),
+    }
+}
+
+fn rfIn(scopes: List[StrMap[Bool]], name: String) -> Bool {
+    match scopes {
+        Nil => false,
+        Cons(top, rest) => if smMember(top, name) {
+            true
+        } else {
+            rfIn(rest, name)
+        },
+    }
+}
+
+fn rfAdd(st: CkRef, name: String) -> CkRef {
+    let CkRef(refs, seen, scopes) = st
+    if smMember(seen, name) {
+        st
+    } else {
+        CkRef(Cons(name, refs), smInsert(seen, name, true), scopes)
+    }
+}
+
+fn rfNote(st: CkRef, name: String, isFunc: String -> Bool) -> CkRef {
+    let CkRef(_, _, scopes) = st
+    if rfIn(scopes, name) {
+        st
+    } else if isFunc(name) {
+        rfAdd(st, name)
+    } else {
+        st
+    }
+}
+
+fn rfBindParams(st: CkRef, ps: List[Param]) -> CkRef {
+    match ps {
+        Nil => st,
+        Cons(p, rest) => match p {
+            Param(_, _, name, _) => rfBindParams(rfBind(st, name), rest),
+        },
+    }
+}
+
+fn rfWalkPat(st: CkRef, p: Pattern) -> CkRef {
+    match p {
+        WildP(_, _) => st,
+        IntP(_, _, _) => st,
+        BoolP(_, _, _) => st,
+        StrP(_, _, _) => st,
+        VarP(_, _, name) => rfBind(st, name),
+        CtorP(_, _, _, args) => rfWalkPats(st, args),
+    }
+}
+
+fn rfWalkPats(st: CkRef, ps: List[Pattern]) -> CkRef {
+    match ps {
+        Nil => st,
+        Cons(p, rest) => rfWalkPats(rfWalkPat(st, p), rest),
+    }
+}
+
+fn rfWalkExprs(st: CkRef, es: List[Expr], isFunc: String -> Bool) -> CkRef {
+    match es {
+        Nil => st,
+        Cons(e, rest) => rfWalkExprs(rfWalkExpr(st, e, isFunc), rest, isFunc),
+    }
+}
+
+fn rfWalkLets(st: CkRef, lets: List[LetStmt], isFunc: String -> Bool) -> CkRef {
+    match lets {
+        Nil => st,
+        Cons(stmt, rest) => match stmt {
+            LetStmt(_, _, name, _, _, value) => rfWalkLets(rfBind(rfWalkExpr(st, value, isFunc), name), rest, isFunc),
+        },
+    }
+}
+
+fn rfWalkArms(st: CkRef, arms: List[Arm], isFunc: String -> Bool) -> CkRef {
+    match arms {
+        Nil => st,
+        Cons(arm, rest) => match arm {
+            Arm(pat, body) => {
+                let st2 = rfPop(rfWalkExpr(rfWalkPat(rfPush(st), pat), body, isFunc))
+                rfWalkArms(st2, rest, isFunc)
+            },
+        },
+    }
+}
+
+fn rfWalkExpr(st: CkRef, e: Expr, isFunc: String -> Bool) -> CkRef {
+    match e {
+        IntLit(_, _, _) => st,
+        StringLit(_, _, _) => st,
+        BoolLit(_, _, _) => st,
+        UnitLit(_, _) => st,
+        Ident(_, _, name) => rfNote(st, name, isFunc),
+        Unary(_, _, _, x) => rfWalkExpr(st, x, isFunc),
+        Binary(_, _, _, _, x, y) => rfWalkExpr(rfWalkExpr(st, x, isFunc), y, isFunc),
+        Call(_, _, callee, _, args) => rfWalkExprs(rfWalkExpr(st, callee, isFunc), args, isFunc),
+        If(_, _, cond, thenB, elseE) => {
+            let st2 = rfWalkExpr(st, cond, isFunc)
+            let st3 = rfWalkExpr(st2, BlockE(thenB), isFunc)
+            rfWalkExpr(st3, elseE, isFunc)
+        },
+        BlockE(b) => match b {
+            Block(_, _, lets, result) => rfPop(rfWalkExpr(rfWalkLets(rfPush(st), lets, isFunc), result, isFunc)),
+        },
+        FuncLit(_, _, params, _, body) => rfPop(rfWalkExpr(rfBindParams(rfPush(st), params), BlockE(body), isFunc)),
+        Match(_, _, scrut, arms, _) => rfWalkArms(rfWalkExpr(st, scrut, isFunc), arms, isFunc),
+    }
+}
+
+pub fn ckFuncRefs(params: List[Param], body: Block, isFunc: String -> Bool) -> List[String] {
+    let st = rfBindParams(rfPush(CkRef(Nil, smEmpty(), Nil)), params)
+    let CkRef(refs, _, _) = rfWalkExpr(st, BlockE(body), isFunc)
+    reverse(refs)
+}
+
+type CkTarjan = | CkTarjan(Int, IntMap[Int], IntMap[Int], List[Int], IntMap[Bool], List[List[Int]])
+
+fn tjIndex(st: CkTarjan, v: Int) -> Int {
+    let CkTarjan(_, indices, _, _, _, _) = st
+    withDefault(imLookup(indices, v), -1)
+}
+
+fn tjLow(st: CkTarjan, v: Int) -> Int {
+    let CkTarjan(_, _, low, _, _, _) = st
+    withDefault(imLookup(low, v), 0)
+}
+
+fn tjOn(st: CkTarjan, v: Int) -> Bool {
+    let CkTarjan(_, _, _, _, on, _) = st
+    withDefault(imLookup(on, v), false)
+}
+
+fn tjAssign(st: CkTarjan, v: Int) -> CkTarjan {
+    let CkTarjan(index, indices, low, stack, on, out) = st
+    CkTarjan(index + 1, imInsert(indices, v, index), imInsert(low, v, index), Cons(v, stack), imInsert(on, v, true), out)
+}
+
+fn tjRelax(st: CkTarjan, v: Int, cand: Int) -> CkTarjan {
+    let cur = tjLow(st, v)
+    if cand < cur {
+        let CkTarjan(index, indices, low, stack, on, out) = st
+        CkTarjan(index, indices, imInsert(low, v, cand), stack, on, out)
+    } else {
+        st
+    }
+}
+
+fn sortInsert(x: Int, xs: List[Int]) -> List[Int] {
+    match xs {
+        Nil => Cons(x, Nil),
+        Cons(y, rest) => if x <= y {
+            Cons(x, xs)
+        } else {
+            Cons(y, sortInsert(x, rest))
+        },
+    }
+}
+
+fn sortInts(xs: List[Int]) -> List[Int] {
+    match xs {
+        Nil => Nil,
+        Cons(x, rest) => sortInsert(x, sortInts(rest)),
+    }
+}
+
+fn popUntil(stack: List[Int], on: IntMap[Bool], v: Int, acc: List[Int]) -> Pair[List[Int], Pair[List[Int], IntMap[Bool]]] {
+    match stack {
+        Nil => Pair(acc, Pair(Nil, on)),
+        Cons(w, rest) => {
+            let on2 = imInsert(on, w, false)
+            let acc2 = Cons(w, acc)
+            if w == v {
+                Pair(acc2, Pair(rest, on2))
+            } else {
+                popUntil(rest, on2, v, acc2)
+            }
+        },
+    }
+}
+
+fn tjFinish(st: CkTarjan, v: Int) -> CkTarjan {
+    if tjLow(st, v) == tjIndex(st, v) {
+        let CkTarjan(index, indices, low, stack, on, out) = st
+        let Pair(comp, restPair) = popUntil(stack, on, v, Nil)
+        let Pair(stack2, on2) = restPair
+        CkTarjan(index, indices, low, stack2, on2, Cons(sortInts(comp), out))
+    } else {
+        st
+    }
+}
+
+fn succsOf(edges: IntMap[List[Int]], v: Int) -> List[Int] {
+    withDefault(imLookup(edges, v), Nil)
+}
+
+fn tjVisit(st: CkTarjan, v: Int, w: Int, edges: IntMap[List[Int]]) -> CkTarjan {
+    let iw = tjIndex(st, w)
+    if iw < 0 {
+        let st2 = tjStrong(st, w, edges)
+        tjRelax(st2, v, tjLow(st2, w))
+    } else if tjOn(st, w) {
+        tjRelax(st, v, iw)
+    } else {
+        st
+    }
+}
+
+fn tjSuccs(st: CkTarjan, v: Int, ws: List[Int], edges: IntMap[List[Int]]) -> CkTarjan {
+    match ws {
+        Nil => st,
+        Cons(w, rest) => tjSuccs(tjVisit(st, v, w, edges), v, rest, edges),
+    }
+}
+
+fn tjStrong(st: CkTarjan, v: Int, edges: IntMap[List[Int]]) -> CkTarjan {
+    let st1 = tjAssign(st, v)
+    let st2 = tjSuccs(st1, v, succsOf(edges, v), edges)
+    tjFinish(st2, v)
+}
+
+fn tjAll(st: CkTarjan, v: Int, n: Int, edges: IntMap[List[Int]]) -> CkTarjan {
+    if v >= n {
+        st
+    } else if tjIndex(st, v) < 0 {
+        tjAll(tjStrong(st, v, edges), v + 1, n, edges)
+    } else {
+        tjAll(st, v + 1, n, edges)
+    }
+}
+
+pub fn ckSccs(n: Int, edges: IntMap[List[Int]]) -> List[List[Int]] {
+    let st = tjAll(CkTarjan(0, imEmpty(), imEmpty(), Nil, imEmpty(), Nil), 0, n, edges)
+    let CkTarjan(_, _, _, _, _, out) = st
+    reverse(out)
+}

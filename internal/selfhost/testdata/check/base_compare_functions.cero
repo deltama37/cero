@@ -1,0 +1,2 @@
+fn id(x: Int) -> Int { x }
+fn main() -> Int { if id == id { 1 } else { 0 } }

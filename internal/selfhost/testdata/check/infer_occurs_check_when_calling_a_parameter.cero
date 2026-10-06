@@ -1,0 +1,1 @@
+fn main() -> Int { let g = fn(f) { f(f) } 0 }

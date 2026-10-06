@@ -1,0 +1,2 @@
+type Option[T] = | None | Some(T)
+fn f(b: Bool) -> Int { let x = if b { Some(1) } else { Some(true) } 0 }

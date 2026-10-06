@@ -1,0 +1,13 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Pair[A, B] = Pair(A, B)
+
+fn identity[T](x: T) -> T { x }
+fn none[T]() -> Option[T] { None }
+fn main() -> Int { let o: Option[Bool] = none() 0 }

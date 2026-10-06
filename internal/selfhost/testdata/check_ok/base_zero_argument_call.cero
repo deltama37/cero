@@ -1,0 +1,4 @@
+fn main() -> Int {
+    let f = fn() -> Int { 1 }
+    f()
+}

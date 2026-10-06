@@ -1,0 +1,8 @@
+type IntList = | Nil | Cons(Int, IntList)
+fn main() -> Int {
+    let n = 1
+    match n {
+        Nil => 1,
+        _ => 2,
+    }
+}

@@ -1,0 +1,4 @@
+fn main() -> Int {
+    let s = "hi"
+    0
+}

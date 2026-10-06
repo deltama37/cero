@@ -1,0 +1,3 @@
+import "lib"
+fn value() -> Int { 2 }
+fn main() -> Int { value() }

@@ -1,0 +1,3 @@
+fn f(x) { g(x) }
+fn g(y) { f(y) }
+fn main() { f(1) }

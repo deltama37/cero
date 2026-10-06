@@ -1,0 +1,1 @@
+fn main() -> Int { let isZero = fn(n) { match n { 0 => true, _ => false } } if isZero(0) { 1 } else { 2 } }

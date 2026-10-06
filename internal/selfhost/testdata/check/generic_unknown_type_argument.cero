@@ -1,0 +1,2 @@
+type P[A, B] = P(A, B)
+fn f(x: P[Int, Foo]) -> Int { 0 }

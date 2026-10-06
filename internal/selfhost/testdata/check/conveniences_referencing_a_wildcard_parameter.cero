@@ -1,0 +1,2 @@
+fn f(_: Int) -> Int { _ }
+fn main() -> Int { f(1) }
