@@ -263,8 +263,8 @@ func TestBuild(t *testing.T) {
 
 	root := repoRoot(t)
 	files := irSources(t, root)
-	if len(files) != 282 {
-		t.Fatalf("sources = %d, want 282", len(files))
+	if len(files) != 287 {
+		t.Fatalf("sources = %d, want 287", len(files))
 	}
 	for _, file := range files {
 		t.Run(file, func(t *testing.T) {

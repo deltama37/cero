@@ -1,0 +1,19 @@
+import "std/list"
+import "wasm/bytes"
+import "x86/asm"
+
+fn x6U16(n: Int) -> List[Int] {
+    Cons(bitAnd(n, 255), Cons(bitAnd(shiftRightUnsigned(n, 8), 255), Nil))
+}
+
+fn x6Phdr(flags: Int, off: Int, addr: Int, size: Int) -> List[Int] {
+    append(x6LE32(1), append(x6LE32(flags), append(x6LE64(off), append(x6LE64(addr), append(x6LE64(addr), append(x6LE64(size), append(x6LE64(size), x6LE64(4096))))))))
+}
+
+pub fn x6Elf(entry: Int, textSize: Int, dataOff: Int, dataSize: Int) -> Bytes {
+    let ident = Cons(127, Cons(69, Cons(76, Cons(70, Cons(2, Cons(1, Cons(1, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Nil))))))))))))))))
+    let eh = append(ident, append(x6U16(2), append(x6U16(62), append(x6LE32(1), append(x6LE64(entry), append(x6LE64(64), append(x6LE64(0), append(x6LE32(0), append(x6U16(64), append(x6U16(56), append(x6U16(2), append(x6U16(0), append(x6U16(0), x6U16(0))))))))))))))
+    let text = x6Phdr(5, 0, 4194304, textSize)
+    let data = x6Phdr(6, dataOff, 4194304 + dataOff, dataSize)
+    waBytes(append(eh, append(text, data)))
+}

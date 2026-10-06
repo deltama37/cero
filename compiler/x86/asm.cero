@@ -1,0 +1,519 @@
+import "std/list"
+
+pub type X6Reg =
+    | Rax
+    | Rcx
+    | Rdx
+    | Rbx
+    | Rsp
+    | Rbp
+    | Rsi
+    | Rdi
+    | R8
+    | R9
+    | R10
+    | R11
+
+pub type X6Cond =
+    | CEq
+    | CNe
+    | CLt
+    | CLe
+    | CGt
+    | CGe
+    | CB
+    | CBe
+    | CA
+    | CAe
+
+pub type X6Ins =
+    | X6Bytes(List[Int])
+    | X6Label(Int)
+    | X6Jmp(Int)
+    | X6Jcc(X6Cond, Int)
+    | X6Call(Int)
+    | X6MovLabel(X6Reg, Int)
+
+pub type X6Code =
+    | X6Nil
+    | X6One(X6Ins)
+    | X6Cat(X6Code, X6Code)
+
+pub type X6Gen =
+    | X6Gen(X6Code, Int)
+
+pub fn x6One(i: X6Ins) -> X6Code {
+    X6One(i)
+}
+
+pub fn x6Cat(a: X6Code, b: X6Code) -> X6Code {
+    X6Cat(a, b)
+}
+
+fn x6SeqGo(xs: List[X6Code], acc: X6Code) -> X6Code {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => x6SeqGo(rest, X6Cat(acc, x)),
+    }
+}
+
+pub fn x6Seq(xs: List[X6Code]) -> X6Code {
+    x6SeqGo(xs, X6Nil)
+}
+
+fn x6Flat(stack: List[X6Code], acc: List[X6Ins]) -> List[X6Ins] {
+    match stack {
+        Nil => acc,
+        Cons(c, rest) => match c {
+            X6Nil => x6Flat(rest, acc),
+            X6One(i) => x6Flat(rest, Cons(i, acc)),
+            X6Cat(a, b) => x6Flat(Cons(a, Cons(b, rest)), acc),
+        },
+    }
+}
+
+pub fn x6Flatten(c: X6Code) -> List[X6Ins] {
+    reverse(x6Flat(Cons(c, Nil), Nil))
+}
+
+pub fn x6LabStart(n: Int) -> Int {
+    n
+}
+
+pub fn x6LabAlloc(n: Int) -> Int {
+    n + 1
+}
+
+pub fn x6LabTrap(n: Int) -> Int {
+    n + 2
+}
+
+pub fn x6LabPrint(n: Int) -> Int {
+    n + 3
+}
+
+pub fn x6LabHeap(n: Int) -> Int {
+    n + 4
+}
+
+pub fn x6LabHeapEnd(n: Int) -> Int {
+    n + 5
+}
+
+pub fn x6LabArgc(n: Int) -> Int {
+    n + 6
+}
+
+pub fn x6LabArgv(n: Int) -> Int {
+    n + 7
+}
+
+pub fn x6LabTable(n: Int) -> Int {
+    n + 8
+}
+
+pub fn x6LabMsg(n: Int) -> Int {
+    n + 9
+}
+
+pub fn x6LabHelper(n: Int, k: Int) -> Int {
+    n + 10 + k
+}
+
+pub fn x6HelperCount() -> Int {
+    17
+}
+
+pub fn x6LabFresh(n: Int) -> Int {
+    n + 27
+}
+
+fn x6RegN(r: X6Reg) -> Int {
+    match r {
+        Rax => 0,
+        Rcx => 1,
+        Rdx => 2,
+        Rbx => 3,
+        Rsp => 4,
+        Rbp => 5,
+        Rsi => 6,
+        Rdi => 7,
+        R8 => 8,
+        R9 => 9,
+        R10 => 10,
+        R11 => 11,
+    }
+}
+
+fn x6Lo(n: Int) -> Int {
+    if n >= 8 {
+        n - 8
+    } else {
+        n
+    }
+}
+
+fn x6Hi(n: Int) -> Int {
+    if n >= 8 {
+        1
+    } else {
+        0
+    }
+}
+
+fn x6Rex(w: Int, r: Int, b: Int) -> Int {
+    64 + w * 8 + r * 4 + b
+}
+
+fn x6ModRM(mod: Int, reg: Int, rm: Int) -> Int {
+    mod * 64 + reg * 8 + rm
+}
+
+fn x6U8(n: Int) -> Int {
+    bitAnd(n, 255)
+}
+
+pub fn x6LE32(n: Int) -> List[Int] {
+    Cons(x6U8(n), Cons(x6U8(shiftRightUnsigned(n, 8)), Cons(x6U8(shiftRightUnsigned(n, 16)), Cons(x6U8(shiftRightUnsigned(n, 24)), Nil))))
+}
+
+pub fn x6LE64(n: Int) -> List[Int] {
+    append(x6LE32(n), x6LE32(shiftRightUnsigned(n, 32)))
+}
+
+fn x6LE16(n: Int) -> List[Int] {
+    Cons(x6U8(n), Cons(x6U8(shiftRightUnsigned(n, 8)), Nil))
+}
+
+fn x6FitsI8(n: Int) -> Bool {
+    n >= -128 && n <= 127
+}
+
+fn x6FitsI32(n: Int) -> Bool {
+    n >= -2147483648 && n <= 2147483647
+}
+
+fn x6RR(op: List[Int], reg: Int, rm: Int, w: Int, force: Int) -> List[Int] {
+    let need = w + x6Hi(reg) + x6Hi(rm) + force
+    let pre = if need > 0 {
+        Cons(x6Rex(w, x6Hi(reg), x6Hi(rm)), Nil)
+    } else {
+        Nil
+    }
+    append(pre, append(op, Cons(x6ModRM(3, x6Lo(reg), x6Lo(rm)), Nil)))
+}
+
+fn x6Mem(op: List[Int], reg: Int, base: Int, disp: Int, w: Int, force: Int) -> List[Int] {
+    let sib = x6Lo(base) == 4
+    let rm = if sib {
+        4
+    } else {
+        x6Lo(base)
+    }
+    let need = w + x6Hi(reg) + x6Hi(base) + force
+    let pre = if need > 0 {
+        Cons(x6Rex(w, x6Hi(reg), x6Hi(base)), Nil)
+    } else {
+        Nil
+    }
+    let sibB = if sib {
+        Cons(x6ModRM(0, 4, x6Lo(base)), Nil)
+    } else {
+        Nil
+    }
+    append(pre, append(op, append(Cons(x6ModRM(2, x6Lo(reg), rm), Nil), append(sibB, x6LE32(disp)))))
+}
+
+fn x6Force8(n: Int) -> Int {
+    if n >= 4 && n < 8 {
+        1
+    } else {
+        0
+    }
+}
+
+fn x6SetOp(c: X6Cond) -> Int {
+    match c {
+        CEq => 148,
+        CNe => 149,
+        CLt => 156,
+        CLe => 158,
+        CGt => 159,
+        CGe => 157,
+        CB => 146,
+        CBe => 150,
+        CA => 151,
+        CAe => 147,
+    }
+}
+
+pub fn x6JccOp(c: X6Cond) -> Int {
+    match c {
+        CEq => 132,
+        CNe => 133,
+        CLt => 140,
+        CLe => 142,
+        CGt => 143,
+        CGe => 141,
+        CB => 130,
+        CBe => 134,
+        CA => 135,
+        CAe => 131,
+    }
+}
+
+pub fn x6JmpBytes(rel: Int) -> List[Int] {
+    Cons(233, x6LE32(rel))
+}
+
+pub fn x6CallBytes(rel: Int) -> List[Int] {
+    Cons(232, x6LE32(rel))
+}
+
+pub fn x6JccBytes(c: X6Cond, rel: Int) -> List[Int] {
+    Cons(15, Cons(x6JccOp(c), x6LE32(rel)))
+}
+
+fn x6Bytes(bs: List[Int]) -> X6Ins {
+    X6Bytes(bs)
+}
+
+pub fn x6MovRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(137, Nil), x6RegN(src), x6RegN(dst), 1, 0))
+}
+
+pub fn x6MovRI64(dst: X6Reg, imm: Int) -> X6Ins {
+    let n = x6RegN(dst)
+    x6Bytes(Cons(x6Rex(1, 0, x6Hi(n)), Cons(184 + x6Lo(n), x6LE64(imm))))
+}
+
+fn x6MovRI32(dst: X6Reg, imm: Int) -> X6Ins {
+    x6Bytes(append(x6RR(Cons(199, Nil), 0, x6RegN(dst), 1, 0), x6LE32(imm)))
+}
+
+pub fn x6MovRI(dst: X6Reg, imm: Int) -> X6Ins {
+    if x6FitsI32(imm) {
+        x6MovRI32(dst, imm)
+    } else {
+        x6MovRI64(dst, imm)
+    }
+}
+
+pub fn x6Load64(dst: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    x6Bytes(x6Mem(Cons(139, Nil), x6RegN(dst), x6RegN(base), disp, 1, 0))
+}
+
+pub fn x6Store64(src: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    x6Bytes(x6Mem(Cons(137, Nil), x6RegN(src), x6RegN(base), disp, 1, 0))
+}
+
+pub fn x6Load32(dst: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    x6Bytes(x6Mem(Cons(139, Nil), x6RegN(dst), x6RegN(base), disp, 0, 0))
+}
+
+pub fn x6Store32(src: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    x6Bytes(x6Mem(Cons(137, Nil), x6RegN(src), x6RegN(base), disp, 0, 0))
+}
+
+pub fn x6Load8u(dst: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    x6Bytes(x6Mem(Cons(15, Cons(182, Nil)), x6RegN(dst), x6RegN(base), disp, 1, 0))
+}
+
+pub fn x6Store8(src: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    let s = x6RegN(src)
+    x6Bytes(x6Mem(Cons(136, Nil), s, x6RegN(base), disp, 0, x6Force8(s)))
+}
+
+pub fn x6Push(r: X6Reg) -> X6Ins {
+    let n = x6RegN(r)
+    if n >= 8 {
+        x6Bytes(Cons(65, Cons(80 + x6Lo(n), Nil)))
+    } else {
+        x6Bytes(Cons(80 + n, Nil))
+    }
+}
+
+pub fn x6Pop(r: X6Reg) -> X6Ins {
+    let n = x6RegN(r)
+    if n >= 8 {
+        x6Bytes(Cons(65, Cons(88 + x6Lo(n), Nil)))
+    } else {
+        x6Bytes(Cons(88 + n, Nil))
+    }
+}
+
+pub fn x6PushI(imm: Int) -> X6Ins {
+    if x6FitsI8(imm) {
+        x6Bytes(Cons(106, Cons(x6U8(imm), Nil)))
+    } else {
+        x6Bytes(Cons(104, x6LE32(imm)))
+    }
+}
+
+pub fn x6AddRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(1, Nil), x6RegN(src), x6RegN(dst), 1, 0))
+}
+
+pub fn x6SubRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(41, Nil), x6RegN(src), x6RegN(dst), 1, 0))
+}
+
+pub fn x6ImulRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(15, Cons(175, Nil)), x6RegN(dst), x6RegN(src), 1, 0))
+}
+
+pub fn x6AndRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(33, Nil), x6RegN(src), x6RegN(dst), 1, 0))
+}
+
+pub fn x6OrRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(9, Nil), x6RegN(src), x6RegN(dst), 1, 0))
+}
+
+pub fn x6XorRR(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(49, Nil), x6RegN(src), x6RegN(dst), 1, 0))
+}
+
+pub fn x6CmpRR(a: X6Reg, b: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(57, Nil), x6RegN(b), x6RegN(a), 1, 0))
+}
+
+fn x6Arith(ext: Int, reg: Int, imm: Int, wide: Bool) -> List[Int] {
+    if wide {
+        append(x6RR(Cons(129, Nil), ext, reg, 1, 0), x6LE32(imm))
+    } else {
+        append(x6RR(Cons(131, Nil), ext, reg, 1, 0), Cons(x6U8(imm), Nil))
+    }
+}
+
+fn x6Ari(ext: Int, r: X6Reg, imm: Int) -> X6Ins {
+    x6Bytes(x6Arith(ext, x6RegN(r), imm, !x6FitsI8(imm)))
+}
+
+pub fn x6AddRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6Ari(0, r, imm)
+}
+
+pub fn x6OrRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6Ari(1, r, imm)
+}
+
+pub fn x6AndRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6Ari(4, r, imm)
+}
+
+pub fn x6SubRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6Ari(5, r, imm)
+}
+
+pub fn x6XorRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6Ari(6, r, imm)
+}
+
+pub fn x6CmpRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6Ari(7, r, imm)
+}
+
+pub fn x6CmpRI32(r: X6Reg, imm: Int) -> X6Ins {
+    x6Bytes(x6Arith(7, x6RegN(r), imm, true))
+}
+
+fn x6ShiftI(ext: Int, r: X6Reg, imm: Int) -> X6Ins {
+    x6Bytes(append(x6RR(Cons(193, Nil), ext, x6RegN(r), 1, 0), Cons(x6U8(imm), Nil)))
+}
+
+pub fn x6ShlRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6ShiftI(4, r, imm)
+}
+
+pub fn x6ShrRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6ShiftI(5, r, imm)
+}
+
+pub fn x6SarRI(r: X6Reg, imm: Int) -> X6Ins {
+    x6ShiftI(7, r, imm)
+}
+
+fn x6ShiftCl(ext: Int, r: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(211, Nil), ext, x6RegN(r), 1, 0))
+}
+
+pub fn x6ShlCl(r: X6Reg) -> X6Ins {
+    x6ShiftCl(4, r)
+}
+
+pub fn x6ShrCl(r: X6Reg) -> X6Ins {
+    x6ShiftCl(5, r)
+}
+
+pub fn x6SarCl(r: X6Reg) -> X6Ins {
+    x6ShiftCl(7, r)
+}
+
+pub fn x6Cqo() -> X6Ins {
+    x6Bytes(Cons(72, Cons(153, Nil)))
+}
+
+fn x6F7(ext: Int, r: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(247, Nil), ext, x6RegN(r), 1, 0))
+}
+
+pub fn x6Neg(r: X6Reg) -> X6Ins {
+    x6F7(3, r)
+}
+
+pub fn x6DivR(r: X6Reg) -> X6Ins {
+    x6F7(6, r)
+}
+
+pub fn x6IdivR(r: X6Reg) -> X6Ins {
+    x6F7(7, r)
+}
+
+pub fn x6Setcc(c: X6Cond, r: X6Reg) -> X6Ins {
+    let n = x6RegN(r)
+    x6Bytes(x6RR(Cons(15, Cons(x6SetOp(c), Nil)), 0, n, 0, x6Force8(n)))
+}
+
+pub fn x6MovzxB(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(15, Cons(182, Nil)), x6RegN(dst), x6RegN(src), 1, 0))
+}
+
+pub fn x6MovRR32(dst: X6Reg, src: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(137, Nil), x6RegN(src), x6RegN(dst), 0, 0))
+}
+
+pub fn x6Lea(dst: X6Reg, base: X6Reg, disp: Int) -> X6Ins {
+    x6Bytes(x6Mem(Cons(141, Nil), x6RegN(dst), x6RegN(base), disp, 1, 0))
+}
+
+fn x6FF(ext: Int, r: X6Reg) -> X6Ins {
+    x6Bytes(x6RR(Cons(255, Nil), ext, x6RegN(r), 0, 0))
+}
+
+pub fn x6CallR(r: X6Reg) -> X6Ins {
+    x6FF(2, r)
+}
+
+pub fn x6JmpR(r: X6Reg) -> X6Ins {
+    x6FF(4, r)
+}
+
+pub fn x6RetN(n: Int) -> X6Ins {
+    x6Bytes(Cons(194, x6LE16(n)))
+}
+
+pub fn x6Syscall() -> X6Ins {
+    x6Bytes(Cons(15, Cons(5, Nil)))
+}
+
+pub fn x6Size(i: X6Ins) -> Int {
+    match i {
+        X6Bytes(bs) => length(bs),
+        X6Label(_) => 0,
+        X6Jmp(_) => 5,
+        X6Jcc(_, _) => 6,
+        X6Call(_) => 5,
+        X6MovLabel(_, _) => 10,
+    }
+}

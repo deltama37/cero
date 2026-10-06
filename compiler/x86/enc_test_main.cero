@@ -1,0 +1,74 @@
+import "std/io"
+import "std/list"
+import "asm"
+
+type Row =
+    | Row(String, X6Ins)
+
+fn hexDigit(n: Int) -> String {
+    if n < 10 {
+        stringFromByte('0' + n)
+    } else {
+        stringFromByte('a' + (n - 10))
+    }
+}
+
+fn hexByte(b: Int) -> String {
+    hexDigit(shiftRightUnsigned(bitAnd(b, 255), 4)) ++ hexDigit(bitAnd(b, 15))
+}
+
+fn hexGo(xs: List[Int], acc: String) -> String {
+    match xs {
+        Nil => acc,
+        Cons(b, rest) => hexGo(rest, acc ++ hexByte(b)),
+    }
+}
+
+fn show(i: X6Ins) -> String {
+    match i {
+        X6Bytes(bs) => hexGo(bs, ""),
+        _ => "",
+    }
+}
+
+fn rows0() -> List[Row] {
+    Cons(Row("movrr_rax_rcx", x6MovRR(Rax, Rcx)), Cons(Row("movrr_r8_r9", x6MovRR(R8, R9)), Cons(Row("movri64_rax_42", x6MovRI64(Rax, 42)), Cons(Row("movri64_r8_m1", x6MovRI64(R8, -1)), Cons(Row("movri_rax_42", x6MovRI(Rax, 42)), Cons(Row("movri_rax_heapend", x6MovRI(Rax, 4294901760)), Cons(Row("load64_rax_rbp_16", x6Load64(Rax, Rbp, 16)), Cons(Row("load64_rax_rsp_8", x6Load64(Rax, Rsp, 8)), Cons(Row("store64_rbp_m8", x6Store64(Rax, Rbp, -8)), Cons(Row("store64_rsp_r10", x6Store64(R10, Rsp, 0)), Cons(Row("load32_eax_rax", x6Load32(Rax, Rax, 0)), Cons(Row("store32_rax_ecx", x6Store32(Rcx, Rax, 0)), Nil))))))))))))
+}
+
+fn rows1() -> List[Row] {
+    Cons(Row("load8u_rax_8", x6Load8u(Rax, Rax, 8)), Cons(Row("store8_al_8", x6Store8(Rax, Rax, 8)), Cons(Row("push_rax", x6Push(Rax)), Cons(Row("push_r10", x6Push(R10)), Cons(Row("pop_rax", x6Pop(Rax)), Cons(Row("pop_r11", x6Pop(R11)), Cons(Row("add_rax_rcx", x6AddRR(Rax, Rcx)), Cons(Row("sub_rax_rdx", x6SubRR(Rax, Rdx)), Cons(Row("imul_rax_rcx", x6ImulRR(Rax, Rcx)), Cons(Row("cqo", x6Cqo()), Cons(Row("idiv_rcx", x6IdivR(Rcx)), Cons(Row("cmp_rax_rcx", x6CmpRR(Rax, Rcx)), Nil))))))))))))
+}
+
+fn rows2() -> List[Row] {
+    Cons(Row("cmpri32_rax_m1", x6CmpRI32(Rax, -1)), Cons(Row("cmpri_rcx_0", x6CmpRI(Rcx, 0)), Cons(Row("sete_al", x6Setcc(CEq, Rax)), Cons(Row("setne_al", x6Setcc(CNe, Rax)), Cons(Row("setl_al", x6Setcc(CLt, Rax)), Cons(Row("setle_al", x6Setcc(CLe, Rax)), Cons(Row("setg_al", x6Setcc(CGt, Rax)), Cons(Row("setge_al", x6Setcc(CGe, Rax)), Cons(Row("setb_al", x6Setcc(CB, Rax)), Cons(Row("setbe_al", x6Setcc(CBe, Rax)), Cons(Row("seta_al", x6Setcc(CA, Rax)), Cons(Row("setae_al", x6Setcc(CAe, Rax)), Nil))))))))))))
+}
+
+fn rows3() -> List[Row] {
+    Cons(Row("movzx_rax_al", x6MovzxB(Rax, Rax)), Cons(Row("and_rax_rcx", x6AndRR(Rax, Rcx)), Cons(Row("or_rax_rdx", x6OrRR(Rax, Rdx)), Cons(Row("xor_rax_rax", x6XorRR(Rax, Rax)), Cons(Row("shl_cl", x6ShlCl(Rax)), Cons(Row("sar_cl", x6SarCl(Rax)), Cons(Row("shr_cl", x6ShrCl(Rax)), Cons(Row("neg_rax", x6Neg(Rax)), Cons(Row("ret_16", x6RetN(16)), Cons(Row("syscall", x6Syscall()), Cons(Row("call_rax", x6CallR(Rax)), Cons(Row("jmp_rax", x6JmpR(Rax)), Nil))))))))))))
+}
+
+fn rows4() -> List[Row] {
+    Cons(Row("call_r10", x6CallR(R10)), Cons(Row("jmp_r11", x6JmpR(R11)), Cons(Row("lea_rax_rbp_m8", x6Lea(Rax, Rbp, -8)), Cons(Row("lea_rsp_rbp_8", x6Lea(Rsp, Rbp, 8)), Cons(Row("push_10", x6PushI(10)), Cons(Row("add_rsp_8", x6AddRI(Rsp, 8)), Cons(Row("shl_rax_32", x6ShlRI(Rax, 32)), Cons(Row("shr_rdx_32", x6ShrRI(Rdx, 32)), Cons(Row("and_rcx_m8", x6AndRI(Rcx, -8)), Cons(Row("xor_rax_1", x6XorRI(Rax, 1)), Cons(Row("div_rcx", x6DivR(Rcx)), Cons(Row("mov32_ecx_eax", x6MovRR32(Rcx, Rax)), Nil))))))))))))
+}
+
+fn rows5() -> List[Row] {
+    Cons(Row("sub_rsp_32", x6SubRI(Rsp, 32)), Cons(Row("store32_rax_4", x6Store32(Rcx, Rax, 4)), Cons(Row("load64_r10_rbp_8", x6Load64(R10, Rbp, 8)), Cons(Row("jmp_rel0", X6Bytes(x6JmpBytes(0))), Cons(Row("call_rel0", X6Bytes(x6CallBytes(0))), Cons(Row("je_rel_m6", X6Bytes(x6JccBytes(CEq, -6))), Cons(Row("jb_rel_m6", X6Bytes(x6JccBytes(CB, -6))), Cons(Row("size_jmp", x6MovRI(Rax, x6Size(X6Jmp(0)))), Cons(Row("size_jcc", x6MovRI(Rax, x6Size(X6Jcc(CEq, 0)))), Cons(Row("size_call", x6MovRI(Rax, x6Size(X6Call(0)))), Cons(Row("size_movlabel", x6MovRI(Rax, x6Size(X6MovLabel(Rax, 0)))), Cons(Row("size_label", x6MovRI(Rax, x6Size(X6Label(0)))), Nil))))))))))))
+}
+
+fn rows6() -> List[Row] {
+    Cons(Row("size_bytes", x6MovRI(Rax, x6Size(X6Bytes(Cons(1, Cons(2, Cons(3, Nil))))))), Nil)
+}
+
+fn rows() -> List[Row] {
+    append(rows0(), append(rows1(), append(rows2(), append(rows3(), append(rows4(), append(rows5(), rows6()))))))
+}
+
+fn emit(row: Row) -> IO[Unit] {
+    match row {
+        Row(name, i) => print(name ++ " " ++ show(i) ++ "\n"),
+    }
+}
+
+fn main() -> IO[Unit] {
+    forEach(rows(), emit)
+}
