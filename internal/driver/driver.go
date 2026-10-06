@@ -64,7 +64,7 @@ func load(
 	l := &loader{
 		root:   filepath.Dir(filename),
 		read:   read,
-		byFile: map[string]*typecheck.Module{filename: entry},
+		byFile: map[string]*typecheck.Module{filepath.Clean(filename): entry},
 		state:  make(map[*typecheck.Module]int),
 	}
 	if err := l.visit(entry); err != nil {
