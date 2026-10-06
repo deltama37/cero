@@ -1,0 +1,2 @@
+import "std/pair"
+fn main() -> Int { fst(Pair(40, 1)) + snd(Pair(0, 2)) }

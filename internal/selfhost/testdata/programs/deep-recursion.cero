@@ -1,0 +1,11 @@
+fn sum(n: Int) -> Int {
+    if n == 0 {
+        0
+    } else {
+        n + sum(n - 1)
+    }
+}
+
+fn main() -> Int {
+    sum(10000)
+}

@@ -1,0 +1,5 @@
+import "std/option"
+fn main() -> Int {
+    let missing: Option[Int] = None
+    if isSome(Some(0)) && !isSome(missing) && isNone(missing) && !isNone(Some(0)) { 1 } else { 0 }
+}

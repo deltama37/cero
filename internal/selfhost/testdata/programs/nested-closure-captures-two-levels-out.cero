@@ -1,0 +1,8 @@
+fn main() -> Int {
+    let n = 40
+    let f = fn(x: Int) -> Int {
+        let g = fn(y: Int) -> Int { x + y + n }
+        g(1)
+    }
+    f(1)
+}

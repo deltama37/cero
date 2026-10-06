@@ -1,0 +1,9 @@
+fn calc(x: Int) -> Int {
+    let doubled = x * 2
+    let added = doubled + 10
+    added
+}
+
+fn main() -> Int {
+    calc(5)
+}

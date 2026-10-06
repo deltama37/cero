@@ -1,0 +1,16 @@
+type Color =
+    | Red
+    | Green(Bool)
+    | Blue(Bool, Int)
+
+fn score(c: Color) -> Int {
+    match c {
+        Red => 1,
+        Green(b) => if b { 2 } else { 3 },
+        Blue(b, n) => if b { n } else { 0 },
+    }
+}
+
+fn main() -> Int {
+    score(Red) + score(Green(true)) + score(Blue(false, 9)) + score(Green(false))
+}

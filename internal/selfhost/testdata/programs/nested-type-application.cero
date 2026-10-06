@@ -1,0 +1,18 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+fn sumSome(xs: List[Option[Int]]) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(o, rest) => match o { None => 0, Some(n) => n } + sumSome(rest),
+    }
+}
+
+fn main() -> Int {
+    sumSome(Cons(Some(1), Cons(None, Cons(Some(5), Nil))))
+}

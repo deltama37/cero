@@ -1,0 +1,4 @@
+import "std/string"
+fn main() -> Int {
+    if endsWith("hello", "llo") && endsWith("hello", "") && !endsWith("hello", "hi") && !endsWith("ab", "cab") { 1 } else { 0 }
+}

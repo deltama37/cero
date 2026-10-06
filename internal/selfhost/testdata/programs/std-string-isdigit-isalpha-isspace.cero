@@ -1,0 +1,9 @@
+import "std/string"
+fn byte(s: String) -> Int { stringByteAt(s, 0) }
+fn main() -> Int {
+    if isDigit(byte("0")) && isDigit(byte("9")) && !isDigit(byte("a")) && !isDigit(byte("/")) && isAlpha(byte("A")) && isAlpha(byte("Z")) && isAlpha(byte("a")) && isAlpha(byte("z")) && !isAlpha(byte("0")) && !isAlpha(byte(" ")) && isSpace(byte(" ")) && isSpace(byte("\t")) && isSpace(byte("\n")) && isSpace(byte("\r")) && !isSpace(byte("a")) && !isSpace(byte("0")) {
+        1
+    } else {
+        0
+    }
+}

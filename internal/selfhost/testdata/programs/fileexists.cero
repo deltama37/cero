@@ -1,0 +1,7 @@
+fn main() {
+    bind(fileExists("yes.txt"), fn(a: Bool) -> IO[Unit] {
+        bind(fileExists("no.txt"), fn(b: Bool) -> IO[Unit] {
+            print((if a { "Y" } else { "N" }) ++ (if b { "Y" } else { "N" }))
+        })
+    })
+}

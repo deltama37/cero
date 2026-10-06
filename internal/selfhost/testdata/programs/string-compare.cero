@@ -1,0 +1,7 @@
+fn main() -> Int {
+    let ab = stringCompare("a", "b")
+    let ba = stringCompare("b", "a")
+    let eq = stringCompare("ab", "ab")
+    let pre = stringCompare("a", "ab")
+    ab + 1 + (ba + 1) * 2 + (eq + 1) * 4 + (pre + 1) * 8
+}

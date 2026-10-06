@@ -1,0 +1,4 @@
+fn main() -> Int {
+    let e = ""
+    if e == "" && stringLength(e) == 0 && e ++ "a" == "a" && "b" ++ e == "b" { 1 } else { 0 }
+}

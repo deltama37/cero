@@ -1,0 +1,17 @@
+type Box = Box(Int)
+
+fn id(n: Int) -> Int { n }
+
+fn main() -> Int {
+    let flag = true
+    let f = id
+    let b = Box(10)
+    let n = 2
+    let g = fn(x: Int) -> Int {
+        let m = match b {
+            Box(v) => v,
+        }
+        if flag { f(m) + n + x } else { 0 }
+    }
+    g(30)
+}

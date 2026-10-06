@@ -1,0 +1,23 @@
+type Even =
+    | Zero
+    | ESucc(Odd)
+
+type Odd =
+    | OSucc(Even)
+
+fn evenVal(e: Even) -> Int {
+    match e {
+        Zero => 0,
+        ESucc(o) => oddVal(o),
+    }
+}
+
+fn oddVal(o: Odd) -> Int {
+    match o {
+        OSucc(e) => 1 + evenVal(e),
+    }
+}
+
+fn main() -> Int {
+    evenVal(ESucc(OSucc(ESucc(OSucc(Zero)))))
+}

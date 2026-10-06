@@ -1,0 +1,16 @@
+import "std/list"
+import "std/io"
+
+fn main() {
+    bind(mapIO(pure(21), fn(n: Int) -> Int { n * 2 }), fn(n: Int) -> IO[Unit] {
+        then(
+            print(intToString(n)),
+            bind(args(), fn(xs: List[String]) -> IO[Unit] {
+                match xs {
+                    Nil => print("empty"),
+                    Cons(s, _) => print(":" ++ intToString(length(xs)) ++ ":" ++ s),
+                }
+            })
+        )
+    })
+}

@@ -1,0 +1,12 @@
+fn go(n: Int, acc: Int) -> Int {
+    if n == 0 {
+        acc
+    } else {
+        let m = n - 1
+        go(m, acc + n)
+    }
+}
+
+fn main() -> Int {
+    go(10000000, 0)
+}

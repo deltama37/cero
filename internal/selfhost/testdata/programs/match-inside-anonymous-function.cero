@@ -1,0 +1,13 @@
+fn apply(f: Int -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn main() -> Int {
+    apply(fn(n: Int) -> Int {
+        match n {
+            0 => 10,
+            1 => 20,
+            _ => n * 3,
+        }
+    }, 4)
+}

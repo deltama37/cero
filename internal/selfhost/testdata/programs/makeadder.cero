@@ -1,0 +1,7 @@
+fn makeAdder(n: Int) -> Int -> Int {
+    fn(x: Int) -> Int { x + n }
+}
+
+fn main() -> Int {
+    makeAdder(40)(2)
+}

@@ -1,0 +1,7 @@
+fn toInt(b: Bool) -> Int {
+    if b { 1 } else { 0 }
+}
+
+fn main() -> Int {
+    toInt(true == true) + toInt(false == true) + toInt(true != false) + toInt(!false) + toInt(!true)
+}

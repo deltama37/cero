@@ -1,0 +1,6 @@
+type Option[T] = | None | Some(T)
+
+fn main() -> Int {
+    let get = fn(o) { match o { Some(n) => n, None => 0 } }
+    get(Some(40)) + get(None) + 2
+}

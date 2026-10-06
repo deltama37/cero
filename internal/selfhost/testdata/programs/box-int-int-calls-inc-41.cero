@@ -1,0 +1,15 @@
+type Box = Box(Int -> Int)
+
+fn inc(n: Int) -> Int {
+    n + 1
+}
+
+fn apply(b: Box) -> Int {
+    match b {
+        Box(f) => f(41),
+    }
+}
+
+fn main() -> Int {
+    apply(Box(inc))
+}

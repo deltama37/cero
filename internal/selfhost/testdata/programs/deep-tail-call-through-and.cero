@@ -1,0 +1,11 @@
+fn allPositive(n: Int) -> Bool {
+    n == 0 || (n > 0 && allPositive(n - 1))
+}
+
+fn main() -> Int {
+    if allPositive(10000000) {
+        1
+    } else {
+        0
+    }
+}

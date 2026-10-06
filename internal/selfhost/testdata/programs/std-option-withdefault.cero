@@ -1,0 +1,2 @@
+import "std/option"
+fn main() -> Int { withDefault(Some(41), 0) + withDefault(None, 1) }

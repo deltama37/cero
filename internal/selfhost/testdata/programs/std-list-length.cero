@@ -1,0 +1,5 @@
+import "std/list"
+fn main() -> Int {
+    let empty: List[Int] = Nil
+    length(Cons(1, Cons(2, Cons(3, Nil)))) * 10 + length(empty)
+}

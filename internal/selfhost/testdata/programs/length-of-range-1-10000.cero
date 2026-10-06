@@ -1,0 +1,22 @@
+type IntList =
+    | Nil
+    | Cons(Int, IntList)
+
+fn range(from: Int, to: Int) -> IntList {
+    if from > to {
+        Nil
+    } else {
+        Cons(from, range(from + 1, to))
+    }
+}
+
+fn length(xs: IntList) -> Int {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => 1 + length(rest),
+    }
+}
+
+fn main() -> Int {
+    length(range(1, 10000))
+}

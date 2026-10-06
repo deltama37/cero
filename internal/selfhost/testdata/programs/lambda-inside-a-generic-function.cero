@@ -1,0 +1,16 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+fn wrap[T](x: T) -> Option[T] {
+    let mk = fn(v: T) -> Option[T] { Some(v) }
+    mk(x)
+}
+
+fn getInt(o: Option[Int]) -> Int { match o { None => 0, Some(n) => n } }
+
+fn getBool(o: Option[Bool]) -> Bool { match o { None => false, Some(b) => b } }
+
+fn main() -> Int {
+    if getBool(wrap(true)) { getInt(wrap(41)) + 1 } else { 0 }
+}

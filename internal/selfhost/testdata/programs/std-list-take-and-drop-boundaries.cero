@@ -1,0 +1,12 @@
+import "std/list"
+fn pack(xs: List[Int]) -> Int {
+    foldl(xs, 0, fn(acc: Int, x: Int) -> Int { acc * 10 + x })
+}
+fn main() -> Int {
+    let xs = Cons(1, Cons(2, Cons(3, Cons(4, Nil))))
+    if pack(take(xs, 0)) == 0 && pack(take(xs, -3)) == 0 && pack(take(xs, 2)) == 12 && pack(take(xs, 9)) == 1234 && pack(drop(xs, 0)) == 1234 && pack(drop(xs, -1)) == 1234 && pack(drop(xs, 2)) == 34 && pack(drop(xs, 9)) == 0 {
+        1
+    } else {
+        0
+    }
+}

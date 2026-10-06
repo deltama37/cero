@@ -1,0 +1,18 @@
+type List[T] =
+    | Nil
+    | Cons(T, List[T])
+
+type Option[T] =
+    | None
+    | Some(T)
+
+fn dig(o: Option[List[Int]]) -> Int {
+    match o {
+        Some(Cons(_, Cons(x, _))) => x,
+        _ => 0,
+    }
+}
+
+fn main() -> Int {
+    dig(Some(Cons(1, Cons(41, Nil))))
+}

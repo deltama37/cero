@@ -1,0 +1,5 @@
+fn main() -> IO[Unit] {
+    let! n = pure(40)
+    let! m = pure(n + 2)
+    print(intToString(m))
+}

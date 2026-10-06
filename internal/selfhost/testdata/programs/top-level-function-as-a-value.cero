@@ -1,0 +1,11 @@
+fn inc(n: Int) -> Int {
+    n + 1
+}
+
+fn apply(f: Int -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn main() -> Int {
+    apply(inc, 41)
+}

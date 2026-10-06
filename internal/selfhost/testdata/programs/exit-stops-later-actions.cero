@@ -1,0 +1,3 @@
+fn main() {
+    bind(exit(3), fn(ignored: Unit) -> IO[Unit] { print("later") })
+}

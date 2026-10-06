@@ -1,0 +1,11 @@
+fn bit(b: Bool, n: Int) -> Int {
+    if b { n } else { 0 }
+}
+
+fn main() -> Int {
+    let z = intToString(0)
+    let p = intToString(42)
+    let n = intToString(-7)
+    let m = intToString(-9223372036854775807 - 1)
+    bit(z == "0", 1) + bit(stringLength(z) == 1, 2) + bit(p == "42", 4) + bit(stringLength(p) == 2, 8) + bit(n == "-7", 16) + bit(stringLength(n) == 2, 32) + bit(m == "-9223372036854775808", 64) + bit(stringLength(m) == 20, 128)
+}

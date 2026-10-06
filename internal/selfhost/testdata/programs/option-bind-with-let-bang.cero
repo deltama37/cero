@@ -1,0 +1,22 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+fn bind[A, B](m: Option[A], f: A -> Option[B]) -> Option[B] {
+    match m {
+        None => None,
+        Some(x) => f(x),
+    }
+}
+
+fn main() -> Int {
+    let r = {
+        let! x = Some(20)
+        let! y = Some(x + 22)
+        Some(y)
+    }
+    match r {
+        Some(n) => n,
+        None => 0,
+    }
+}

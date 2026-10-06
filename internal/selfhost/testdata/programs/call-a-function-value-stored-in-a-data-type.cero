@@ -1,0 +1,9 @@
+type Box = Box(Int -> Int)
+
+fn main() -> Int {
+    let n = 40
+    let b = Box(fn(x: Int) -> Int { x + n })
+    match b {
+        Box(f) => f(2),
+    }
+}

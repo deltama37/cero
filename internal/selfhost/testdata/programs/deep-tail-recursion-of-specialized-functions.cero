@@ -1,0 +1,20 @@
+type Option[T] =
+    | None
+    | Some(T)
+
+fn countdown[T](n: Int, x: T) -> T {
+    if n == 0 { x } else { countdown(n - 1, x) }
+}
+
+fn loop[A](n: Int, acc: A, step: A -> A) -> A {
+    if n == 0 { acc } else { loop(n - 1, step(acc), step) }
+}
+
+fn main() -> Int {
+    let a = countdown(10000000, 30)
+    let b = match countdown(10000000, Some(true)) {
+        None => 0,
+        Some(t) => if t { 2 } else { 0 },
+    }
+    a + b + loop(10000000, 0, fn(x: Int) -> Int { x + 1 }) - 9999990
+}

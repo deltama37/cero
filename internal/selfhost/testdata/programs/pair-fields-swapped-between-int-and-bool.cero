@@ -1,0 +1,11 @@
+type Pair[A, B] = Pair(A, B)
+
+fn fst[A, B](p: Pair[A, B]) -> A { match p { Pair(a, _) => a } }
+
+fn snd[A, B](p: Pair[A, B]) -> B { match p { Pair(_, b) => b } }
+
+fn main() -> Int {
+    let p = Pair(3, true)
+    let q = Pair(false, 20)
+    fst(p) + (if snd(p) { 10 } else { 0 }) + (if fst(q) { 1000 } else { snd(q) })
+}

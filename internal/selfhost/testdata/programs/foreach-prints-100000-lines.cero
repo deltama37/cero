@@ -1,0 +1,6 @@
+import "std/list"
+import "std/io"
+
+fn main() {
+    forEach(range(0, 100000), fn(n: Int) -> IO[Unit] { print("\n") })
+}

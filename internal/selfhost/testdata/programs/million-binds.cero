@@ -1,0 +1,11 @@
+fn loop(n: Int, acc: Int) -> IO[Unit] {
+    if n == 0 {
+        print(intToString(acc))
+    } else {
+        bind(pure(acc + 1), fn(a: Int) -> IO[Unit] { loop(n - 1, a) })
+    }
+}
+
+fn main() {
+    loop(1000000, 0)
+}

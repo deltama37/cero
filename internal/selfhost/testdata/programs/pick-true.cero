@@ -1,0 +1,15 @@
+fn inc(x: Int) -> Int {
+    x + 1
+}
+
+fn dec(x: Int) -> Int {
+    x - 1
+}
+
+fn pick(b: Bool) -> Int -> Int {
+    if b { inc } else { dec }
+}
+
+fn main() -> Int {
+    pick(true)(3)
+}

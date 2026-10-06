@@ -1,0 +1,3 @@
+fn main() {
+    bind(readStdin(), fn(s: String) -> IO[Unit] { print(s) })
+}

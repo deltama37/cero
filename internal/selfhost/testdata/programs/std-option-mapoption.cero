@@ -1,0 +1,4 @@
+import "std/option"
+fn main() -> Int {
+    withDefault(mapOption(Some(21), fn(x: Int) -> Int { x * 2 }), 0) + withDefault(mapOption(None, fn(x: Int) -> Int { x }), 0)
+}

@@ -1,0 +1,3 @@
+fn main() {
+    bind(argAt(0), fn(s: String) -> IO[Unit] { print(s) })
+}

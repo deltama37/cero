@@ -1,0 +1,7 @@
+fn main() -> Int {
+    if shiftLeft(42, 64) == 42 && shiftRight(-8, 64) == -8 && shiftRightUnsigned(15, 64) == 15 {
+        1
+    } else {
+        0
+    }
+}
