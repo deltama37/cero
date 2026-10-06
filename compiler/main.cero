@@ -9,9 +9,10 @@ import "ir/print"
 import "lower/lower"
 import "wasm/encode"
 import "fmt/fmt"
+import "lsp/server"
 
 fn usage() -> String {
-    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT] | fmt [-w|--check] FILE...\n"
+    "ceroc: usage: ceroc [--std DIR] parse|check|ir FILE | build FILE [-o OUT] | fmt [-w|--check] FILE... | lsp\n"
 }
 
 fn die(code: Int, msg: String) -> IO[Unit] {
@@ -63,10 +64,19 @@ fn parseCmd(stdDir: String, xs: List[String]) -> Parsed {
             parseBuild(stdDir, rest, "", "")
         } else if cmd == "fmt" {
             parseFmt(rest)
+        } else if cmd == "lsp" {
+            parseLsp(stdDir, rest)
         } else {
             Usage
         },
         Nil => Usage,
+    }
+}
+
+fn parseLsp(stdDir: String, xs: List[String]) -> Parsed {
+    match xs {
+        Nil => Cmd(stdDir, "lsp", "", ""),
+        _ => Usage,
     }
 }
 
@@ -260,7 +270,9 @@ fn fmtAll(files: List[String], mode: String, bad: Bool) -> IO[Unit] {
 }
 
 fn dispatch(stdDir: String, cmd: String, file: String, flag: String) -> IO[Unit] {
-    if cmd == "build" {
+    if cmd == "lsp" {
+        lsRun(stdDir)
+    } else if cmd == "build" {
         runBuild(stdDir, file, flag)
     } else if cmd == "ir" {
         runIr(stdDir, file)

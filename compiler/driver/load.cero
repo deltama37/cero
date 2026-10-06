@@ -316,22 +316,26 @@ fn fromStep(step: Step) -> LoadResult {
     }
 }
 
+pub fn loadProgramWithSource(entryFile: String, src: String, stdDir: String) -> IO[LoadResult] {
+    match parseFile(src, 0) {
+        Err(e) => pure(LoadFailed(errorWithFile(e, entryFile))),
+        Ok(parsed) => match parsed {
+            Pair(file, nextId) => {
+                let key = cleanEntry(entryFile)
+                let m = Module(modulePath(entryFile), entryFile, file, Nil)
+                let st = St(smInsert(smEmpty(), key, m), smEmpty(), Nil, Nil, nextId, dirOf(key))
+                let! step = visit(st, key, stdDir)
+                pure(fromStep(step))
+            },
+        },
+    }
+}
+
 pub fn loadProgram(entryFile: String, stdDir: String) -> IO[LoadResult] {
     let! exists = fileExists(entryFile)
     if exists {
         let! src = readFile(entryFile)
-        match parseFile(src, 0) {
-            Err(e) => pure(LoadFailed(errorWithFile(e, entryFile))),
-            Ok(parsed) => match parsed {
-                Pair(file, nextId) => {
-                    let key = cleanEntry(entryFile)
-                    let m = Module(modulePath(entryFile), entryFile, file, Nil)
-                    let st = St(smInsert(smEmpty(), key, m), smEmpty(), Nil, Nil, nextId, dirOf(key))
-                    let! step = visit(st, key, stdDir)
-                    pure(fromStep(step))
-                },
-            },
-        }
+        loadProgramWithSource(entryFile, src, stdDir)
     } else {
         pure(LoadFailed(errorf(Pos(1, 1), "cannot read " ++ entryFile)))
     }

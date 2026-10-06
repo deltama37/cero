@@ -1,0 +1,82 @@
+{
+  "name": "Cero",
+  "scopeName": "source.cero",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#character" },
+    { "include": "#let-bang" },
+    { "include": "#function-name" },
+    { "include": "#keyword" },
+    { "include": "#type-name" },
+    { "include": "#number" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.cero",
+      "match": "//.*"
+    },
+    "string": {
+      "name": "string.quoted.double.cero",
+      "begin": "\"",
+      "end": "\"|\\n",
+      "patterns": [
+        {
+          "name": "constant.character.escape.cero",
+          "match": "\\\\(?:[ntr\\\\\"'0]|x[0-9A-Fa-f]{2})"
+        }
+      ]
+    },
+    "character": {
+      "name": "constant.character.cero",
+      "begin": "'",
+      "end": "'|\\n",
+      "patterns": [
+        {
+          "name": "constant.character.escape.cero",
+          "match": "\\\\(?:[ntr\\\\\"'0]|x[0-9A-Fa-f]{2})"
+        }
+      ]
+    },
+    "let-bang": {
+      "name": "keyword.control.cero",
+      "match": "\\blet!"
+    },
+    "function-name": {
+      "patterns": [
+        {
+          "match": "\\b(pub)\\s+(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.cero" },
+            "2": { "name": "keyword.control.cero" },
+            "3": { "name": "entity.name.function.cero" }
+          }
+        },
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.cero" },
+            "2": { "name": "entity.name.function.cero" }
+          }
+        }
+      ]
+    },
+    "keyword": {
+      "name": "keyword.control.cero",
+      "match": "\\b(fn|let|if|else|match|type|import|pub|true|false)\\b"
+    },
+    "type-name": {
+      "name": "entity.name.type.cero",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "number": {
+      "name": "constant.numeric.integer.cero",
+      "match": "\\b[0-9]+\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.cero",
+      "match": "->|=>|\\+\\+|==|!=|<=|>=|&&|\\|\\||[+\\-*/%<>=!|]"
+    }
+  }
+}

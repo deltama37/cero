@@ -640,7 +640,8 @@ fn ckInstallBuiltins(st: CkState) -> CkState {
     let st23 = addBuiltin(st22, "bitXor", 19, intBin, Nil)
     let st24 = addBuiltin(st23, "shiftLeft", 20, intBin, Nil)
     let st25 = addBuiltin(st24, "shiftRight", 21, intBin, Nil)
-    addBuiltin(st25, "shiftRightUnsigned", 22, intBin, Nil)
+    let st26 = addBuiltin(st25, "shiftRightUnsigned", 22, intBin, Nil)
+    addBuiltin(st26, "readStdinChunk", 23, TyFunc(Cons(TyInt, Nil), TyNamed(tyIOData(), Cons(TyString, Nil))), Nil)
 }
 
 pub fn ckBeginModule(isEntry: Bool) -> Check[Unit] {

@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check vet lint check clean run selfhost selfhost-build fmt-cero fmt-cero-check
+.PHONY: build test fmt fmt-check vet lint check clean run selfhost selfhost-build fmt-cero fmt-cero-check vscode-test
 
 CERO_SOURCES = $(shell find examples std compiler -name '*.cero' | sort)
 
@@ -54,3 +54,8 @@ fmt-cero: selfhost-build
 
 fmt-cero-check: selfhost-build
 	./scripts/ceroc-cero fmt --check $(CERO_SOURCES)
+
+# vscode-test runs the VS Code extension's client tests against the Cero-written LSP server (ADR-0017).
+vscode-test: selfhost-build
+	node --check editors/vscode/src/extension.js
+	node --test 'editors/vscode/test/**/*.test.js'

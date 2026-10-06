@@ -82,6 +82,7 @@ fn primName(op: PrimOp) -> String {
         IrShiftLeft => "int.shl",
         IrShiftRight => "int.shr_s",
         IrShiftRightUnsigned => "int.shr_u",
+        IrIOReadStdinChunk => "io.read_stdin_chunk",
     }
 }
 

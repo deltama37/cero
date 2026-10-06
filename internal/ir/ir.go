@@ -290,6 +290,7 @@ const (
 	ShiftLeft                        // (Int, Int) -> Int
 	ShiftRight                       // (Int, Int) -> Int
 	ShiftRightUnsigned               // (Int, Int) -> Int
+	IOReadStdinChunk                 // (Int) -> Ptr
 )
 
 // Prim applies a built-in operation to Args.
@@ -307,7 +308,7 @@ func (e *Prim) Type() ValType {
 	case StrLength, StrByteAt, StrCompare, IOArgCount,
 		BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, ShiftRightUnsigned:
 		return Int
-	case StrSlice, StrFromByte, IntToString, StrConcat, IOReadStdin, IOReadFile, IOArgAt:
+	case StrSlice, StrFromByte, IntToString, StrConcat, IOReadStdin, IOReadFile, IOArgAt, IOReadStdinChunk:
 		return Ptr
 	case StrEq, IOPrint, IOEPrint, IOFileExists, IOWriteFile, IOExit:
 		return Bool

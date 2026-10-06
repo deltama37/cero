@@ -1,0 +1,7 @@
+pub type Color =
+    | Red
+    | Green(Int)
+
+pub fn libFun(n: Int) -> Int {
+    n
+}

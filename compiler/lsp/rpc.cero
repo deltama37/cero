@@ -1,0 +1,179 @@
+import "std/option"
+import "std/pair"
+import "std/string"
+
+pub type LsRead =
+    | LsReadEnd
+    | LsReadMsg(String, String)
+
+type LsTake =
+    | LsNeed
+    | LsBad
+    | LsGot(String, String)
+
+fn lsFindSep(s: String, i: Int) -> Int {
+    let n = stringLength(s)
+    if i + 3 >= n {
+        -1
+    } else if stringByteAt(s, i) == '\r' && stringByteAt(s, i + 1) == '\n' && stringByteAt(s, i + 2) == '\r' && stringByteAt(s, i + 3) == '\n' {
+        i
+    } else {
+        lsFindSep(s, i + 1)
+    }
+}
+
+fn lsLower(b: Int) -> Int {
+    if b >= 'A' && b <= 'Z' {
+        b - 'A' + 'a'
+    } else {
+        b
+    }
+}
+
+fn lsStartsLower(s: String, i: Int, end: Int, name: String, j: Int) -> Bool {
+    let n = stringLength(name)
+    if j >= n {
+        true
+    } else if i >= end {
+        false
+    } else if lsLower(stringByteAt(s, i)) == stringByteAt(name, j) {
+        lsStartsLower(s, i + 1, end, name, j + 1)
+    } else {
+        false
+    }
+}
+
+fn lsSkipSp(s: String, i: Int, end: Int) -> Int {
+    if i >= end {
+        i
+    } else {
+        let b = stringByteAt(s, i)
+        if b == ' ' || b == '\t' {
+            lsSkipSp(s, i + 1, end)
+        } else {
+            i
+        }
+    }
+}
+
+fn lsLineEnd(s: String, i: Int, n: Int) -> Int {
+    if i >= n {
+        n
+    } else {
+        let b = stringByteAt(s, i)
+        if b == '\r' || b == '\n' {
+            i
+        } else {
+            lsLineEnd(s, i + 1, n)
+        }
+    }
+}
+
+fn lsNextLine(s: String, end: Int, n: Int) -> Int {
+    if end < n && stringByteAt(s, end) == '\r' {
+        if end + 1 < n && stringByteAt(s, end + 1) == '\n' {
+            end + 2
+        } else {
+            end + 1
+        }
+    } else if end < n && stringByteAt(s, end) == '\n' {
+        end + 1
+    } else {
+        end
+    }
+}
+
+fn lsDec(s: String, i: Int, end: Int, acc: Int, any: Bool) -> Option[Int] {
+    if i >= end {
+        if any {
+            Some(acc)
+        } else {
+            None
+        }
+    } else {
+        let b = stringByteAt(s, i)
+        if b >= '0' && b <= '9' {
+            lsDec(s, i + 1, end, acc * 10 + b - '0', true)
+        } else if b == ' ' || b == '\t' {
+            if any {
+                if lsSkipSp(s, i, end) == end {
+                    Some(acc)
+                } else {
+                    None
+                }
+            } else {
+                lsDec(s, i + 1, end, acc, false)
+            }
+        } else {
+            None
+        }
+    }
+}
+
+fn lsContentLength(s: String, i: Int, end: Int) -> Option[Int] {
+    if lsStartsLower(s, i, end, "content-length", 0) {
+        let j = lsSkipSp(s, i + 14, end)
+        if j < end && stringByteAt(s, j) == ':' {
+            lsDec(s, j + 1, end, 0, false)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn lsHeaders(s: String, i: Int, n: Int, found: Option[Int]) -> Option[Int] {
+    if i >= n {
+        found
+    } else {
+        let end = lsLineEnd(s, i, n)
+        let next = lsNextLine(s, end, n)
+        match lsContentLength(s, i, end) {
+            Some(v) => lsHeaders(s, next, n, Some(v)),
+            None => lsHeaders(s, next, n, found),
+        }
+    }
+}
+
+fn lsTake(buf: String) -> LsTake {
+    let sep = lsFindSep(buf, 0)
+    if sep < 0 {
+        LsNeed
+    } else {
+        let header = stringSlice(buf, 0, sep)
+        match lsHeaders(header, 0, stringLength(header), None) {
+            None => LsBad,
+            Some(n) => if n < 0 {
+                LsBad
+            } else {
+                let start = sep + 4
+                let need = start + n
+                if stringLength(buf) < need {
+                    LsNeed
+                } else {
+                    LsGot(stringSlice(buf, start, need), stringSlice(buf, need, stringLength(buf)))
+                }
+            },
+        }
+    }
+}
+
+pub fn lsRead(buf: String) -> IO[LsRead] {
+    match lsTake(buf) {
+        LsBad => pure(LsReadEnd),
+        LsGot(body, rest) => pure(LsReadMsg(body, rest)),
+        LsNeed => {
+            let! chunk = readStdinChunk(65536)
+            if chunk == "" {
+                pure(LsReadEnd)
+            } else {
+                lsRead(buf ++ chunk)
+            }
+        },
+    }
+}
+
+pub fn lsFrame(body: String) -> String {
+    "Content-Length: " ++ intToString(stringLength(body)) ++ "\r\n\r\n" ++ body
+}

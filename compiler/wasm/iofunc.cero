@@ -6,30 +6,31 @@ import "wasm/bytes"
 import "wasm/leb128"
 
 pub type WaIoUse =
-    | WaIoUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+    | WaIoUse(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
 
 pub type WaIoFn =
-    | WaIoFn(Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int)
+    | WaIoFn(Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int)
 
 type WaIoItem =
     | WaIoItem(Int, Bool, Sig)
 
 pub fn waIoEmpty() -> WaIoUse {
-    WaIoUse(false, false, false, false, false, false, false, false, false)
+    WaIoUse(false, false, false, false, false, false, false, false, false, false)
 }
 
 pub fn waIoNote(u: WaIoUse, op: PrimOp) -> WaIoUse {
     match u {
-        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => match op {
-            IrIOPrint => WaIoUse(true, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit),
-            IrIOEPrint => WaIoUse(print, true, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit),
-            IrIOReadStdin => WaIoUse(print, eprint, true, readFile, fileExists, writeFile, argCount, argAt, exit),
-            IrIOReadFile => WaIoUse(print, eprint, readStdin, true, fileExists, writeFile, argCount, argAt, exit),
-            IrIOFileExists => WaIoUse(print, eprint, readStdin, readFile, true, writeFile, argCount, argAt, exit),
-            IrIOWriteFile => WaIoUse(print, eprint, readStdin, readFile, fileExists, true, argCount, argAt, exit),
-            IrIOArgCount => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, true, argAt, exit),
-            IrIOArgAt => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, true, exit),
-            IrIOExit => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, true),
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk) => match op {
+            IrIOPrint => WaIoUse(true, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk),
+            IrIOEPrint => WaIoUse(print, true, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk),
+            IrIOReadStdin => WaIoUse(print, eprint, true, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk),
+            IrIOReadFile => WaIoUse(print, eprint, readStdin, true, fileExists, writeFile, argCount, argAt, exit, readChunk),
+            IrIOFileExists => WaIoUse(print, eprint, readStdin, readFile, true, writeFile, argCount, argAt, exit, readChunk),
+            IrIOWriteFile => WaIoUse(print, eprint, readStdin, readFile, fileExists, true, argCount, argAt, exit, readChunk),
+            IrIOArgCount => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, true, argAt, exit, readChunk),
+            IrIOArgAt => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, true, exit, readChunk),
+            IrIOExit => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, true, readChunk),
+            IrIOReadStdinChunk => WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit, true),
             _ => u,
         },
     }
@@ -37,25 +38,25 @@ pub fn waIoNote(u: WaIoUse, op: PrimOp) -> WaIoUse {
 
 pub fn waIoAny(u: WaIoUse) -> Bool {
     match u {
-        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => print || eprint || readStdin || readFile || fileExists || writeFile || argCount || argAt || exit,
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk) => print || eprint || readStdin || readFile || fileExists || writeFile || argCount || argAt || exit || readChunk,
     }
 }
 
 fn waNeedWrite(u: WaIoUse) -> Bool {
     match u {
-        WaIoUse(print, eprint, _, readFile, _, writeFile, _, _, _) => print || eprint || readFile || writeFile,
+        WaIoUse(print, eprint, _, readFile, _, writeFile, _, _, _, _) => print || eprint || readFile || writeFile,
     }
 }
 
 fn waNeedReadFd(u: WaIoUse) -> Bool {
     match u {
-        WaIoUse(_, _, readStdin, readFile, _, _, _, _, _) => readStdin || readFile,
+        WaIoUse(_, _, readStdin, readFile, _, _, _, _, _, _) => readStdin || readFile,
     }
 }
 
 fn waNeedOpen(u: WaIoUse) -> Bool {
     match u {
-        WaIoUse(_, _, _, readFile, fileExists, writeFile, _, _, _) => readFile || fileExists || writeFile,
+        WaIoUse(_, _, _, readFile, fileExists, writeFile, _, _, _, _) => readFile || fileExists || writeFile,
     }
 }
 
@@ -85,7 +86,7 @@ fn sigIP() -> Sig {
 
 fn waIoPlan(u: WaIoUse) -> List[WaIoItem] {
     match u {
-        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit) => reverse(Cons(WaIoItem(11, exit, sigIP()), Cons(WaIoItem(10, argAt, sigIP()), Cons(WaIoItem(9, argCount, sigRI()), Cons(WaIoItem(8, writeFile, sigPP()), Cons(WaIoItem(7, fileExists, sigP()), Cons(WaIoItem(6, readFile, sigP()), Cons(WaIoItem(5, waNeedOpen(u), sigOpen()), Cons(WaIoItem(4, readStdin, sigRP()), Cons(WaIoItem(3, waNeedReadFd(u), sigP()), Cons(WaIoItem(2, eprint, sigP()), Cons(WaIoItem(1, print, sigP()), Cons(WaIoItem(0, waNeedWrite(u), sigPP()), Nil))))))))))))),
+        WaIoUse(print, eprint, readStdin, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk) => reverse(Cons(WaIoItem(12, readChunk, sigIP()), Cons(WaIoItem(11, exit, sigIP()), Cons(WaIoItem(10, argAt, sigIP()), Cons(WaIoItem(9, argCount, sigRI()), Cons(WaIoItem(8, writeFile, sigPP()), Cons(WaIoItem(7, fileExists, sigP()), Cons(WaIoItem(6, readFile, sigP()), Cons(WaIoItem(5, waNeedOpen(u), sigOpen()), Cons(WaIoItem(4, readStdin, sigRP()), Cons(WaIoItem(3, waNeedReadFd(u), sigP()), Cons(WaIoItem(2, eprint, sigP()), Cons(WaIoItem(1, print, sigP()), Cons(WaIoItem(0, waNeedWrite(u), sigPP()), Nil)))))))))))))),
     }
 }
 
@@ -124,35 +125,37 @@ pub fn waIoSigs(u: WaIoUse) -> List[Sig] {
 }
 
 fn waIoNone() -> WaIoFn {
-    WaIoFn(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
+    WaIoFn(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
 }
 
 fn waIoPut(f: WaIoFn, kind: Int, idx: Int) -> WaIoFn {
     match f {
-        WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start) => if kind == 0 {
-            WaIoFn(idx, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+        WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start) => if kind == 0 {
+            WaIoFn(idx, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 1 {
-            WaIoFn(write, idx, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, idx, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 2 {
-            WaIoFn(write, print, idx, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, print, idx, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 3 {
-            WaIoFn(write, print, eprint, idx, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, print, eprint, idx, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 4 {
-            WaIoFn(write, print, eprint, readFd, idx, open, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, print, eprint, readFd, idx, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 5 {
-            WaIoFn(write, print, eprint, readFd, readStdin, idx, readFile, fileExists, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, idx, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 6 {
-            WaIoFn(write, print, eprint, readFd, readStdin, open, idx, fileExists, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, open, idx, fileExists, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 7 {
-            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, idx, writeFile, argCount, argAt, exit, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, idx, writeFile, argCount, argAt, exit, readChunk, start)
         } else if kind == 8 {
-            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, idx, argCount, argAt, exit, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, idx, argCount, argAt, exit, readChunk, start)
         } else if kind == 9 {
-            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, idx, argAt, exit, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, idx, argAt, exit, readChunk, start)
         } else if kind == 10 {
-            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, idx, exit, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, idx, exit, readChunk, start)
+        } else if kind == 11 {
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, idx, readChunk, start)
         } else {
-            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, idx, start)
+            WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, idx, start)
         },
     }
 }
@@ -172,7 +175,7 @@ fn waIoAssign(xs: List[WaIoItem], n: Int, f: WaIoFn) -> Pair[Int, WaIoFn] {
 
 fn waIoSetStart(f: WaIoFn, idx: Int) -> WaIoFn {
     match f {
-        WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, _) => WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, idx),
+        WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, _) => WaIoFn(write, print, eprint, readFd, readStdin, open, readFile, fileExists, writeFile, argCount, argAt, exit, readChunk, idx),
     }
 }
 
@@ -456,9 +459,25 @@ fn waEncodeIOExit() -> Bytes {
     waEnd(waUnreach(b1))
 }
 
+fn waEncodeIOReadChunk(allocIdx: Int) -> Bytes {
+    let b0 = waBytes(Cons(1, Cons(3, Cons(127, Nil))))
+    let b1 = waEnd(waUnreach(waIfVoid(waRaw(waI64(waLocalGet(b0, 0), 0), Cons(87, Nil)))))
+    let b2 = waLocalSet(waWrap(waLocalGet(b1, 0)), 1)
+    let b3 = waLocalSet(waCallFunc(waBlockSize(b2, 1), allocIdx), 2)
+    let b4 = waLocalSet(waCallFunc(waI32(b3, 16), allocIdx), 3)
+    let b5 = waStoreI32(waAdd(waI32(waLocalGet(waLocalGet(b4, 3), 2), 8)), 0)
+    let b6 = waStoreI32(waLocalGet(waLocalGet(b5, 3), 1), 4)
+    let b7 = waStoreI32(waI32(waLocalGet(b6, 3), 0), 8)
+    let b8 = waCallFunc(waAdd(waI32(waLocalGet(waI32(waLocalGet(waI32(b7, 0), 3), 1), 3), 8)), 1)
+    let b9 = waTrapNZ(b8)
+    let b10 = waStoreI32(waLoadI32(waLocalGet(waLocalGet(b9, 2), 3), 8), 0)
+    let b11 = waStoreI32(waI32(waLocalGet(b10, 2), 0), 4)
+    waEnd(waLocalGet(b11, 2))
+}
+
 fn waEncodeKind(kind: Int, allocIdx: Int, fns: WaIoFn, concatIdx: Int, readMsg: Int, writeMsg: Int, nl: Int) -> Bytes {
     match fns {
-        WaIoFn(write, _, _, readFd, _, open, _, _, _, _, _, _, _) => if kind == 0 {
+        WaIoFn(write, _, _, readFd, _, open, _, _, _, _, _, _, _, _) => if kind == 0 {
             waEncodeIOWrite(allocIdx)
         } else if kind == 1 {
             waEncodeIOToFd(write, 1)
@@ -480,8 +499,10 @@ fn waEncodeKind(kind: Int, allocIdx: Int, fns: WaIoFn, concatIdx: Int, readMsg: 
             waEncodeIOArgCount(allocIdx)
         } else if kind == 10 {
             waEncodeIOArgAt(allocIdx)
-        } else {
+        } else if kind == 11 {
             waEncodeIOExit()
+        } else {
+            waEncodeIOReadChunk(allocIdx)
         },
     }
 }

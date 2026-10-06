@@ -1,0 +1,13 @@
+fn copy() -> IO[Unit] {
+    let! s = readStdinChunk(4)
+    if s == "" {
+        pure(())
+    } else {
+        let! _ = print("[" ++ s ++ "]")
+        copy()
+    }
+}
+
+fn main() {
+    copy()
+}

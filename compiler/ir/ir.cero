@@ -51,6 +51,7 @@ pub type PrimOp =
     | IrShiftLeft
     | IrShiftRight
     | IrShiftRightUnsigned
+    | IrIOReadStdinChunk
 
 pub type IrExpr =
     | IrIntConst(Int)
@@ -109,6 +110,7 @@ pub fn primResultType(op: PrimOp) -> ValType {
         IrIOReadStdin => VtPtr,
         IrIOReadFile => VtPtr,
         IrIOArgAt => VtPtr,
+        IrIOReadStdinChunk => VtPtr,
         IrStrEq => VtBool,
         IrIOPrint => VtBool,
         IrIOEPrint => VtBool,

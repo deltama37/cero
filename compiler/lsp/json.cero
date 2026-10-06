@@ -1,0 +1,492 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "std/string"
+import "util/quote"
+
+pub type Json =
+    | JsNull
+    | JsBool(Bool)
+    | JsInt(Int)
+    | JsString(String)
+    | JsArray(List[Json])
+    | JsObject(List[Pair[String, Json]])
+
+fn jsByte(s: String, i: Int) -> Int {
+    if i >= 0 && i < stringLength(s) {
+        stringByteAt(s, i)
+    } else {
+        -1
+    }
+}
+
+fn jsSkip(s: String, i: Int) -> Int {
+    let n = stringLength(s)
+    if i >= n {
+        i
+    } else {
+        let b = stringByteAt(s, i)
+        if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            jsSkip(s, i + 1)
+        } else {
+            i
+        }
+    }
+}
+
+fn jsHexVal(b: Int) -> Int {
+    if b >= '0' && b <= '9' {
+        b - '0'
+    } else if b >= 'a' && b <= 'f' {
+        b - 'a' + 10
+    } else if b >= 'A' && b <= 'F' {
+        b - 'A' + 10
+    } else {
+        -1
+    }
+}
+
+fn jsHexDigit(n: Int) -> String {
+    if n < 10 {
+        stringFromByte('0' + n)
+    } else {
+        stringFromByte('a' + n - 10)
+    }
+}
+
+fn jsUtf8(cp: Int) -> String {
+    if cp < 0 {
+        stringFromByte(239) ++ stringFromByte(191) ++ stringFromByte(189)
+    } else if cp < 128 {
+        stringFromByte(cp)
+    } else if cp < 2048 {
+        stringFromByte(192 + cp / 64) ++ stringFromByte(128 + cp % 64)
+    } else if cp < 65536 {
+        let b0 = 224 + cp / 4096
+        let b1 = 128 + cp / 64 % 64
+        let b2 = 128 + cp % 64
+        stringFromByte(b0) ++ stringFromByte(b1) ++ stringFromByte(b2)
+    } else {
+        let b0 = 240 + cp / 262144
+        let b1 = 128 + cp / 4096 % 64
+        let b2 = 128 + cp / 64 % 64
+        let b3 = 128 + cp % 64
+        stringFromByte(b0) ++ stringFromByte(b1) ++ stringFromByte(b2) ++ stringFromByte(b3)
+    }
+}
+
+fn jsHigh(cp: Int) -> Bool {
+    cp >= 55296 && cp <= 56319
+}
+
+fn jsLow(cp: Int) -> Bool {
+    cp >= 56320 && cp <= 57343
+}
+
+fn jsJoinSur(hi: Int, lo: Int) -> Int {
+    65536 + (hi - 55296) * 1024 + (lo - 56320)
+}
+
+fn jsPlainEnd(s: String, i: Int) -> Int {
+    let n = stringLength(s)
+    if i >= n {
+        i
+    } else {
+        let b = stringByteAt(s, i)
+        if b >= 32 && b != '"' && b != '\\' {
+            jsPlainEnd(s, i + 1)
+        } else {
+            i
+        }
+    }
+}
+
+fn jsHex4(s: String, i: Int, k: Int, acc: Int) -> Option[Pair[Int, Int]] {
+    if k >= 4 {
+        Some(Pair(acc, i))
+    } else if i >= stringLength(s) {
+        None
+    } else {
+        let h = jsHexVal(stringByteAt(s, i))
+        if h < 0 {
+            None
+        } else {
+            jsHex4(s, i + 1, k + 1, acc * 16 + h)
+        }
+    }
+}
+
+fn jsString(s: String, i: Int, acc: List[String]) -> Option[Pair[List[String], Int]] {
+    let n = stringLength(s)
+    if i >= n {
+        None
+    } else {
+        let b = stringByteAt(s, i)
+        if b == '"' {
+            Some(Pair(acc, i + 1))
+        } else if b == '\\' {
+            jsEscape(s, i + 1, acc)
+        } else if b < 32 {
+            None
+        } else {
+            let j = jsPlainEnd(s, i)
+            jsString(s, j, Cons(stringSlice(s, i, j), acc))
+        }
+    }
+}
+
+fn jsPair(s: String, i: Int, hi: Int, acc: List[String]) -> Option[Pair[List[String], Int]] {
+    let n = stringLength(s)
+    if i + 1 < n && stringByteAt(s, i) == '\\' && stringByteAt(s, i + 1) == 'u' {
+        match jsHex4(s, i + 2, 0, 0) {
+            None => None,
+            Some(Pair(lo, j)) => if jsLow(lo) {
+                jsString(s, j, Cons(jsUtf8(jsJoinSur(hi, lo)), acc))
+            } else {
+                jsString(s, i, Cons(jsUtf8(hi), acc))
+            },
+        }
+    } else {
+        jsString(s, i, Cons(jsUtf8(hi), acc))
+    }
+}
+
+fn jsUni(s: String, i: Int, acc: List[String]) -> Option[Pair[List[String], Int]] {
+    match jsHex4(s, i, 0, 0) {
+        None => None,
+        Some(Pair(cp, j)) => if jsHigh(cp) {
+            jsPair(s, j, cp, acc)
+        } else {
+            jsString(s, j, Cons(jsUtf8(cp), acc))
+        },
+    }
+}
+
+fn jsEscape(s: String, i: Int, acc: List[String]) -> Option[Pair[List[String], Int]] {
+    if i >= stringLength(s) {
+        None
+    } else {
+        let b = stringByteAt(s, i)
+        if b == '"' || b == '\\' || b == '/' {
+            jsString(s, i + 1, Cons(stringFromByte(b), acc))
+        } else if b == 'b' {
+            jsString(s, i + 1, Cons(stringFromByte(8), acc))
+        } else if b == 'f' {
+            jsString(s, i + 1, Cons(stringFromByte(12), acc))
+        } else if b == 'n' {
+            jsString(s, i + 1, Cons(stringFromByte(10), acc))
+        } else if b == 'r' {
+            jsString(s, i + 1, Cons(stringFromByte(13), acc))
+        } else if b == 't' {
+            jsString(s, i + 1, Cons(stringFromByte(9), acc))
+        } else if b == 'u' {
+            jsUni(s, i + 1, acc)
+        } else {
+            None
+        }
+    }
+}
+
+fn jsLit(s: String, i: Int, word: String, v: Json) -> Option[Pair[Json, Int]] {
+    let n = stringLength(word)
+    if i + n <= stringLength(s) && stringSlice(s, i, i + n) == word {
+        Some(Pair(v, i + n))
+    } else {
+        None
+    }
+}
+
+fn jsDec(s: String, i: Int, end: Int, acc: Int) -> Int {
+    if i >= end {
+        acc
+    } else {
+        jsDec(s, i + 1, end, acc * 10 + stringByteAt(s, i) - '0')
+    }
+}
+
+fn jsNumRest(s: String, i: Int) -> Int {
+    let n = stringLength(s)
+    if i >= n {
+        i
+    } else {
+        let b = stringByteAt(s, i)
+        if isDigit(b) || b == '+' || b == '-' || b == '.' || b == 'e' || b == 'E' {
+            jsNumRest(s, i + 1)
+        } else {
+            i
+        }
+    }
+}
+
+fn jsNumEnd(s: String, i: Int) -> Pair[Int, Bool] {
+    let n = stringLength(s)
+    if i >= n {
+        Pair(i, false)
+    } else {
+        let b = stringByteAt(s, i)
+        if isDigit(b) {
+            jsNumEnd(s, i + 1)
+        } else if b == '.' || b == 'e' || b == 'E' {
+            Pair(jsNumRest(s, i + 1), true)
+        } else {
+            Pair(i, false)
+        }
+    }
+}
+
+fn jsNumber(s: String, i: Int) -> Option[Pair[Json, Int]] {
+    let n = stringLength(s)
+    let neg = i < n && stringByteAt(s, i) == '-'
+    let j = if neg {
+        i + 1
+    } else {
+        i
+    }
+    if j >= n || !isDigit(stringByteAt(s, j)) {
+        None
+    } else {
+        let Pair(k, weird) = jsNumEnd(s, j)
+        if weird {
+            Some(Pair(JsInt(0), k))
+        } else {
+            let v = jsDec(s, j, k, 0)
+            let out = if neg {
+                -v
+            } else {
+                v
+            }
+            Some(Pair(JsInt(out), k))
+        }
+    }
+}
+
+fn jsArray(s: String, i: Int, acc: List[Json]) -> Option[Pair[Json, Int]] {
+    let j = jsSkip(s, i)
+    if jsByte(s, j) == ']' {
+        Some(Pair(JsArray(reverse(acc)), j + 1))
+    } else {
+        match jsValue(s, j) {
+            None => None,
+            Some(Pair(v, k)) => {
+                let m = jsSkip(s, k)
+                let b = jsByte(s, m)
+                if b == ',' {
+                    jsArray(s, m + 1, Cons(v, acc))
+                } else if b == ']' {
+                    Some(Pair(JsArray(reverse(Cons(v, acc))), m + 1))
+                } else {
+                    None
+                }
+            },
+        }
+    }
+}
+
+fn jsObject(s: String, i: Int, acc: List[Pair[String, Json]]) -> Option[Pair[Json, Int]] {
+    let j = jsSkip(s, i)
+    if jsByte(s, j) == '}' {
+        Some(Pair(JsObject(reverse(acc)), j + 1))
+    } else if jsByte(s, j) == '"' {
+        match jsString(s, j + 1, Nil) {
+            None => None,
+            Some(Pair(chunks, k)) => {
+                let key = concatBalanced(reverse(chunks))
+                let m = jsSkip(s, k)
+                if jsByte(s, m) != ':' {
+                    None
+                } else {
+                    match jsValue(s, jsSkip(s, m + 1)) {
+                        None => None,
+                        Some(Pair(v, p)) => {
+                            let q = jsSkip(s, p)
+                            let b = jsByte(s, q)
+                            let item = Pair(key, v)
+                            if b == ',' {
+                                jsObject(s, q + 1, Cons(item, acc))
+                            } else if b == '}' {
+                                Some(Pair(JsObject(reverse(Cons(item, acc))), q + 1))
+                            } else {
+                                None
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    } else {
+        None
+    }
+}
+
+fn jsValue(s: String, i: Int) -> Option[Pair[Json, Int]] {
+    let b = jsByte(s, i)
+    if b == 'n' {
+        jsLit(s, i, "null", JsNull)
+    } else if b == 't' {
+        jsLit(s, i, "true", JsBool(true))
+    } else if b == 'f' {
+        jsLit(s, i, "false", JsBool(false))
+    } else if b == '"' {
+        match jsString(s, i + 1, Nil) {
+            None => None,
+            Some(Pair(chunks, j)) => Some(Pair(JsString(concatBalanced(reverse(chunks))), j)),
+        }
+    } else if b == '[' {
+        jsArray(s, i + 1, Nil)
+    } else if b == '{' {
+        jsObject(s, i + 1, Nil)
+    } else if b == '-' || isDigit(b) {
+        jsNumber(s, i)
+    } else {
+        None
+    }
+}
+
+pub fn jsParse(s: String) -> Option[Json] {
+    let i = jsSkip(s, 0)
+    match jsValue(s, i) {
+        None => None,
+        Some(Pair(v, j)) => if jsSkip(s, j) == stringLength(s) {
+            Some(v)
+        } else {
+            None
+        },
+    }
+}
+
+fn jsFind(ps: List[Pair[String, Json]], name: String) -> Option[Json] {
+    match ps {
+        Nil => None,
+        Cons(p, rest) => match p {
+            Pair(k, v) => if k == name {
+                Some(v)
+            } else {
+                jsFind(rest, name)
+            },
+        },
+    }
+}
+
+pub fn jsField(v: Json, name: String) -> Option[Json] {
+    match v {
+        JsObject(ps) => jsFind(ps, name),
+        _ => None,
+    }
+}
+
+fn jsSlash(b: Int) -> String {
+    if b == '"' {
+        "\\\""
+    } else {
+        "\\\\"
+    }
+}
+
+fn jsCtrl(b: Int) -> String {
+    if b == 8 {
+        "\\b"
+    } else if b == 12 {
+        "\\f"
+    } else if b == 10 {
+        "\\n"
+    } else if b == 13 {
+        "\\r"
+    } else if b == 9 {
+        "\\t"
+    } else {
+        "\\u00" ++ jsHexDigit(b / 16) ++ jsHexDigit(b % 16)
+    }
+}
+
+fn jsEscAcc(s: String, i: Int, acc: List[String]) -> List[String] {
+    let n = stringLength(s)
+    if i >= n {
+        acc
+    } else {
+        let b = stringByteAt(s, i)
+        if b == '"' || b == '\\' {
+            jsEscAcc(s, i + 1, Cons(jsSlash(b), acc))
+        } else if b < 32 {
+            jsEscAcc(s, i + 1, Cons(jsCtrl(b), acc))
+        } else {
+            let j = jsPlainEnd(s, i)
+            jsEscAcc(s, j, Cons(stringSlice(s, i, j), acc))
+        }
+    }
+}
+
+fn jsQuote(s: String) -> String {
+    let parts = reverse(jsEscAcc(s, 0, Nil))
+    concatBalanced(Cons("\"", append(parts, Cons("\"", Nil))))
+}
+
+fn jsOnto(xs: List[String], acc: List[String]) -> List[String] {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => jsOnto(rest, Cons(x, acc)),
+    }
+}
+
+fn jsEnc(v: Json) -> List[String] {
+    match v {
+        JsNull => Cons("null", Nil),
+        JsBool(b) => if b {
+            Cons("true", Nil)
+        } else {
+            Cons("false", Nil)
+        },
+        JsInt(n) => Cons(intToString(n), Nil),
+        JsString(s) => Cons(jsQuote(s), Nil),
+        JsArray(xs) => jsEncArray(xs),
+        JsObject(ps) => jsEncObject(ps),
+    }
+}
+
+fn jsEncElems(xs: List[Json], first: Bool, acc: List[String]) -> List[String] {
+    match xs {
+        Nil => reverse(acc),
+        Cons(v, rest) => {
+            let acc1 = if first {
+                acc
+            } else {
+                Cons(",", acc)
+            }
+            jsEncElems(rest, false, jsOnto(jsEnc(v), acc1))
+        },
+    }
+}
+
+fn jsEncArray(xs: List[Json]) -> List[String] {
+    match xs {
+        Nil => Cons("[]", Nil),
+        _ => Cons("[", append(jsEncElems(xs, true, Nil), Cons("]", Nil))),
+    }
+}
+
+fn jsEncFields(ps: List[Pair[String, Json]], first: Bool, acc: List[String]) -> List[String] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(p, rest) => match p {
+            Pair(k, v) => {
+                let acc1 = if first {
+                    acc
+                } else {
+                    Cons(",", acc)
+                }
+                let acc2 = Cons(":", jsOnto(Cons(jsQuote(k), Nil), acc1))
+                jsEncFields(rest, false, jsOnto(jsEnc(v), acc2))
+            },
+        },
+    }
+}
+
+fn jsEncObject(ps: List[Pair[String, Json]]) -> List[String] {
+    match ps {
+        Nil => Cons("{}", Nil),
+        _ => Cons("{", append(jsEncFields(ps, true, Nil), Cons("}", Nil))),
+    }
+}
+
+pub fn jsEncode(v: Json) -> String {
+    concatBalanced(jsEnc(v))
+}

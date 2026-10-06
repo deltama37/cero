@@ -314,6 +314,11 @@ func TestFormatExpr(t *testing.T) {
 			expr: &Prim{Op: IOExit, Args: []Expr{&IntConst{Value: 1}}},
 			want: "(prim io.exit 1)",
 		},
+		{
+			name: "io read stdin chunk",
+			expr: &Prim{Op: IOReadStdinChunk, Args: []Expr{&IntConst{Value: 4}}},
+			want: "(prim io.read_stdin_chunk 4)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -539,6 +544,7 @@ func TestType(t *testing.T) {
 		{name: "shift left", expr: &Prim{Op: ShiftLeft}, want: Int},
 		{name: "shift right", expr: &Prim{Op: ShiftRight}, want: Int},
 		{name: "shift right unsigned", expr: &Prim{Op: ShiftRightUnsigned}, want: Int},
+		{name: "io read stdin chunk", expr: &Prim{Op: IOReadStdinChunk}, want: Ptr},
 	}
 
 	for _, tt := range tests {

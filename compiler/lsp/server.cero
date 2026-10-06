@@ -1,0 +1,677 @@
+import "std/list"
+import "std/option"
+import "std/pair"
+import "std/string"
+import "syntax/diag"
+import "util/strmap"
+import "driver/load"
+import "check/program"
+import "fmt/fmt"
+import "lsp/json"
+import "lsp/rpc"
+import "lsp/analysis"
+
+type LsState =
+    | LsState(String, StrMap[String], StrMap[LsParsed], StrMap[Bool], Bool, String)
+
+type LsStep =
+    | LsCont(LsState, List[String])
+    | LsHalt(Int)
+
+fn lsState0(stdDir: String) -> LsState {
+    let docs: StrMap[String] = smEmpty()
+    let an: StrMap[LsParsed] = smEmpty()
+    let shown: StrMap[Bool] = smEmpty()
+    LsState("", docs, an, shown, false, stdDir)
+}
+
+fn lsSetRoot(st: LsState, root: String) -> LsState {
+    let LsState(_, docs, an, shown, shut, stdDir) = st
+    LsState(root, docs, an, shown, shut, stdDir)
+}
+
+fn lsSetShut(st: LsState, shut: Bool) -> LsState {
+    let LsState(root, docs, an, shown, _, stdDir) = st
+    LsState(root, docs, an, shown, shut, stdDir)
+}
+
+fn lsPutDoc(st: LsState, uri: String, text: String) -> LsState {
+    let LsState(root, docs, an, shown, shut, stdDir) = st
+    LsState(root, smInsert(docs, uri, text), an, shown, shut, stdDir)
+}
+
+fn lsPutAn(st: LsState, uri: String, parsed: LsParsed) -> LsState {
+    let LsState(root, docs, an, shown, shut, stdDir) = st
+    LsState(root, docs, smInsert(an, uri, parsed), shown, shut, stdDir)
+}
+
+fn lsHex(b: Int) -> Int {
+    if b >= '0' && b <= '9' {
+        b - '0'
+    } else if b >= 'a' && b <= 'f' {
+        b - 'a' + 10
+    } else if b >= 'A' && b <= 'F' {
+        b - 'A' + 10
+    } else {
+        -1
+    }
+}
+
+fn lsPctPlain(s: String, i: Int) -> Int {
+    let n = stringLength(s)
+    if i >= n {
+        i
+    } else if stringByteAt(s, i) == '%' {
+        i
+    } else {
+        lsPctPlain(s, i + 1)
+    }
+}
+
+fn lsPctAcc(s: String, i: Int, acc: List[String]) -> List[String] {
+    let n = stringLength(s)
+    if i >= n {
+        acc
+    } else if stringByteAt(s, i) == '%' {
+        if i + 2 < n {
+            let h1 = lsHex(stringByteAt(s, i + 1))
+            let h2 = lsHex(stringByteAt(s, i + 2))
+            if h1 >= 0 && h2 >= 0 {
+                lsPctAcc(s, i + 3, Cons(stringFromByte(h1 * 16 + h2), acc))
+            } else {
+                lsPctAcc(s, i + 1, Cons("%", acc))
+            }
+        } else {
+            lsPctAcc(s, i + 1, Cons("%", acc))
+        }
+    } else {
+        let j = lsPctPlain(s, i)
+        lsPctAcc(s, j, Cons(stringSlice(s, i, j), acc))
+    }
+}
+
+fn lsPctDecode(s: String) -> String {
+    let parts = reverse(lsPctAcc(s, 0, Nil))
+    let joined = join(parts, "")
+    joined
+}
+
+fn lsUriPath(uri: String) -> String {
+    if startsWith(uri, "file://") {
+        lsPctDecode(stringSlice(uri, 7, stringLength(uri)))
+    } else {
+        ""
+    }
+}
+
+fn lsCleanRoot(p: String) -> String {
+    if p != "/" && endsWith(p, "/") {
+        stringSlice(p, 0, stringLength(p) - 1)
+    } else {
+        p
+    }
+}
+
+fn lsRootPath(p: Json) -> String {
+    match jsField(p, "rootPath") {
+        Some(JsString(path)) => lsCleanRoot(path),
+        _ => "",
+    }
+}
+
+fn lsRootParams(p: Json) -> String {
+    match jsField(p, "rootUri") {
+        Some(JsString(u)) => if u == "" {
+            lsRootPath(p)
+        } else {
+            lsCleanRoot(lsUriPath(u))
+        },
+        _ => lsRootPath(p),
+    }
+}
+
+fn lsPickRoot(v: Json) -> String {
+    match jsField(v, "params") {
+        Some(p) => lsRootParams(p),
+        None => "",
+    }
+}
+
+fn lsRel(root: String, abs: String) -> Option[String] {
+    if root == "" || abs == "" {
+        None
+    } else {
+        let prefix = if endsWith(root, "/") {
+            root
+        } else {
+            root ++ "/"
+        }
+        if startsWith(abs, prefix) {
+            let rel = stringSlice(abs, stringLength(prefix), stringLength(abs))
+            if rel == "" {
+                None
+            } else {
+                Some(rel)
+            }
+        } else {
+            None
+        }
+    }
+}
+
+fn lsToUri(root: String, rel: String) -> String {
+    "file://" ++ root ++ "/" ++ rel
+}
+
+fn lsReqId(v: Json) -> Option[Json] {
+    match jsField(v, "id") {
+        Some(JsNull) => None,
+        Some(id) => Some(id),
+        None => None,
+    }
+}
+
+fn lsTextDoc(v: Json) -> Option[Json] {
+    match jsField(v, "params") {
+        Some(p) => jsField(p, "textDocument"),
+        None => None,
+    }
+}
+
+fn lsDocUri(v: Json) -> Option[String] {
+    match lsTextDoc(v) {
+        Some(doc) => match jsField(doc, "uri") {
+            Some(JsString(u)) => Some(u),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
+fn lsDocText(v: Json) -> Option[String] {
+    match lsTextDoc(v) {
+        Some(doc) => match jsField(doc, "text") {
+            Some(JsString(t)) => Some(t),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
+fn lsPosOf(v: Json) -> Option[Pair[Int, Int]] {
+    match jsField(v, "params") {
+        Some(p) => match jsField(p, "position") {
+            Some(pos) => match jsField(pos, "line") {
+                Some(JsInt(line)) => match jsField(pos, "character") {
+                    Some(JsInt(ch)) => Some(Pair(line, ch)),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        },
+        None => None,
+    }
+}
+
+fn lsLastText(xs: List[Json], acc: Option[String]) -> Option[String] {
+    match xs {
+        Nil => acc,
+        Cons(v, rest) => match jsField(v, "text") {
+            Some(JsString(t)) => lsLastText(rest, Some(t)),
+            _ => lsLastText(rest, acc),
+        },
+    }
+}
+
+fn lsChangeText(v: Json) -> Option[String] {
+    match jsField(v, "params") {
+        Some(p) => match jsField(p, "contentChanges") {
+            Some(JsArray(xs)) => lsLastText(xs, None),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
+fn lsPosJson(line: Int, ch: Int) -> Json {
+    JsObject(Cons(Pair("line", JsInt(line)), Cons(Pair("character", JsInt(ch)), Nil)))
+}
+
+fn lsResult(id: Json, result: Json) -> String {
+    let obj = JsObject(Cons(Pair("jsonrpc", JsString("2.0")), Cons(Pair("id", id), Cons(Pair("result", result), Nil))))
+    lsFrame(jsEncode(obj))
+}
+
+fn lsErrMsg(id: Json, code: Int, msg: String) -> String {
+    let err = JsObject(Cons(Pair("code", JsInt(code)), Cons(Pair("message", JsString(msg)), Nil)))
+    let obj = JsObject(Cons(Pair("jsonrpc", JsString("2.0")), Cons(Pair("id", id), Cons(Pair("error", err), Nil))))
+    lsFrame(jsEncode(obj))
+}
+
+fn lsNote(method: String, params: Json) -> String {
+    let obj = JsObject(Cons(Pair("jsonrpc", JsString("2.0")), Cons(Pair("method", JsString(method)), Cons(Pair("params", params), Nil))))
+    lsFrame(jsEncode(obj))
+}
+
+fn lsReply(id: Json, result: Json) -> List[String] {
+    Cons(lsResult(id, result), Nil)
+}
+
+fn lsInitResult() -> Json {
+    let caps = JsObject(Cons(Pair("textDocumentSync", JsInt(1)), Cons(Pair("hoverProvider", JsBool(true)), Cons(Pair("definitionProvider", JsBool(true)), Cons(Pair("documentFormattingProvider", JsBool(true)), Nil)))))
+    let info = JsObject(Cons(Pair("name", JsString("ceroc-lsp")), Nil))
+    JsObject(Cons(Pair("capabilities", caps), Cons(Pair("serverInfo", info), Nil)))
+}
+
+fn lsOneDiag(line: Int, col: Int, msg: String) -> Json {
+    let range = JsObject(Cons(Pair("start", lsPosJson(line, col)), Cons(Pair("end", lsPosJson(line, col + 1)), Nil)))
+    JsObject(Cons(Pair("range", range), Cons(Pair("severity", JsInt(1)), Cons(Pair("source", JsString("ceroc")), Cons(Pair("message", JsString(msg)), Nil)))))
+}
+
+fn lsPub(uri: String, diags: List[Json]) -> String {
+    let params = JsObject(Cons(Pair("uri", JsString(uri)), Cons(Pair("diagnostics", JsArray(diags)), Nil)))
+    lsNote("textDocument/publishDiagnostics", params)
+}
+
+fn lsErrUri(root: String, docUri: String, file: String) -> String {
+    if file == "" {
+        docUri
+    } else {
+        lsToUri(root, file)
+    }
+}
+
+fn lsFresh(root: String, docUri: String, err: Option[Error]) -> List[Pair[String, List[Json]]] {
+    match err {
+        None => Cons(Pair(docUri, Nil), Nil),
+        Some(e) => {
+            let Error(file, pos, msg) = e
+            let Pos(line, col) = pos
+            let uri = lsErrUri(root, docUri, file)
+            let diag = lsOneDiag(line - 1, col - 1, msg)
+            if uri == docUri {
+                Cons(Pair(docUri, Cons(diag, Nil)), Nil)
+            } else {
+                Cons(Pair(uri, Cons(diag, Nil)), Cons(Pair(docUri, Nil), Nil))
+            }
+        },
+    }
+}
+
+fn lsShown(ps: List[Pair[String, List[Json]]], acc: StrMap[Bool]) -> StrMap[Bool] {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(uri, diags) => match diags {
+                Nil => lsShown(rest, acc),
+                Cons(_, _) => lsShown(rest, smInsert(acc, uri, true)),
+            },
+        },
+    }
+}
+
+fn lsHasUri(ps: List[Pair[String, List[Json]]], uri: String) -> Bool {
+    match ps {
+        Nil => false,
+        Cons(p, rest) => match p {
+            Pair(u, _) => if u == uri {
+                true
+            } else {
+                lsHasUri(rest, uri)
+            },
+        },
+    }
+}
+
+fn lsClears(old: List[Pair[String, Bool]], fresh: List[Pair[String, List[Json]]], acc: List[Pair[String, List[Json]]]) -> List[Pair[String, List[Json]]] {
+    match old {
+        Nil => reverse(acc),
+        Cons(p, rest) => match p {
+            Pair(uri, _) => if lsHasUri(fresh, uri) {
+                lsClears(rest, fresh, acc)
+            } else {
+                lsClears(rest, fresh, Cons(Pair(uri, Nil), acc))
+            },
+        },
+    }
+}
+
+fn lsNotes(ps: List[Pair[String, List[Json]]], acc: List[String]) -> List[String] {
+    match ps {
+        Nil => reverse(acc),
+        Cons(p, rest) => match p {
+            Pair(uri, diags) => lsNotes(rest, Cons(lsPub(uri, diags), acc)),
+        },
+    }
+}
+
+fn lsPublish(st: LsState, docUri: String, err: Option[Error]) -> Pair[LsState, List[String]] {
+    let LsState(root, docs, an, shown, shut, stdDir) = st
+    let fresh = lsFresh(root, docUri, err)
+    let clears = lsClears(smToList(shown), fresh, Nil)
+    let notes = lsNotes(append(fresh, clears), Nil)
+    let next: StrMap[Bool] = lsShown(fresh, smEmpty())
+    Pair(LsState(root, docs, an, next, shut, stdDir), notes)
+}
+
+fn lsDropAcc[V](ps: List[Pair[String, V]], key: String, acc: StrMap[V]) -> StrMap[V] {
+    match ps {
+        Nil => acc,
+        Cons(p, rest) => match p {
+            Pair(k, v) => if k == key {
+                lsDropAcc(rest, key, acc)
+            } else {
+                lsDropAcc(rest, key, smInsert(acc, k, v))
+            },
+        },
+    }
+}
+
+fn lsDrop[V](m: StrMap[V], key: String) -> StrMap[V] {
+    lsDropAcc(smToList(m), key, smEmpty())
+}
+
+fn lsClose(st: LsState, uri: String) -> Pair[LsState, List[String]] {
+    let LsState(root, docs, an, shown, shut, stdDir) = st
+    let st2 = LsState(root, lsDrop(docs, uri), lsDrop(an, uri), lsDrop(shown, uri), shut, stdDir)
+    Pair(st2, Cons(lsPub(uri, Nil), Nil))
+}
+
+fn lsWith(p: Pair[LsState, List[String]]) -> LsStep {
+    let Pair(st, outs) = p
+    LsCont(st, outs)
+}
+
+fn lsAnalyze(st: LsState, uri: String, rel: String, src: String) -> IO[Pair[LsState, List[String]]] {
+    let LsState(_, _, _, _, _, stdDir) = st
+    let! loaded = loadProgramWithSource(rel, src, stdDir)
+    match loaded {
+        LoadFailed(e) => {
+            let st2 = lsPutAn(st, uri, LsEmpty)
+            pure(lsPublish(st2, uri, Some(e)))
+        },
+        Loaded(mods, _) => {
+            let Pair(parsed, err) = lsIngest(mods, checkProgram(mods))
+            let st2 = lsPutAn(st, uri, parsed)
+            pure(lsPublish(st2, uri, err))
+        },
+    }
+}
+
+fn lsOpen(st: LsState, uri: String, text: String) -> IO[Pair[LsState, List[String]]] {
+    let st2 = lsPutDoc(st, uri, text)
+    let LsState(root, _, _, _, _, _) = st2
+    match lsRel(root, lsUriPath(uri)) {
+        None => pure(Pair(st2, Nil)),
+        Some(rel) => lsAnalyze(st2, uri, rel, text),
+    }
+}
+
+fn lsSave(st: LsState, uri: String) -> IO[Pair[LsState, List[String]]] {
+    let LsState(root, docs, _, _, _, _) = st
+    match smLookup(docs, uri) {
+        None => pure(Pair(st, Nil)),
+        Some(text) => match lsRel(root, lsUriPath(uri)) {
+            None => pure(Pair(st, Nil)),
+            Some(rel) => lsAnalyze(st, uri, rel, text),
+        },
+    }
+}
+
+fn lsHoverJson(text: String) -> Json {
+    let value = "```cero\n" ++ text ++ "\n```"
+    let contents = JsObject(Cons(Pair("kind", JsString("markdown")), Cons(Pair("value", JsString(value)), Nil)))
+    JsObject(Cons(Pair("contents", contents), Nil))
+}
+
+fn lsHoverAt(st: LsState, uri: String, line: Int, col: Int) -> Json {
+    let LsState(_, _, an, _, _, _) = st
+    match smLookup(an, uri) {
+        None => JsNull,
+        Some(p) => match lsHover(p, line + 1, col + 1) {
+            None => JsNull,
+            Some(text) => lsHoverJson(text),
+        },
+    }
+}
+
+fn lsDefJson(root: String, loc: LsLoc) -> Json {
+    let LsLoc(file, line, col, n) = loc
+    let range = JsObject(Cons(Pair("start", lsPosJson(line - 1, col - 1)), Cons(Pair("end", lsPosJson(line - 1, col - 1 + n)), Nil)))
+    JsObject(Cons(Pair("uri", JsString(lsToUri(root, file))), Cons(Pair("range", range), Nil)))
+}
+
+fn lsDefAt(st: LsState, uri: String, line: Int, col: Int) -> Json {
+    let LsState(root, _, an, _, _, _) = st
+    match smLookup(an, uri) {
+        None => JsNull,
+        Some(p) => match lsDefine(p, line + 1, col + 1) {
+            None => JsNull,
+            Some(loc) => lsDefJson(root, loc),
+        },
+    }
+}
+
+fn lsNl(s: String, i: Int, n: Int) -> Int {
+    if i >= stringLength(s) {
+        n
+    } else if stringByteAt(s, i) == '\n' {
+        lsNl(s, i + 1, n + 1)
+    } else {
+        lsNl(s, i + 1, n)
+    }
+}
+
+fn lsTailLen(s: String, i: Int) -> Int {
+    if i < 0 {
+        stringLength(s)
+    } else if stringByteAt(s, i) == '\n' {
+        stringLength(s) - i - 1
+    } else {
+        lsTailLen(s, i - 1)
+    }
+}
+
+fn lsDocEnd(s: String) -> Pair[Int, Int] {
+    let n = lsNl(s, 0, 0)
+    if s == "" || endsWith(s, "\n") {
+        Pair(n, 0)
+    } else {
+        Pair(n, lsTailLen(s, stringLength(s) - 1))
+    }
+}
+
+fn lsEdit(src: String, out: String) -> Json {
+    let Pair(line, col) = lsDocEnd(src)
+    let range = JsObject(Cons(Pair("start", lsPosJson(0, 0)), Cons(Pair("end", lsPosJson(line, col)), Nil)))
+    JsObject(Cons(Pair("range", range), Cons(Pair("newText", JsString(out)), Nil)))
+}
+
+fn lsFormatAt(st: LsState, uri: String) -> Json {
+    let LsState(_, docs, _, _, _, _) = st
+    match smLookup(docs, uri) {
+        None => JsArray(Nil),
+        Some(src) => match fmFormat(src) {
+            Err(_) => JsArray(Nil),
+            Ok(out) => JsArray(Cons(lsEdit(src, out), Nil)),
+        },
+    }
+}
+
+fn lsInitialize(st: LsState, v: Json) -> LsStep {
+    let st2 = lsSetRoot(st, lsPickRoot(v))
+    match lsReqId(v) {
+        None => LsCont(st2, Nil),
+        Some(id) => LsCont(st2, lsReply(id, lsInitResult())),
+    }
+}
+
+fn lsShutdown(st: LsState, v: Json) -> LsStep {
+    let st2 = lsSetShut(st, true)
+    match lsReqId(v) {
+        None => LsCont(st2, Nil),
+        Some(id) => LsCont(st2, lsReply(id, JsNull)),
+    }
+}
+
+fn lsExit(st: LsState) -> LsStep {
+    let LsState(_, _, _, _, shut, _) = st
+    if shut {
+        LsHalt(0)
+    } else {
+        LsHalt(1)
+    }
+}
+
+fn lsUnknown(st: LsState, v: Json) -> LsStep {
+    match lsReqId(v) {
+        None => LsCont(st, Nil),
+        Some(id) => LsCont(st, Cons(lsErrMsg(id, -32601, "method not found"), Nil)),
+    }
+}
+
+fn lsDidChange(st: LsState, v: Json) -> LsStep {
+    match lsDocUri(v) {
+        None => LsCont(st, Nil),
+        Some(uri) => match lsChangeText(v) {
+            None => LsCont(st, Nil),
+            Some(text) => LsCont(lsPutDoc(st, uri, text), Nil),
+        },
+    }
+}
+
+fn lsDidClose(st: LsState, v: Json) -> LsStep {
+    match lsDocUri(v) {
+        None => LsCont(st, Nil),
+        Some(uri) => lsWith(lsClose(st, uri)),
+    }
+}
+
+fn lsHoverReq(st: LsState, v: Json) -> LsStep {
+    match lsReqId(v) {
+        None => LsCont(st, Nil),
+        Some(id) => match lsDocUri(v) {
+            None => LsCont(st, lsReply(id, JsNull)),
+            Some(uri) => match lsPosOf(v) {
+                None => LsCont(st, lsReply(id, JsNull)),
+                Some(Pair(line, col)) => LsCont(st, lsReply(id, lsHoverAt(st, uri, line, col))),
+            },
+        },
+    }
+}
+
+fn lsDefReq(st: LsState, v: Json) -> LsStep {
+    match lsReqId(v) {
+        None => LsCont(st, Nil),
+        Some(id) => match lsDocUri(v) {
+            None => LsCont(st, lsReply(id, JsNull)),
+            Some(uri) => match lsPosOf(v) {
+                None => LsCont(st, lsReply(id, JsNull)),
+                Some(Pair(line, col)) => LsCont(st, lsReply(id, lsDefAt(st, uri, line, col))),
+            },
+        },
+    }
+}
+
+fn lsFmtReq(st: LsState, v: Json) -> LsStep {
+    match lsReqId(v) {
+        None => LsCont(st, Nil),
+        Some(id) => match lsDocUri(v) {
+            None => LsCont(st, lsReply(id, JsArray(Nil))),
+            Some(uri) => LsCont(st, lsReply(id, lsFormatAt(st, uri))),
+        },
+    }
+}
+
+fn lsDidOpen(st: LsState, v: Json) -> IO[LsStep] {
+    match lsDocUri(v) {
+        None => pure(LsCont(st, Nil)),
+        Some(uri) => match lsDocText(v) {
+            None => pure(LsCont(st, Nil)),
+            Some(text) => {
+                let! pair = lsOpen(st, uri, text)
+                pure(lsWith(pair))
+            },
+        },
+    }
+}
+
+fn lsDidSave(st: LsState, v: Json) -> IO[LsStep] {
+    match lsDocUri(v) {
+        None => pure(LsCont(st, Nil)),
+        Some(uri) => {
+            let! pair = lsSave(st, uri)
+            pure(lsWith(pair))
+        },
+    }
+}
+
+fn lsMethod(st: LsState, v: Json, m: String) -> IO[LsStep] {
+    if m == "initialize" {
+        pure(lsInitialize(st, v))
+    } else if m == "initialized" {
+        pure(LsCont(st, Nil))
+    } else if m == "shutdown" {
+        pure(lsShutdown(st, v))
+    } else if m == "exit" {
+        pure(lsExit(st))
+    } else if m == "textDocument/didOpen" {
+        lsDidOpen(st, v)
+    } else if m == "textDocument/didChange" {
+        pure(lsDidChange(st, v))
+    } else if m == "textDocument/didSave" {
+        lsDidSave(st, v)
+    } else if m == "textDocument/didClose" {
+        pure(lsDidClose(st, v))
+    } else if m == "textDocument/hover" {
+        pure(lsHoverReq(st, v))
+    } else if m == "textDocument/definition" {
+        pure(lsDefReq(st, v))
+    } else if m == "textDocument/formatting" {
+        pure(lsFmtReq(st, v))
+    } else {
+        pure(lsUnknown(st, v))
+    }
+}
+
+fn lsDispatch(st: LsState, body: String) -> IO[LsStep] {
+    match jsParse(body) {
+        None => pure(LsCont(st, Nil)),
+        Some(v) => match jsField(v, "method") {
+            Some(JsString(m)) => lsMethod(st, v, m),
+            _ => pure(LsCont(st, Nil)),
+        },
+    }
+}
+
+fn lsWriteAll(xs: List[String]) -> IO[Unit] {
+    match xs {
+        Nil => pure(()),
+        Cons(s, rest) => {
+            let! _ = print(s)
+            lsWriteAll(rest)
+        },
+    }
+}
+
+fn lsLoop(st: LsState, buf: String) -> IO[Unit] {
+    let! got = lsRead(buf)
+    match got {
+        LsReadEnd => pure(()),
+        LsReadMsg(body, rest) => {
+            let! step = lsDispatch(st, body)
+            match step {
+                LsHalt(code) => exit(code),
+                LsCont(st2, outs) => {
+                    let! _ = lsWriteAll(outs)
+                    lsLoop(st2, rest)
+                },
+            }
+        },
+    }
+}
+
+pub fn lsRun(stdDir: String) -> IO[Unit] {
+    lsLoop(lsState0(stdDir), "")
+}

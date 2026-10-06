@@ -37,11 +37,12 @@ type ioUse struct {
 	argCount   bool
 	argAt      bool
 	exit       bool
+	readChunk  bool
 }
 
 func (u ioUse) any() bool {
 	return u.print || u.eprint || u.readStdin || u.readFile || u.fileExists ||
-		u.writeFile || u.argCount || u.argAt || u.exit
+		u.writeFile || u.argCount || u.argAt || u.exit || u.readChunk
 }
 
 func (u ioUse) needWrite() bool {
@@ -81,6 +82,7 @@ const (
 	ioKindArgCount
 	ioKindArgAt
 	ioKindExit
+	ioKindReadChunk
 )
 
 type ioHelper struct {
@@ -105,6 +107,7 @@ func ioPlan(u ioUse) []ioHelper {
 		{ioKindArgCount, u.argCount, ir.Sig{Result: i64}},
 		{ioKindArgAt, u.argAt, ir.Sig{Params: []ir.ValType{i64}, Result: i32}},
 		{ioKindExit, u.exit, ir.Sig{Params: []ir.ValType{i64}, Result: i32}},
+		{ioKindReadChunk, u.readChunk, ir.Sig{Params: []ir.ValType{i64}, Result: i32}},
 	}
 }
 
@@ -133,6 +136,7 @@ type ioFuncIdx struct {
 	argCount   int
 	argAt      int
 	exit       int
+	readChunk  int
 	start      int
 }
 
@@ -140,7 +144,7 @@ func ioFuncIndices(start int, u ioUse, command bool) ioFuncIdx {
 	idx := ioFuncIdx{
 		write: -1, print: -1, eprint: -1, readFd: -1, readStdin: -1,
 		open: -1, readFile: -1, fileExists: -1, writeFile: -1,
-		argCount: -1, argAt: -1, exit: -1, start: -1,
+		argCount: -1, argAt: -1, exit: -1, readChunk: -1, start: -1,
 	}
 	n := start
 	for _, h := range ioPlan(u) {
@@ -172,6 +176,8 @@ func ioFuncIndices(start int, u ioUse, command bool) ioFuncIdx {
 			idx.argAt = n
 		case ioKindExit:
 			idx.exit = n
+		case ioKindReadChunk:
+			idx.readChunk = n
 		default:
 			panic(fmt.Sprintf("wasm: unknown io helper %d", int(h.kind)))
 		}
@@ -210,6 +216,8 @@ func collectIOUse(m *ir.Module) ioUse {
 				u.argAt = true
 			case ir.IOExit:
 				u.exit = true
+			case ir.IOReadStdinChunk:
+				u.readChunk = true
 			}
 		})
 	}
@@ -314,6 +322,8 @@ func (e *encoder) encodeIO(kind ioKind) []byte {
 		return encodeIOArgAt(e.allocIdx)
 	case ioKindExit:
 		return encodeIOExit()
+	case ioKindReadChunk:
+		return encodeIOReadChunk(e.allocIdx)
 	default:
 		panic(fmt.Sprintf("wasm: unknown io helper %d", int(kind)))
 	}
@@ -508,6 +518,63 @@ func encodeIOReadStdin(readFd int) []byte {
 	a := asm{b: []byte{0x00}}
 	a.i32(0)
 	a.call(readFd)
+	a.end()
+	return a.b
+}
+
+// encodeIOReadChunk is (i64 max) -> i32.
+// max <= 0 traps. One fd_read from stdin returns a String of the bytes read.
+// Locals: n = 1, block = 2, work = 3.
+func encodeIOReadChunk(allocIdx int) []byte {
+	const (
+		max   = 0
+		n     = 1
+		block = 2
+		work  = 3
+	)
+	a := asm{b: []byte{0x01, 0x03, valI32}}
+	a.localGet(max)
+	a.i64(0)
+	a.leS64()
+	a.ifVoid()
+	a.unreachable()
+	a.end()
+	a.localGet(max)
+	a.wrap()
+	a.localSet(n)
+	a.blockSize(n)
+	a.call(allocIdx)
+	a.localSet(block)
+	a.i32(16)
+	a.call(allocIdx)
+	a.localSet(work)
+	a.localGet(work)
+	a.localGet(block)
+	a.i32(8)
+	a.add()
+	a.storeI32(0)
+	a.localGet(work)
+	a.localGet(n)
+	a.storeI32(4)
+	a.localGet(work)
+	a.i32(0)
+	a.storeI32(8)
+	a.i32(0)
+	a.localGet(work)
+	a.i32(1)
+	a.localGet(work)
+	a.i32(8)
+	a.add()
+	a.call(wasiFdRead)
+	a.trapUnlessZero()
+	a.localGet(block)
+	a.localGet(work)
+	a.loadI32(8)
+	a.storeI32(0)
+	a.localGet(block)
+	a.i32(0)
+	a.storeI32(4)
+	a.localGet(block)
 	a.end()
 	return a.b
 }
@@ -855,6 +922,7 @@ func (a *asm) wrap()    { a.raw(opI32WrapI64) }
 func (a *asm) extendU() { a.raw(opI64ExtendI32U) }
 func (a *asm) sub64()   { a.raw(opI64Sub) }
 func (a *asm) ltS64()   { a.raw(opI64LtS) }
+func (a *asm) leS64()   { a.raw(opI64LeS) }
 func (a *asm) geS64()   { a.raw(opI64GeS) }
 
 // trapUnlessZero consumes an i32 and traps when it is not zero.

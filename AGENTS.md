@@ -11,6 +11,7 @@ Cero 言語（ブートストラップコンパイラ `ceroc`、Go 製）のリ�
 - `compiler/`: Cero で書いた ceroc（エントリは `compiler/main.cero`）
 - `std/`: Cero で書いた標準ライブラリ
 - `examples/`: サンプルの Cero プログラム
+- `editors/vscode/`: VS Code 拡張。構文ハイライトと、Cero 製 ceroc の LSP クライアント。npm の依存はない
 - `docs/adr/`: 方針決定の記録（ADR）
 - `docs/design/`: 機能ごとの設計書（設計フェーズで作成する）
 
@@ -68,6 +69,7 @@ make build   # ./bin/ceroc を生成
 ./bin/ceroc help
 ./bin/ceroc run examples/fib.cero   # 55 が出力される
 make selfhost   # 3 段ビルドで自己ホストを検査する（check には含めない）
+make vscode-test   # VS Code 拡張のクライアントテスト（node --test）
 ```
 
-`internal/driver` と `internal/cli` の E2E テストは `wasmtime` を使う。`PATH` にない場合は skip されるので、E2E まで確認するときは wasmtime を入れておく。`make selfhost` も wasmtime を使う。無いときは skip せず、メッセージを出して失敗する。Cloud Agent 環境では `.cursor/environment.json` の `install` から `scripts/install-wasmtime.sh` が実行され、バージョン固定の wasmtime が `/usr/local/bin` に入る。
+`internal/driver` と `internal/cli` の E2E テストは `wasmtime` を使う。`PATH` にない場合は skip されるので、E2E まで確認するときは wasmtime を入れておく。`make selfhost` も wasmtime を使う。無いときは skip せず、メッセージを出して失敗する。`make vscode-test` は Node.js で拡張のクライアントを検査する。相手のサーバは `bin/ceroc-cero.wasm` で、wasmtime が無いとその部分は skip する。Cloud Agent 環境では `.cursor/environment.json` の `install` から `scripts/install-wasmtime.sh` が実行され、バージョン固定の wasmtime が `/usr/local/bin` に入る。
