@@ -109,6 +109,67 @@ fn cgStrFuns(fs: List[IrFunc], acc: X6Strs) -> X6Strs {
     }
 }
 
+fn cgUseBit(op: PrimOp) -> Int {
+    match op {
+        IrStrByteAt => shiftLeft(1, 0),
+        IrStrSlice => shiftLeft(1, 1),
+        IrStrFromByte => shiftLeft(1, 2),
+        IrStrCompare => shiftLeft(1, 3),
+        IrIntToString => shiftLeft(1, 4),
+        IrStrConcat => shiftLeft(1, 5),
+        IrStrEq => shiftLeft(1, 6),
+        IrIOPrint => shiftLeft(1, 7),
+        IrIOEPrint => shiftLeft(1, 8),
+        IrIOReadStdin => shiftLeft(1, 9),
+        IrIOReadFile => shiftLeft(1, 10),
+        IrIOFileExists => shiftLeft(1, 11),
+        IrIOWriteFile => shiftLeft(1, 12),
+        IrIOArgCount => shiftLeft(1, 13),
+        IrIOArgAt => shiftLeft(1, 14),
+        IrIOExit => shiftLeft(1, 15),
+        IrIOReadStdinChunk => shiftLeft(1, 16),
+        _ => 0,
+    }
+}
+
+fn cgUseStep(acc: Int, e: IrExpr) -> Int {
+    match e {
+        IrPrim(op, _) => bitOr(acc, cgUseBit(op)),
+        _ => acc,
+    }
+}
+
+fn cgUseFuns(fs: List[IrFunc], acc: Int) -> Int {
+    match fs {
+        Nil => acc,
+        Cons(func, rest) => match func {
+            IrFunc(_, _, _, body) => cgUseFuns(rest, cgWalk(Cons(body, Nil), acc, cgUseStep)),
+        },
+    }
+}
+
+fn cgOn(use: Int, k: Int) -> Bool {
+    bitAnd(use, shiftLeft(1, k)) != 0
+}
+
+fn cgErrs(acc: X6Strs, use: Int) -> X6Strs {
+    let withRead = if cgOn(use, 10) {
+        cgNote(acc, "error: cannot read file ")
+    } else {
+        acc
+    }
+    let withWrite = if cgOn(use, 12) {
+        cgNote(withRead, "error: cannot write file ")
+    } else {
+        withRead
+    }
+    if cgOn(use, 10) || cgOn(use, 12) {
+        cgNote(withWrite, "\n")
+    } else {
+        withWrite
+    }
+}
+
 fn cgTab(xs: List[Int], i: Int, m: IntMap[Int]) -> IntMap[Int] {
     match xs {
         Nil => m,
@@ -522,9 +583,14 @@ fn cgFuns(fs: List[IrFunc], id: Int, md: X6Mod, fresh: Int, acc: X6Code) -> X6Ge
 pub fn x6Lower(m: IrModule) -> X6Obj {
     let IrModule(fs, table, main, cmd) = m
     let n = length(fs)
-    let X6Strs(sm, rev, fresh0) = cgStrFuns(fs, X6Strs(smEmpty(), Nil, x6LabFresh(n)))
+    let use = cgUseFuns(fs, 0)
+    let X6Strs(sm0, rev0, freshA) = cgStrFuns(fs, X6Strs(smEmpty(), Nil, x6LabFresh(n)))
+    let X6Strs(sm, rev, fresh0) = cgErrs(X6Strs(sm0, rev0, freshA), use)
     let md = X6Mod(n, cgTab(table, 0, imEmpty()), sm)
     let X6Gen(code, fresh1) = cgFuns(fs, 0, md, fresh0, X6Nil)
-    let X6Gen(rt, _) = x6Runtime(n, main, cmd, fresh1)
+    let readS = withDefault(smLookup(sm, "error: cannot read file "), 0)
+    let writeS = withDefault(smLookup(sm, "error: cannot write file "), 0)
+    let nl = withDefault(smLookup(sm, "\n"), 0)
+    let X6Gen(rt, _) = x6Runtime(n, main, cmd, fresh1, use, readS, writeS, nl)
     X6Obj(x6Cat(code, rt), reverse(rev))
 }
