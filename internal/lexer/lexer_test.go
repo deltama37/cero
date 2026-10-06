@@ -219,6 +219,111 @@ func TestTokenize(t *testing.T) {
 			src:  "//あ",
 			want: []token.Token{eof(1, 4)},
 		},
+		{
+			name: "empty string",
+			src:  `""`,
+			want: []token.Token{
+				tok(token.String, "", 1, 1),
+				eof(1, 3),
+			},
+		},
+		{
+			name: "escape n",
+			src:  `"\n"`,
+			want: []token.Token{
+				tok(token.String, "\n", 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "escape t",
+			src:  `"\t"`,
+			want: []token.Token{
+				tok(token.String, "\t", 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "escape r",
+			src:  `"\r"`,
+			want: []token.Token{
+				tok(token.String, "\r", 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "escape backslash",
+			src:  `"\\"`,
+			want: []token.Token{
+				tok(token.String, `\`, 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "escape quote",
+			src:  `"\""`,
+			want: []token.Token{
+				tok(token.String, `"`, 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "escape nul",
+			src:  `"\0"`,
+			want: []token.Token{
+				tok(token.String, "\x00", 1, 1),
+				eof(1, 5),
+			},
+		},
+		{
+			name: "escape hex 41",
+			src:  `"\x41"`,
+			want: []token.Token{
+				tok(token.String, "A", 1, 1),
+				eof(1, 7),
+			},
+		},
+		{
+			name: "escape hex ff",
+			src:  `"\xff"`,
+			want: []token.Token{
+				tok(token.String, "\xff", 1, 1),
+				eof(1, 7),
+			},
+		},
+		{
+			name: "escape hex uppercase",
+			src:  `"\xFF"`,
+			want: []token.Token{
+				tok(token.String, "\xff", 1, 1),
+				eof(1, 7),
+			},
+		},
+		{
+			name: "utf-8 string",
+			src:  "\"é\"",
+			want: []token.Token{
+				tok(token.String, "\xc3\xa9", 1, 1),
+				eof(1, 4),
+			},
+		},
+		{
+			name: "plus plus",
+			src:  "++",
+			want: []token.Token{
+				tok(token.PlusPlus, "++", 1, 1),
+				eof(1, 3),
+			},
+		},
+		{
+			name: "plus plus separated by space",
+			src:  "+ +",
+			want: []token.Token{
+				tok(token.Plus, "+", 1, 1),
+				tok(token.Plus, "+", 1, 3),
+				eof(1, 4),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -278,6 +383,36 @@ func TestTokenizeError(t *testing.T) {
 			name: "invalid utf-8",
 			src:  []byte{0xff},
 			want: "1:1: invalid UTF-8 encoding",
+		},
+		{
+			name: "unterminated string",
+			src:  []byte("  \"abc"),
+			want: "1:3: unterminated string literal",
+		},
+		{
+			name: "newline in string",
+			src:  []byte(" \"a\n\""),
+			want: "1:2: newline in string literal",
+		},
+		{
+			name: "invalid escape",
+			src:  []byte(`"\q"`),
+			want: `1:2: invalid escape sequence '\q'`,
+		},
+		{
+			name: "invalid hex escape",
+			src:  []byte(`"\x"`),
+			want: `1:2: invalid escape sequence '\x'`,
+		},
+		{
+			name: "invalid hex escape one digit",
+			src:  []byte(`"\x4"`),
+			want: `1:2: invalid escape sequence '\x'`,
+		},
+		{
+			name: "invalid hex escape non-hex",
+			src:  []byte(`"\xGG"`),
+			want: `1:2: invalid escape sequence '\x'`,
 		},
 	}
 
