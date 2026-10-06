@@ -33,6 +33,17 @@ const (
 	BuiltinStringFromByte
 	BuiltinStringCompare
 	BuiltinIntToString
+	BuiltinPure
+	BuiltinBind
+	BuiltinPrint
+	BuiltinEPrint
+	BuiltinReadStdin
+	BuiltinReadFile
+	BuiltinFileExists
+	BuiltinWriteFile
+	BuiltinArgCount
+	BuiltinArgAt
+	BuiltinExit
 )
 
 // Symbol is one declared name. Each declaration (every let, even when
@@ -67,6 +78,7 @@ type Info struct {
 	// a generalized let), the type arguments of that use in TypeParams order.
 	TypeArgs map[*ast.Ident][]types.Type
 	Main     *Symbol // the entry module's 'main'
+	MainIO   bool    // main's type is () -> IO[Unit]
 	// FuncModule maps every top-level function declaration to its module.
 	FuncModule map[*ast.FuncDecl]*Module
 }
@@ -204,14 +216,14 @@ func (c *checker) moduleExports(file *ast.File) *exports {
 }
 
 // checkModule type-checks file. main is required, and must have type
-// () -> Int, only when isEntry is set.
+// () -> Int or () -> IO[Unit], only when isEntry is set.
 func (c *checker) checkModule(file *ast.File, isEntry bool) *diag.Error {
 	c.isEntry = isEntry
 
 	// Type names are registered before constructors so a field type can refer
 	// to any declared type, including this one and ones declared later.
 	for _, d := range file.Types {
-		if d.Name == "Int" || d.Name == "Bool" || d.Name == "String" {
+		if d.Name == "Int" || d.Name == "Bool" || d.Name == "String" || d.Name == "Unit" || d.Name == "IO" {
 			return diag.Errorf(d.NamePos, "cannot redefine built-in type '%s'", d.Name)
 		}
 		if _, ok := c.datas[d.Name]; ok {
@@ -371,11 +383,32 @@ func (c *checker) checkModule(file *ast.File, isEntry bool) *diag.Error {
 	if len(main.TypeParams) > 0 {
 		return diag.Errorf(main.Pos, "function 'main' cannot have type parameters")
 	}
-	want := &types.Func{Result: types.Int}
-	if !types.Equal(main.Type, want) {
-		return diag.Errorf(main.Pos, "function 'main' must have type () -> Int, found %s", main.Type)
+	if !isMainType(main.Type) {
+		return mainTypeError(main.Pos, main.Type)
 	}
+	c.info.MainIO = isMainIO(main.Type)
 	return nil
+}
+
+func mainTypeError(pos diag.Pos, t types.Type) *diag.Error {
+	return diag.Errorf(pos, "function 'main' must have type () -> Int or () -> IO[Unit], found %s", t)
+}
+
+func isMainType(t types.Type) bool {
+	fn, ok := t.(*types.Func)
+	if !ok || len(fn.Params) != 0 {
+		return false
+	}
+	return types.Equal(fn.Result, types.Int) || isIOUnit(fn.Result)
+}
+
+func isMainIO(t types.Type) bool {
+	fn, ok := t.(*types.Func)
+	return ok && len(fn.Params) == 0 && isIOUnit(fn.Result)
+}
+
+func isIOUnit(t types.Type) bool {
+	return types.Equal(t, types.IOOf(types.Unit))
 }
 
 type checker struct {
@@ -466,13 +499,8 @@ func (c *checker) checkComponent(decls []*ast.FuncDecl) *diag.Error {
 			msg := fmt.Sprintf("cannot infer the result type of '%s'; add a type annotation", d.Name)
 			sig.Result = c.newMeta(c.freshName(), d.NamePos, msg)
 		}
-		if c.isEntry && d.Name == "main" {
-			if len(d.Params) > 0 {
-				return diag.Errorf(sym.Pos, "function 'main' must have type () -> Int, found %s", sig)
-			}
-			if !unify(sig.Result, types.Int) {
-				return diag.Errorf(sym.Pos, "function 'main' must have type () -> Int, found %s", sig)
-			}
+		if c.isEntry && d.Name == "main" && len(d.Params) > 0 {
+			return mainTypeError(sym.Pos, sig)
 		}
 		sym.Type = sig
 		c.comp[sym] = true
@@ -483,6 +511,19 @@ func (c *checker) checkComponent(decls []*ast.FuncDecl) *diag.Error {
 		c.current = sym
 		if err := c.checkFunc(&funcCtx{}, d.Params, sym.Type.(*types.Func), d.Body); err != nil {
 			return err
+		}
+	}
+
+	// An inferred main whose result is still a unification variable defaults to Int.
+	for _, d := range decls {
+		if !c.isEntry || d.Name != "main" {
+			continue
+		}
+		sig := c.info.Funcs[d].Type.(*types.Func)
+		if _, ok := types.Prune(sig.Result).(*types.Meta); ok {
+			if !unify(sig.Result, types.Int) {
+				return mainTypeError(c.info.Funcs[d].Pos, sig)
+			}
 		}
 	}
 
@@ -627,26 +668,49 @@ func newChecker(info *Info) *checker {
 	return c
 }
 
-// registerBuiltins adds the built-in functions (ADR-0010) to globals.
+// registerBuiltins adds the built-in functions (ADR-0010, ADR-0012) to globals.
 func (c *checker) registerBuiltins() {
+	tParam := &types.TypeParam{Name: "T"}
+	aParam := &types.TypeParam{Name: "A"}
+	bParam := &types.TypeParam{Name: "B"}
+	ioUnit := types.IOOf(types.Unit)
 	specs := []struct {
 		name string
 		b    Builtin
 		sig  types.Type
+		tps  []*types.TypeParam
 	}{
-		{"stringLength", BuiltinStringLength, &types.Func{Params: []types.Type{types.String}, Result: types.Int}},
-		{"stringByteAt", BuiltinStringByteAt, &types.Func{Params: []types.Type{types.String, types.Int}, Result: types.Int}},
-		{"stringSlice", BuiltinStringSlice, &types.Func{Params: []types.Type{types.String, types.Int, types.Int}, Result: types.String}},
-		{"stringFromByte", BuiltinStringFromByte, &types.Func{Params: []types.Type{types.Int}, Result: types.String}},
-		{"stringCompare", BuiltinStringCompare, &types.Func{Params: []types.Type{types.String, types.String}, Result: types.Int}},
-		{"intToString", BuiltinIntToString, &types.Func{Params: []types.Type{types.Int}, Result: types.String}},
+		{"stringLength", BuiltinStringLength, &types.Func{Params: []types.Type{types.String}, Result: types.Int}, nil},
+		{"stringByteAt", BuiltinStringByteAt, &types.Func{Params: []types.Type{types.String, types.Int}, Result: types.Int}, nil},
+		{"stringSlice", BuiltinStringSlice, &types.Func{Params: []types.Type{types.String, types.Int, types.Int}, Result: types.String}, nil},
+		{"stringFromByte", BuiltinStringFromByte, &types.Func{Params: []types.Type{types.Int}, Result: types.String}, nil},
+		{"stringCompare", BuiltinStringCompare, &types.Func{Params: []types.Type{types.String, types.String}, Result: types.Int}, nil},
+		{"intToString", BuiltinIntToString, &types.Func{Params: []types.Type{types.Int}, Result: types.String}, nil},
+		{"pure", BuiltinPure, &types.Func{Params: []types.Type{tParam}, Result: types.IOOf(tParam)}, []*types.TypeParam{tParam}},
+		{"bind", BuiltinBind, &types.Func{
+			Params: []types.Type{
+				types.IOOf(aParam),
+				&types.Func{Params: []types.Type{aParam}, Result: types.IOOf(bParam)},
+			},
+			Result: types.IOOf(bParam),
+		}, []*types.TypeParam{aParam, bParam}},
+		{"print", BuiltinPrint, &types.Func{Params: []types.Type{types.String}, Result: ioUnit}, nil},
+		{"eprint", BuiltinEPrint, &types.Func{Params: []types.Type{types.String}, Result: ioUnit}, nil},
+		{"readStdin", BuiltinReadStdin, &types.Func{Result: types.IOOf(types.String)}, nil},
+		{"readFile", BuiltinReadFile, &types.Func{Params: []types.Type{types.String}, Result: types.IOOf(types.String)}, nil},
+		{"fileExists", BuiltinFileExists, &types.Func{Params: []types.Type{types.String}, Result: types.IOOf(types.Bool)}, nil},
+		{"writeFile", BuiltinWriteFile, &types.Func{Params: []types.Type{types.String, types.String}, Result: ioUnit}, nil},
+		{"argCount", BuiltinArgCount, &types.Func{Result: types.IOOf(types.Int)}, nil},
+		{"argAt", BuiltinArgAt, &types.Func{Params: []types.Type{types.Int}, Result: types.IOOf(types.String)}, nil},
+		{"exit", BuiltinExit, &types.Func{Params: []types.Type{types.Int}, Result: ioUnit}, nil},
 	}
 	for _, spec := range specs {
 		c.globals[spec.name] = &Symbol{
-			Kind:    SymBuiltin,
-			Name:    spec.name,
-			Type:    spec.sig,
-			Builtin: spec.b,
+			Kind:       SymBuiltin,
+			Name:       spec.name,
+			Type:       spec.sig,
+			Builtin:    spec.b,
+			TypeParams: spec.tps,
 		}
 	}
 }
@@ -658,7 +722,7 @@ func (c *checker) declareTypeParams(ps []*ast.TypeParam) ([]*types.TypeParam, *d
 	seen := make(map[string]bool, len(ps))
 	out := make([]*types.TypeParam, 0, len(ps))
 	for _, p := range ps {
-		if p.Name == "Int" || p.Name == "Bool" || p.Name == "String" || c.lookupData(p.Name) != nil {
+		if p.Name == "Int" || p.Name == "Bool" || p.Name == "String" || p.Name == "Unit" || p.Name == "IO" || c.lookupData(p.Name) != nil {
 			return nil, diag.Errorf(p.Pos, "type parameter '%s' conflicts with type '%s'", p.Name, p.Name)
 		}
 		if seen[p.Name] {
@@ -709,7 +773,7 @@ func (c *checker) resolveType(t ast.TypeExpr) (types.Type, *diag.Error) {
 			}
 			return tp, nil
 		}
-		if t.Name == "Int" || t.Name == "Bool" || t.Name == "String" {
+		if t.Name == "Int" || t.Name == "Bool" || t.Name == "String" || t.Name == "Unit" {
 			if m != 0 {
 				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for '%s': expected 0, found %d", t.Name, m)
 			}
@@ -718,9 +782,21 @@ func (c *checker) resolveType(t ast.TypeExpr) (types.Type, *diag.Error) {
 				return types.Int, nil
 			case "Bool":
 				return types.Bool, nil
+			case "Unit":
+				return types.Unit, nil
 			default:
 				return types.String, nil
 			}
+		}
+		if t.Name == "IO" {
+			if m != 1 {
+				return nil, diag.Errorf(t.Pos, "wrong number of type arguments for 'IO': expected 1, found %d", m)
+			}
+			arg, err := c.resolveType(t.Args[0])
+			if err != nil {
+				return nil, err
+			}
+			return &types.Named{Data: types.IO, Args: []types.Type{arg}}, nil
 		}
 		if data := c.lookupData(t.Name); data != nil {
 			n := len(data.Params)
@@ -887,6 +963,8 @@ func (c *checker) inferExpr(ctx *funcCtx, e ast.Expr) (types.Type, *diag.Error) 
 		return types.String, nil
 	case *ast.BoolLit:
 		return types.Bool, nil
+	case *ast.UnitLit:
+		return types.Unit, nil
 	case *ast.Ident:
 		return c.inferIdent(ctx, e)
 	case *ast.UnaryExpr:
@@ -1274,6 +1352,9 @@ func (c *checker) inferMatch(ctx *funcCtx, m *ast.MatchExpr) (types.Type, *diag.
 		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot match on values of type %s", st)
 	case *types.Meta:
 		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot infer the type of the matched value; add a type annotation")
+	}
+	if types.IsIO(st) {
+		return nil, diag.Errorf(resultPos(m.Scrutinee), "cannot match on values of type %s", st)
 	}
 	st = types.Prune(st)
 
